@@ -1,0 +1,86 @@
+{
+  "procedure_id": "web_playwright_demo_example",
+  "version": "1.0.1",
+  "status": "active",
+  "effective_date": "2026-02-16",
+  "description": "Demo workflow for real WEB agent automation on example.com",
+  "variables_schema": {
+    "required": {
+      "execution_date": {
+        "type": "string",
+        "description": "Execution date",
+        "origin": "user_strict",
+        "default": "2026-02-16"
+      }
+    },
+    "optional": {
+      "page_title": {
+        "type": "string",
+        "origin": "system_captured",
+        "description": "Extracted H1 title"
+      },
+      "shot": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Screenshot artifact payload"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "open_page",
+    "nodes": {
+      "open_page": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Navigate to page and capture UI evidence",
+        "steps": [
+          {
+            "step_id": "navigate_example",
+            "action": "navigate",
+            "url": "https://example.com"
+          },
+          {
+            "step_id": "wait_h1",
+            "action": "wait_for_element",
+            "target": "h1",
+            "timeout_ms": 10000
+          },
+          {
+            "step_id": "extract_h1",
+            "action": "extract_text",
+            "target": "h1",
+            "output_variable": "page_title"
+          },
+          {
+            "step_id": "screenshot_page",
+            "action": "screenshot",
+            "path": "c:/Users/karup/AGProjects/LangOrch/backend/demo_agents/workflow_example.png",
+            "output_variable": "shot"
+          }
+        ],
+        "next_node": "validate_title"
+      },
+      "validate_title": {
+        "agent": "MasterAgent",
+        "type": "verification",
+        "checks": [
+          {
+            "id": "title_match",
+            "condition": "{{page_title}} contains 'Example Domain'",
+            "on_fail": "fail_workflow",
+            "message": "Unexpected page title extracted from h1"
+          }
+        ],
+        "next_node": "done"
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "final_title": "{{page_title}}",
+          "screenshot": "{{shot}}"
+        }
+      }
+    }
+  }
+}

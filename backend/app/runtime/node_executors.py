@@ -1,0 +1,1043 @@
+"""Node executor functions — one per CKP node type.
+
+Sequence nodes dispatch steps dynamically:
+  - Internal actions (log, wait, set_variable…) run in-process.
+  - External actions are resolved at runtime from the agent registry DB
+    via executor_dispatch.resolve_executor / dispatch_to_agent.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Callable
+
+from app.compiler.ir import (
+    IRHumanApprovalPayload,
+    IRLogicPayload,
+    IRLoopPayload,
+    IRNode,
+    IRParallelPayload,
+    IRProcessingPayload,
+    IRSequencePayload,
+    IRSubflowPayload,
+    IRTerminatePayload,
+    IRTransformPayload,
+    IRVerificationPayload,
+    IRLlmActionPayload,
+)
+from app.config import settings
+from app.runtime.state import OrchestratorState
+from app.templating.engine import render_template_dict, render_template_str
+from app.templating.expressions import evaluate_condition
+from app.runtime.hil import resolve_approval_next_node
+
+logger = logging.getLogger("langorch.runtime")
+
+
+async def execute_sequence(
+    node: IRNode, state: OrchestratorState, db_factory: Callable | None = None
+) -> OrchestratorState:
+    """Execute all steps in a sequence node and return updated state.
+
+    For each step:
+      1. If the step is bound as internal → run it locally.
+      2. If unbound → resolve from agent registry DB → dispatch over HTTP.
+    """
+    from app.runtime.executor_dispatch import (
+        resolve_executor,
+        dispatch_to_agent,
+        dispatch_to_mcp,
+    )
+    from app.services import run_service
+
+    payload: IRSequencePayload = node.payload
+    vs = dict(state.get("vars", {}))
+    run_id = state.get("run_id", "")
+
+    for step in payload.steps:
+        rendered_params = render_template_dict(step.params, vs)
+        logger.info("Step %s: action=%s params=%s", step.step_id, step.action, rendered_params)
+
+        result: Any = None
+        used_cached_result = False
+
+        if db_factory is not None and run_id:
+            async with db_factory() as db:
+                cached_result = await _get_completed_step_result(db, run_id, node.node_id, step.step_id)
+                if cached_result is not None:
+                    result = cached_result
+                    used_cached_result = True
+                    logger.info(
+                        "Step %s/%s reused cached idempotent result",
+                        node.node_id,
+                        step.step_id,
+                    )
+                else:
+                    await run_service.emit_event(
+                        db,
+                        run_id,
+                        "step_started",
+                        node_id=node.node_id,
+                        step_id=step.step_id,
+                        payload={"action": step.action},
+                    )
+                    await _mark_step_started(
+                        db,
+                        run_id,
+                        node.node_id,
+                        step.step_id,
+                        step.idempotency_key,
+                    )
+                await db.commit()
+
+        if used_cached_result:
+            if step.output_variable and result is not None:
+                vs[step.output_variable] = result
+
+            if db_factory is not None and run_id:
+                async with db_factory() as db:
+                    await run_service.emit_event(
+                        db,
+                        run_id,
+                        "step_completed",
+                        node_id=node.node_id,
+                        step_id=step.step_id,
+                        payload={
+                            "action": step.action,
+                            "output_variable": step.output_variable,
+                            "cached": True,
+                        },
+                    )
+                    await db.commit()
+            continue
+
+        try:
+            # Fast path: internal actions
+            if step.executor_binding and step.executor_binding.kind == "internal":
+                result = _execute_internal_action(step.action, rendered_params, vs)
+            elif db_factory is not None:
+                # Dynamic resolution from agent registry
+                async with db_factory() as db:
+                    binding = await resolve_executor(db, node, step)
+
+                if binding.kind == "internal":
+                    result = _execute_internal_action(step.action, rendered_params, vs)
+                elif binding.kind == "agent_http":
+                    lease_id: str | None = None
+                    if run_id and binding.ref:
+                        async with db_factory() as db:
+                            lease_id = await _acquire_agent_lease(
+                                db,
+                                agent_url=binding.ref,
+                                run_id=run_id,
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                            )
+                            await db.commit()
+
+                    try:
+                        result = await dispatch_to_agent(
+                            agent_url=binding.ref,
+                            action=step.action,
+                            params=rendered_params,
+                            run_id=run_id,
+                            node_id=node.node_id,
+                            step_id=step.step_id,
+                        )
+                    finally:
+                        if lease_id and db_factory is not None:
+                            async with db_factory() as db:
+                                await _release_lease(db, lease_id)
+                                await db.commit()
+                elif binding.kind == "mcp_tool":
+                    result = await dispatch_to_mcp(
+                        mcp_url=binding.ref,
+                        tool_name=step.action,
+                        arguments=rendered_params,
+                    )
+                else:
+                    logger.warning("Unsupported binding kind '%s' for step %s", binding.kind, step.step_id)
+                    result = {"action": step.action, "params": rendered_params}
+            else:
+                # No db_factory — fallback to internal handler (dev/test mode)
+                logger.warning("No db_factory available; falling back to internal handler for step %s", step.step_id)
+                result = _execute_internal_action(step.action, rendered_params, vs)
+        except Exception:
+            if db_factory is not None and run_id:
+                async with db_factory() as db:
+                    await _mark_step_failed(db, run_id, node.node_id, step.step_id)
+                    await db.commit()
+            raise
+
+        if step.output_variable and result is not None:
+            vs[step.output_variable] = result
+
+        if db_factory is not None and run_id and result is not None:
+            artifacts = _extract_artifacts_from_result(result)
+            if artifacts:
+                async with db_factory() as db:
+                    for artifact in artifacts:
+                        kind = str(artifact.get("kind") or "artifact")
+                        uri = artifact.get("uri")
+                        if not isinstance(uri, str) or not uri:
+                            continue
+                        created = await run_service.create_artifact(
+                            db,
+                            run_id=run_id,
+                            node_id=node.node_id,
+                            step_id=step.step_id,
+                            kind=kind,
+                            uri=uri,
+                        )
+                        await run_service.emit_event(
+                            db,
+                            run_id,
+                            "artifact_created",
+                            node_id=node.node_id,
+                            step_id=step.step_id,
+                            payload={
+                                "artifact_id": created.artifact_id,
+                                "kind": created.kind,
+                                "uri": created.uri,
+                            },
+                        )
+                    await db.commit()
+
+        if db_factory is not None and run_id:
+            async with db_factory() as db:
+                await _mark_step_completed(db, run_id, node.node_id, step.step_id, result)
+                await run_service.emit_event(
+                    db,
+                    run_id,
+                    "step_completed",
+                    node_id=node.node_id,
+                    step_id=step.step_id,
+                    payload={
+                        "action": step.action,
+                        "output_variable": step.output_variable,
+                        "cached": False,
+                    },
+                )
+                await db.commit()
+
+    state_out = dict(state)
+    state_out["vars"] = vs
+    state_out["next_node_id"] = node.next_node_id
+    state_out["current_node_id"] = node.node_id
+    return state_out  # type: ignore[return-value]
+
+
+def execute_logic(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Evaluate logic rules and route to the matching next_node."""
+    payload: IRLogicPayload = node.payload
+    vs = state.get("vars", {})
+
+    for rule in payload.rules:
+        expr = render_template_str(rule.condition_expr, vs)
+        if evaluate_condition(expr, vs):
+            return {**state, "next_node_id": rule.next_node_id, "current_node_id": node.node_id}  # type: ignore
+
+    return {**state, "next_node_id": payload.default_next_node_id, "current_node_id": node.node_id}  # type: ignore
+
+
+def execute_loop(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Set up or advance loop iteration."""
+    payload: IRLoopPayload = node.payload
+    vs = dict(state.get("vars", {}))
+
+    iterator = vs.get(payload.iterator_var, [])
+    index = state.get("loop_index", 0)
+
+    if index < len(iterator):
+        item = iterator[index]
+        vs[payload.iterator_variable] = item
+        if payload.index_variable:
+            vs[payload.index_variable] = index
+
+        return {
+            **state,
+            "vars": vs,
+            "loop_index": index,
+            "loop_item": item,
+            "next_node_id": payload.body_node_id,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    # Loop complete
+    return {
+        **state,
+        "vars": vs,
+        "loop_index": 0,
+        "next_node_id": payload.next_node_id,
+        "current_node_id": node.node_id,
+    }  # type: ignore
+
+
+async def execute_parallel(
+    node: IRNode,
+    state: OrchestratorState,
+    db_factory: Callable | None = None,
+    nodes: dict[str, IRNode] | None = None,
+) -> OrchestratorState:
+    """Execute parallel branches and merge branch deltas into state vars."""
+    payload: IRParallelPayload = node.payload
+    base_vars = dict(state.get("vars", {}))
+
+    if not payload.branches:
+        return {
+            **state,
+            "next_node_id": payload.next_node_id,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    if not nodes:
+        return {
+            **state,
+            "error": {
+                "message": "Parallel node execution requires workflow nodes context",
+                "node_id": node.node_id,
+            },
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    branch_deltas: dict[str, dict[str, Any]] = {}
+    branch_errors: dict[str, Any] = {}
+    wait_strategy = (payload.wait_strategy or "all").lower()
+    branch_failure = (payload.branch_failure or "continue").lower()
+
+    for branch in payload.branches:
+        branch_state: OrchestratorState = {
+            **state,
+            "vars": dict(base_vars),
+            "current_node_id": branch.start_node_id,
+            "next_node_id": branch.start_node_id,
+            "error": None,
+            "terminal_status": None,
+        }
+
+        branch_final = await _execute_branch_path(
+            start_node_id=branch.start_node_id,
+            join_node_id=payload.next_node_id,
+            state=branch_state,
+            nodes=nodes,
+            db_factory=db_factory,
+        )
+
+        branch_deltas[branch.branch_id] = _compute_var_delta(base_vars, branch_final.get("vars", {}))
+
+        if branch_final.get("terminal_status") == "awaiting_approval":
+            return {
+                **branch_final,
+                "current_node_id": node.node_id,
+                "next_node_id": None,
+            }  # type: ignore
+
+        if branch_final.get("error"):
+            branch_errors[branch.branch_id] = branch_final.get("error")
+            if branch_failure == "fail":
+                return {
+                    **state,
+                    "vars": base_vars,
+                    "error": {
+                        "message": f"Parallel branch '{branch.branch_id}' failed",
+                        "node_id": node.node_id,
+                        "branch_error": branch_final.get("error"),
+                    },
+                    "terminal_status": "failed",
+                    "next_node_id": None,
+                    "current_node_id": node.node_id,
+                }  # type: ignore
+
+        if wait_strategy == "any" and not branch_final.get("error"):
+            break
+
+    merged_vars = dict(base_vars)
+    for delta in branch_deltas.values():
+        merged_vars.update(delta)
+
+    merged_vars["parallel_results"] = {
+        "branches": branch_deltas,
+        "errors": branch_errors,
+    }
+
+    return {
+        **state,
+        "vars": merged_vars,
+        "next_node_id": payload.next_node_id,
+        "current_node_id": node.node_id,
+    }  # type: ignore
+
+
+def execute_verification(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Evaluate verification checks."""
+    payload: IRVerificationPayload = node.payload
+    vs = state.get("vars", {})
+
+    for check in payload.checks:
+        expr = render_template_str(check.condition, vs)
+        if not evaluate_condition(expr, vs):
+            if check.on_fail == "fail_workflow":
+                return {
+                    **state,
+                    "error": {"message": check.message, "node_id": node.node_id, "check_id": check.id},
+                    "terminal_status": "failed",
+                    "next_node_id": None,
+                    "current_node_id": node.node_id,
+                }  # type: ignore
+            logger.warning("Verification warning: %s", check.message)
+
+    return {**state, "next_node_id": payload.next_node_id, "current_node_id": node.node_id}  # type: ignore
+
+
+def execute_processing(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Execute processing operations (set_variable, log, etc.)."""
+    payload: IRProcessingPayload = node.payload
+    vs = dict(state.get("vars", {}))
+
+    for op in payload.operations:
+        rendered = render_template_dict(op.params, vs)
+        result = _execute_internal_action(op.action, rendered, vs)
+        output_var = rendered.get("output_variable")
+        if output_var and result is not None:
+            vs[output_var] = result
+
+    return {**state, "vars": vs, "next_node_id": payload.next_node_id, "current_node_id": node.node_id}  # type: ignore
+
+
+def execute_transform(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Execute transform operations (filter, map, aggregate, etc.)."""
+    payload: IRTransformPayload = node.payload
+    vs = dict(state.get("vars", {}))
+
+    for t in payload.transformations:
+        source = vs.get(t.source_variable, [])
+        vs[t.output_variable] = _execute_transform_op(
+            op_type=t.type,
+            source=source,
+            expression=t.expression,
+            params=t.params or {},
+            vars_ctx=vs,
+        )
+
+    return {**state, "vars": vs, "next_node_id": payload.next_node_id, "current_node_id": node.node_id}  # type: ignore
+
+
+def execute_human_approval(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Pause for approval unless a prior decision is injected in run input vars.
+
+    Decision injection format:
+      vars.__approval_decisions[node_id] = "approved" | "rejected" | "timeout"
+    """
+    payload: IRHumanApprovalPayload = node.payload
+    vs = dict(state.get("vars", {}))
+    decisions = vs.get("__approval_decisions", {}) if isinstance(vs.get("__approval_decisions"), dict) else {}
+    existing_decision = decisions.get(node.node_id)
+
+    if existing_decision:
+        next_node = resolve_approval_next_node(node, str(existing_decision))
+        return {
+            **state,
+            "vars": vs,
+            "approval_decision": str(existing_decision),
+            "current_node_id": node.node_id,
+            "next_node_id": next_node,
+        }  # type: ignore
+
+    approval_request = {
+        "run_id": state.get("run_id"),
+        "node_id": node.node_id,
+        "prompt": payload.prompt,
+        "decision_type": payload.decision_type,
+        "options": payload.options,
+        "context_data": payload.context_data,
+    }
+
+    return {
+        **state,
+        "vars": vs,
+        "awaiting_approval": approval_request,
+        "terminal_status": "awaiting_approval",
+        "current_node_id": node.node_id,
+        "next_node_id": None,  # will be set after approval decision
+    }  # type: ignore
+
+
+def execute_llm_action(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Execute LLM action via OpenAI-compatible chat completion API."""
+    from app.connectors.llm_client import LLMCallError, LLMClient
+
+    payload: IRLlmActionPayload = node.payload
+    vs = dict(state.get("vars", {}))
+    prompt = render_template_str(payload.prompt, vs)
+    logger.info("LLM action: model=%s prompt=%s", payload.model, prompt[:100])
+
+    try:
+        llm_result = LLMClient().complete(
+            prompt=prompt,
+            model=payload.model,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+        )
+    except LLMCallError as exc:
+        return {
+            **state,
+            "error": {"message": str(exc), "node_id": node.node_id},
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    text = llm_result.get("text", "")
+    for key, mapping in payload.outputs.items():
+        if mapping in ("text", "raw", "content"):
+            vs[key] = text
+        elif isinstance(mapping, str) and mapping.startswith("json:"):
+            try:
+                obj = json.loads(text)
+                vs[key] = obj.get(mapping.split(":", 1)[1])
+            except Exception:
+                vs[key] = text
+        else:
+            vs[key] = text
+
+    if not payload.outputs:
+        vs["llm_output"] = text
+
+    return {**state, "vars": vs, "next_node_id": payload.next_node_id, "current_node_id": node.node_id}  # type: ignore
+
+
+async def execute_subflow(
+    node: IRNode,
+    state: OrchestratorState,
+    db_factory: Callable | None = None,
+) -> OrchestratorState:
+    """Execute a child procedure as a subflow and merge mapped outputs."""
+    from app.compiler.binder import bind_executors
+    from app.compiler.parser import parse_ckp
+    from app.compiler.validator import validate_ir
+    from app.runtime.graph_builder import build_graph
+    from app.services import procedure_service, run_service
+
+    payload: IRSubflowPayload = node.payload
+    vs = dict(state.get("vars", {}))
+    run_id = state.get("run_id", "")
+
+    if not db_factory:
+        return {
+            **state,
+            "error": {
+                "message": "Subflow execution requires db_factory",
+                "node_id": node.node_id,
+            },
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    child_vars = dict(vs) if payload.inherit_context else {}
+    for child_key, parent_value in (payload.input_mapping or {}).items():
+        if isinstance(parent_value, str):
+            if parent_value in vs:
+                child_vars[child_key] = vs.get(parent_value)
+            else:
+                child_vars[child_key] = render_template_str(parent_value, vs)
+        else:
+            child_vars[child_key] = parent_value
+
+    async with db_factory() as db:
+        child_proc = await procedure_service.get_procedure(db, payload.procedure_id, payload.version)
+        if not child_proc:
+            return {
+                **state,
+                "error": {
+                    "message": f"Subflow procedure not found: {payload.procedure_id}:{payload.version or 'latest'}",
+                    "node_id": node.node_id,
+                },
+                "terminal_status": "failed",
+                "next_node_id": None,
+                "current_node_id": node.node_id,
+            }  # type: ignore
+
+        await run_service.emit_event(
+            db,
+            run_id,
+            "subflow_started",
+            node_id=node.node_id,
+            payload={"procedure_id": child_proc.procedure_id, "version": child_proc.version},
+        )
+        await db.commit()
+
+    ckp_dict = json.loads(child_proc.ckp_json) if isinstance(child_proc.ckp_json, str) else child_proc.ckp_json
+    child_ir = parse_ckp(ckp_dict)
+    validation_errors = validate_ir(child_ir)
+    if validation_errors:
+        return {
+            **state,
+            "error": {
+                "message": "Subflow validation failed",
+                "node_id": node.node_id,
+                "errors": validation_errors,
+            },
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    bind_executors(child_ir)
+    child_graph = build_graph(child_ir, db_factory=db_factory)
+
+    child_initial: OrchestratorState = {
+        "vars": child_vars,
+        "secrets": state.get("secrets", {}),
+        "run_id": run_id,
+        "procedure_id": child_ir.procedure_id,
+        "procedure_version": child_ir.version,
+        "current_node_id": child_ir.start_node_id,
+        "current_step_id": None,
+        "next_node_id": None,
+        "error": None,
+        "loop_iterator": None,
+        "loop_index": 0,
+        "loop_item": None,
+        "loop_results": None,
+        "approval_id": None,
+        "approval_decision": None,
+        "telemetry": {},
+        "artifacts": [],
+        "terminal_status": None,
+    }
+
+    subflow_thread_id = f"{run_id}:subflow:{node.node_id}:{child_ir.procedure_id}:{child_ir.version}"
+    child_final = await _invoke_with_optional_checkpointer(child_graph, child_initial, subflow_thread_id)
+
+    if child_final.get("error"):
+        on_failure = (payload.on_failure or "fail_parent").lower()
+        if on_failure == "continue":
+            return {
+                **state,
+                "vars": vs,
+                "next_node_id": payload.next_node_id,
+                "current_node_id": node.node_id,
+            }  # type: ignore
+        return {
+            **state,
+            "error": {
+                "message": "Subflow execution failed",
+                "node_id": node.node_id,
+                "subflow_error": child_final.get("error"),
+            },
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    child_out_vars = dict(child_final.get("vars", {}))
+    if payload.output_mapping:
+        for parent_key, child_value_key in payload.output_mapping.items():
+            if isinstance(child_value_key, str):
+                vs[parent_key] = child_out_vars.get(child_value_key)
+            else:
+                vs[parent_key] = child_value_key
+    else:
+        vs["subflow_output"] = child_out_vars
+
+    async with db_factory() as db:
+        await run_service.emit_event(
+            db,
+            run_id,
+            "subflow_completed",
+            node_id=node.node_id,
+            payload={"procedure_id": child_ir.procedure_id, "version": child_ir.version},
+        )
+        await db.commit()
+
+    return {
+        **state,
+        "vars": vs,
+        "next_node_id": payload.next_node_id,
+        "current_node_id": node.node_id,
+    }  # type: ignore
+
+
+def execute_terminate(node: IRNode, state: OrchestratorState) -> OrchestratorState:
+    """Mark run as terminated."""
+    payload: IRTerminatePayload = node.payload
+    return {
+        **state,
+        "terminal_status": payload.status,
+        "next_node_id": None,
+        "current_node_id": node.node_id,
+    }  # type: ignore
+
+
+# ── Internal action dispatcher ──────────────────────────────────
+
+
+def _execute_internal_action(action: str, params: dict, vars_ctx: dict) -> Any:
+    """Handle generic/internal actions (log, wait, set_variable, etc.)."""
+    if action == "log":
+        msg = params.get("message") or params.get("value", "")
+        level = params.get("level", "INFO")
+        logger.log(getattr(logging, level, logging.INFO), "[CKP] %s", msg)
+        return None
+    if action == "set_variable":
+        var = params.get("variable", "")
+        val = params.get("value")
+        if var:
+            vars_ctx[var] = val
+        return val
+    if action == "screenshot":
+        logger.info("[CKP] screenshot requested")
+        return {"screenshot": "placeholder"}
+    if action == "wait":
+        # In real implementation: asyncio.sleep(params.get("duration_ms", 0) / 1000)
+        return None
+    # Unknown or external action — return params as-is for connector dispatch
+    return {"action": action, "params": params}
+
+
+def _execute_transform_op(
+    op_type: str,
+    source: Any,
+    expression: str,
+    params: dict[str, Any],
+    vars_ctx: dict[str, Any],
+) -> Any:
+    op = (op_type or "").lower()
+
+    if op == "filter":
+        items = source if isinstance(source, list) else []
+        out: list[Any] = []
+        for item in items:
+            ctx = {**vars_ctx, "item": item}
+            expr = render_template_str(expression, ctx)
+            if evaluate_condition(expr, ctx):
+                out.append(item)
+        return out
+
+    if op == "map":
+        items = source if isinstance(source, list) else []
+        out: list[Any] = []
+        for item in items:
+            ctx = {**vars_ctx, "item": item}
+            if "{{" in expression:
+                out.append(render_template_str(expression, ctx))
+            elif expression in ("item", "{{item}}"):
+                out.append(item)
+            elif isinstance(item, dict) and expression in item:
+                out.append(item.get(expression))
+            else:
+                out.append(item)
+        return out
+
+    if op == "aggregate":
+        items = source if isinstance(source, list) else []
+        agg = str(params.get("op") or expression or "count").lower()
+        field = params.get("field")
+        if agg == "count":
+            return len(items)
+        if agg == "sum":
+            if field:
+                return sum((it.get(field, 0) if isinstance(it, dict) else 0) for it in items)
+            return sum((it if isinstance(it, (int, float)) else 0) for it in items)
+        if agg == "min":
+            vals = [(it.get(field) if field and isinstance(it, dict) else it) for it in items]
+            vals = [v for v in vals if v is not None]
+            return min(vals) if vals else None
+        if agg == "max":
+            vals = [(it.get(field) if field and isinstance(it, dict) else it) for it in items]
+            vals = [v for v in vals if v is not None]
+            return max(vals) if vals else None
+        return items
+
+    if op == "sort":
+        items = source if isinstance(source, list) else []
+        key_field = params.get("key") or expression
+        reverse = bool(params.get("descending", False))
+        if key_field:
+            return sorted(
+                items,
+                key=lambda x: x.get(key_field) if isinstance(x, dict) else x,
+                reverse=reverse,
+            )
+        return sorted(items, reverse=reverse)
+
+    if op == "unique":
+        items = source if isinstance(source, list) else []
+        seen: set[str] = set()
+        out: list[Any] = []
+        for item in items:
+            key = json.dumps(item, sort_keys=True, default=str)
+            if key not in seen:
+                seen.add(key)
+                out.append(item)
+        return out
+
+    return source
+
+
+async def _execute_branch_path(
+    start_node_id: str,
+    join_node_id: str | None,
+    state: OrchestratorState,
+    nodes: dict[str, IRNode],
+    db_factory: Callable | None = None,
+) -> OrchestratorState:
+    current = start_node_id
+    current_state: OrchestratorState = dict(state)
+    max_hops = 1000
+    hops = 0
+
+    while current and (join_node_id is None or current != join_node_id):
+        hops += 1
+        if hops > max_hops:
+            return {
+                **current_state,
+                "error": {"message": "Parallel branch exceeded max hops", "node_id": current},
+                "terminal_status": "failed",
+                "next_node_id": None,
+            }  # type: ignore
+
+        branch_node = nodes.get(current)
+        if not branch_node:
+            return {
+                **current_state,
+                "error": {
+                    "message": f"Parallel branch node '{current}' not found",
+                    "node_id": current,
+                },
+                "terminal_status": "failed",
+                "next_node_id": None,
+            }  # type: ignore
+
+        current_state["current_node_id"] = current
+        current_state["next_node_id"] = None
+        current_state = await _execute_node(branch_node, current_state, nodes=nodes, db_factory=db_factory)
+
+        if current_state.get("error") or current_state.get("terminal_status") in {"failed", "awaiting_approval"}:
+            return current_state
+
+        next_node = current_state.get("next_node_id")
+        if not next_node:
+            next_node = branch_node.next_node_id or getattr(branch_node.payload, "next_node_id", None)
+
+        if not next_node:
+            break
+
+        current = next_node
+
+    return current_state
+
+
+async def _execute_node(
+    node: IRNode,
+    state: OrchestratorState,
+    nodes: dict[str, IRNode],
+    db_factory: Callable | None = None,
+) -> OrchestratorState:
+    if node.type == "sequence":
+        return await execute_sequence(node, state, db_factory=db_factory)
+    if node.type == "parallel":
+        return await execute_parallel(node, state, db_factory=db_factory, nodes=nodes)
+    if node.type == "logic":
+        return execute_logic(node, state)
+    if node.type == "loop":
+        return execute_loop(node, state)
+    if node.type == "verification":
+        return execute_verification(node, state)
+    if node.type == "processing":
+        return execute_processing(node, state)
+    if node.type == "transform":
+        return execute_transform(node, state)
+    if node.type == "human_approval":
+        return execute_human_approval(node, state)
+    if node.type == "llm_action":
+        return execute_llm_action(node, state)
+    if node.type == "terminate":
+        return execute_terminate(node, state)
+    return {
+        **state,
+        "error": {"message": f"Unsupported node type '{node.type}'", "node_id": node.node_id},
+        "terminal_status": "failed",
+        "next_node_id": None,
+        "current_node_id": node.node_id,
+    }  # type: ignore
+
+
+def _compute_var_delta(base_vars: dict[str, Any], branch_vars: dict[str, Any]) -> dict[str, Any]:
+    delta: dict[str, Any] = {}
+    for key, value in branch_vars.items():
+        if key not in base_vars or base_vars.get(key) != value:
+            delta[key] = value
+    return delta
+
+
+def _extract_artifacts_from_result(result: Any) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+
+    if isinstance(result, dict):
+        screenshot_value = result.get("screenshot")
+        if isinstance(screenshot_value, str) and screenshot_value:
+            screenshot_uri = (
+                screenshot_value
+                if "://" in screenshot_value
+                else f"memory://{screenshot_value}"
+            )
+            artifacts.append({"kind": "screenshot", "uri": screenshot_uri})
+
+        single = result.get("artifact")
+        if isinstance(single, dict):
+            artifacts.append(single)
+
+        many = result.get("artifacts")
+        if isinstance(many, list):
+            artifacts.extend([item for item in many if isinstance(item, dict)])
+
+        uri = result.get("artifact_uri") or result.get("uri")
+        if isinstance(uri, str) and uri:
+            artifacts.append({"kind": result.get("artifact_kind", "artifact"), "uri": uri})
+
+    return artifacts
+
+
+async def _get_completed_step_result(db, run_id: str, node_id: str, step_id: str) -> Any | None:
+    from app.db.models import StepIdempotency
+
+    record = await db.get(StepIdempotency, (run_id, node_id, step_id))
+    if not record or record.status != "completed":
+        return None
+    if not record.result_json:
+        return None
+    try:
+        return json.loads(record.result_json)
+    except Exception:
+        return record.result_json
+
+
+async def _mark_step_started(
+    db,
+    run_id: str,
+    node_id: str,
+    step_id: str,
+    idempotency_key: str | None,
+) -> None:
+    from app.db.models import StepIdempotency
+
+    record = await db.get(StepIdempotency, (run_id, node_id, step_id))
+    if record is None:
+        db.add(
+            StepIdempotency(
+                run_id=run_id,
+                node_id=node_id,
+                step_id=step_id,
+                idempotency_key=idempotency_key,
+                status="started",
+            )
+        )
+        return
+
+    record.status = "started"
+    if idempotency_key:
+        record.idempotency_key = idempotency_key
+
+
+async def _mark_step_completed(db, run_id: str, node_id: str, step_id: str, result: Any) -> None:
+    from app.db.models import StepIdempotency
+
+    serialized = json.dumps(result, default=str) if result is not None else None
+    record = await db.get(StepIdempotency, (run_id, node_id, step_id))
+    if record is None:
+        db.add(
+            StepIdempotency(
+                run_id=run_id,
+                node_id=node_id,
+                step_id=step_id,
+                status="completed",
+                result_json=serialized,
+            )
+        )
+        return
+
+    record.status = "completed"
+    record.result_json = serialized
+
+
+async def _mark_step_failed(db, run_id: str, node_id: str, step_id: str) -> None:
+    from app.db.models import StepIdempotency
+
+    record = await db.get(StepIdempotency, (run_id, node_id, step_id))
+    if record is None:
+        db.add(
+            StepIdempotency(
+                run_id=run_id,
+                node_id=node_id,
+                step_id=step_id,
+                status="failed",
+            )
+        )
+        return
+
+    record.status = "failed"
+
+
+async def _acquire_agent_lease(
+    db,
+    agent_url: str,
+    run_id: str,
+    node_id: str,
+    step_id: str,
+) -> str | None:
+    from sqlalchemy import select
+
+    from app.db.models import AgentInstance
+    from app.services import lease_service
+
+    stmt = (
+        select(AgentInstance)
+        .where(AgentInstance.base_url == agent_url)
+        .where(AgentInstance.status == "online")
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    instance = result.scalars().first()
+    if not instance or not instance.resource_key:
+        return None
+
+    lease = await lease_service.try_acquire_lease(
+        db,
+        resource_key=instance.resource_key,
+        run_id=run_id,
+        node_id=node_id,
+        step_id=step_id,
+    )
+    if not lease:
+        raise RuntimeError(f"Resource busy for agent '{instance.agent_id}' ({instance.resource_key})")
+
+    return lease.lease_id
+
+
+async def _release_lease(db, lease_id: str) -> None:
+    from app.services import lease_service
+
+    await lease_service.release_lease(db, lease_id)
+
+
+async def _invoke_with_optional_checkpointer(graph, initial_state: OrchestratorState, thread_id: str):
+    runnable_config = {"configurable": {"thread_id": thread_id}}
+    checkpointer_url = settings.CHECKPOINTER_URL
+
+    if checkpointer_url:
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            async with AsyncSqliteSaver.from_conn_string(checkpointer_url) as checkpointer:
+                compiled = graph.compile(checkpointer=checkpointer)
+                return await compiled.ainvoke(initial_state, config=runnable_config)
+        except Exception:
+            logger.exception("Failed to initialize subflow checkpointer; running without checkpoint")
+
+    compiled = graph.compile()
+    return await compiled.ainvoke(initial_state, config=runnable_config)

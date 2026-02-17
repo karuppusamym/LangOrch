@@ -1,0 +1,403 @@
+
+{
+  "$schema_name": "CKP Syntax Reference (informal)",
+  "$schema_version": "2026-02-09",
+  "$min_orchestrator_version": "1.0.0",
+  "$notes": [
+    "This file is a human-friendly syntax/shape reference for CKP JSON files.",
+    "It is intentionally valid JSON (no comments). Treat string values like 'one_of:...' as guidance.",
+    "Variable templating uses {{var_name}} placeholders inside strings.",
+    "Keep node ids unique. Graph edges are represented by next_node / default_next_node / body_node / branches / start_node.",
+    "Examples in this workspace: ckp_orc_desktop_sql_excel_db_smart.json",
+    "Supports multi-agent orchestration: WEB, DESKTOP, LLM, EMAIL, API, DATABASE, and future extensibility.",
+    "Production-ready with checkpoints, human-in-the-loop, telemetry, and audit trails."
+  ],{
+  "root": {
+    "procedure_id": "string (unique)",
+    "version": "string (semver)",
+    "status": "one_of: active|draft|approved|inactive",
+    "effective_date": "string (YYYY-MM-DD)",
+    "description": "string",
+    "trigger": {
+      "type": "one_of: manual|scheduled|webhook|event|file_watch",
+      "schedule": "string (cron expression, optional)",
+      "webhook_config": {
+        "endpoint": "string (optional)",
+        "authentication": "object (optional)",
+        "allowed_sources": "string[] (IP whitelist, optional)"
+      },
+      "event_config": {
+        "event_source": "string (optional)",
+        "event_filter": "object (optional)",
+        "event_type": "string[] (optional)"
+      },
+      "file_watch_config": {
+        "path": "string (optional)",
+        "pattern": "string (glob pattern, optional)",
+        "event_types": "string[] (created|modified|deleted, optional)"
+      }
+    },
+    "retrieval_metadata": {
+      "primary_intents": "string[]",
+      "negative_intents": "string[]",
+      "business_domain": "one_of: finance|hr|it|ops",
+      "applicability": {
+        "application_names": "string[]",
+        "account_types": "string[]",
+        "channel": "string[] (e.g., web|desktop|api|mainframe)"
+      },
+      "keywords": "string[]"
+    },
+    "global_config": {
+      "screenshot_on_fail": "boolean",
+      "max_retries": "number",
+      "retry_delay_ms": "number (optional)",
+      "timeout_ms": "number",
+      "on_failure": "string (node_id; optional)",
+      "logging_level": "one_of: DEBUG|INFO|WARNING|ERROR (optional)",
+      "telemetry_enabled": "boolean (optional)",
+      "checkpoint_strategy": "one_of: every_node|critical_nodes_only|disabled (optional)",
+      "checkpoint_storage": "one_of: local|database|cloud (optional)",
+      "resume_on_failure": "boolean (optional)",
+      "checkpoint_retention_days": "number (optional)",
+      "execution_mode": "one_of: production|dry_run|validation_only (optional)",
+      "mock_external_calls": "boolean (optional)",
+      "test_data_overrides": "object (optional)",
+      "rate_limiting": {
+        "enabled": "boolean (optional)",
+        "max_requests_per_minute": "number (optional)",
+        "max_concurrent_operations": "number (optional)"
+      },
+      "secrets_config": {
+        "provider": "one_of: azure_keyvault|aws_secrets|hashicorp_vault|env_vars (optional)",
+        "vault_url": "string (optional)",
+        "secret_references": "object (optional)"
+      },
+      "audit_config": {
+        "enabled": "boolean (optional)",
+        "audit_level": "one_of: minimal|standard|detailed (optional)",
+        "storage_location": "string (optional)",
+        "retention_days": "number (optional)",
+        "include_sensitive_data": "boolean (optional)"
+      }
+    },{
+    "variables_schema": {
+      "required": {
+        "<var_name>": {
+          "type": "one_of: string|number|boolean|array|object",
+          "description": "string",
+          "origin": "one_of: user_strict",
+          "default": "any (optional)",
+          "validation": {
+            "regex": "string (optional)",
+            "max": "number (optional)",
+            "allowed_values": "any[] (optional)",
+            "sensitive": "boolean (optional)"
+          }
+        }
+      },
+      "optional": {
+        "<var_name>": {
+          "type": "one_of: string|number|boolean|array|object",
+          "origin": "one_of: user_lazy|system_captured",
+          "description": "string"
+        }
+      }
+    },
+    "workflow_graph": {
+      "start_node": "string (node_id)",
+      "nodes": "{ [node_id]: node_definition }"
+    },
+    "provenance": {
+      "compiled_on": "string (ISO timestamp)",
+      "compiler_agent_version": "string",
+      "human_reviewer": "string (optional)",
+      "sources": [
+        {
+          "doc_id": "string",
+          "version": "string",
+          "section_ref": "string (optional)"
+        }
+      ]
+    }
+  },
+  "node_definition": {
+    "agent": "one_of: MasterAgent|WEB|DESKTOP|LLMAgent|EMAIL|API|DATABASE (optional for terminate)",
+    "type": "one_of: sequence|logic|loop|parallel|processing|verification|llm_action|terminate|sop|subflow|human_approval|transform",
+    "description": "string (recommended)",
+    "inputs": "object (optional; values may include {{vars}})",
+    "outputs": "object (optional; see output_mapping)",
+    "next_node": "string|null (node_id)",
+    "is_checkpoint": "boolean (optional; mark this node as checkpoint for resume)",
+    "sla": {
+      "max_duration_ms": "number (optional)",
+      "on_breach": "one_of: warn|fail|escalate (optional)",
+      "escalation_handler": "string (node_id, optional)"
+    },
+    "telemetry": {
+      "track_duration": "boolean (optional)",
+      "track_retries": "boolean (optional)",
+      "custom_metrics": "object (optional)",
+      "trace_id": "string (optional, for distributed tracing)",
+      "span_id": "string (optional)"
+    },
+    "idempotency_key": "string (optional; ensure safe retries)",{
+    "sequence": {
+      "steps": "step[]",
+      "validations": "validation_check[] (optional)",
+      "error_handlers": "error_handler[] (optional)"
+    },
+    "logic": {
+      "rules": [
+        {
+          "condition": "string (expression)",
+          "next_node": "string (node_id)"
+        }
+      ],
+      "default_next_node": "string (node_id)"
+    },
+    "loop": {
+      "iterator": "string (state var name referencing an array)",
+      "iterator_variable": "string (e.g., current_record)",
+      "index_variable": "string (optional)",
+      "body_node": "string (node_id)",
+      "collect_variable": "string (optional)",
+      "max_iterations": "number (optional)",
+      "continue_on_error": "boolean (optional)",
+      "next_node": "string (node_id)"
+    },
+    "parallel": {
+      "branches": [
+        {
+          "branch_id": "string",
+          "start_node": "string (node_id)"
+        }
+      ],
+      "wait_strategy": "one_of: all|any|first (optional)",
+      "branch_failure": "one_of: continue|stop|retry (optional)",
+      "next_node": "string (node_id)"
+    },
+    "processing": {
+      "operations": "operation[]",
+      "next_node": "string (node_id)"
+    },
+    "verification": {
+      "checks": "verification_check[]",
+      "next_node": "string (node_id)"
+    },
+    "llm_action": {
+      "prompt": "string (can include {{vars}})",
+      "model": "string (e.g., gpt-4)",
+      "temperature": "number (optional)",
+      "max_tokens": "number (optional)",
+      "attachments": "llm_attachment[] (optional)",
+      "retry": {
+        "max_retries": "number (optional)",
+        "delay_ms": "number (optional)"
+      },
+      "outputs": "object (optional; see output_mapping)",
+      "next_node": "string (node_id)"
+    },
+    "terminate": {
+      "status": "one_of: success|failed",
+      "cleanup_actions": "operation[] (optional)",
+      "error_actions": "operation[] (optional)",
+      "outputs": "object (optional)",
+      "final_audit_log": "object (optional)"
+    },
+    "human_approval": {
+      "prompt": "string (message to human reviewer)",
+      "decision_type": "one_of: approve_reject|select_option|provide_input",
+      "options": "string[] (optional, for select_option)",
+      "timeout_ms": "number (optional)",
+      "timeout_action": "one_of: auto_approve|auto_reject|escalate (optional)",
+      "escalation_contact": "string (optional)",
+      "context_data": "object (optional; data to show reviewer)",
+      "approval_level": "one_of: standard|manager|executive (optional)",
+      "on_approve": "string (node_id)",
+      "on_reject": "string (node_id)",
+      "on_timeout": "string (node_id, optional)"
+    },
+    "transform": {
+      "transformations": [
+        {
+          "type": "one_of: filter|map|reduce|join|aggregate|pivot|sort|deduplicate",
+          "source_variable": "string",
+          "expression": "string (JSONPath/JMESPath/custom expression)",
+          "output_variable": "string",
+          "params": "object (optional, type-specific parameters)"
+        }
+      ],
+      "next_node": "string (node_id)"
+    },
+    "subflow": {
+      "procedure_id": "string (reference to another CKP file)",
+      "version": "string (optional, defaults to latest)",
+      "input_mapping": "object (map parent vars to child vars)",
+      "output_mapping": "object (map child outputs back to parent state)",
+      "on_failure": "one_of: fail_parent|continue|retry (optional)",
+      "inherit_context": "boolean (optional, share parent context)",
+      "next_node": "string (node_id)"
+    }
+  },{
+  "step": {
+    "step_id": "string (recommended)",
+    "action": "string (see action_catalog)",
+    "target": "string (selector or locator; optional per action)",
+    "value": "any (optional; often string with {{vars}})",
+    "wait_ms": "number (optional)",
+    "duration_ms": "number (optional)",
+    "timeout_ms": "number (optional)",
+    "wait_after_ms": "number (optional)",
+    "title": "string (optional; for window/dialog waits)",
+    "text": "string (optional; for navigator text)",
+    "keys": "string[] (optional; for press_keys)",
+    "cell": "string (optional; for click_cell)",
+    "file_path": "string (optional; for file operations)",
+    "sheet_name": "string (optional; for excel operations)",
+    "output_variable": "string (optional; where step stores a result)",
+    "connection_string": "string (optional; for database operations)",
+    "query": "string (optional; for database operations)",
+    "parameters": "object (optional; query parameters)",
+    "headers": "object (optional; for API operations)",
+    "method": "string (optional; HTTP method for API)",
+    "url": "string (optional; for API/web operations)",
+    "body": "any (optional; request body for API)",
+    "retry_on_failure": "boolean (optional)",
+    "screenshot_on_complete": "boolean (optional)"
+  },{
+  "action_catalog": {
+    "generic": ["wait", "screenshot", "log", "set_checkpoint", "restore_checkpoint"],
+    "desktop": [
+      "launch_app",
+      "activate_window",
+      "wait_for_window",
+      "wait_for_dialog",
+      "click",
+      "type",
+      "press_key",
+      "press_keys",
+      "copy_to_clipboard",
+      "paste_from_clipboard",
+      "select_all_results",
+      "click_cell",
+      "read_excel_file",
+      "close_window",
+      "maximize_window",
+      "minimize_window"
+    ],
+    "web": [
+      "navigate",
+      "wait_for_element",
+      "click",
+      "type",
+      "clear",
+      "extract_table_data",
+      "wait_for_text",
+      "scroll_to_element",
+      "take_screenshot",
+      "execute_javascript",
+      "switch_frame",
+      "switch_window",
+      "upload_file",
+      "download_file"
+    ],
+    "email": ["compose_email", "send_email", "read_email", "search_email", "download_attachment"],
+    "api": ["http_request", "graphql_query", "soap_request", "websocket_connect"],
+    "database": [
+      "execute_query",
+      "execute_procedure",
+      "bulk_insert",
+      "bulk_update",
+      "transaction_begin",
+      "transaction_commit",
+      "transaction_rollback",
+      "backup_data",
+      "restore_data"
+    ],
+    "file": [
+      "read_file",
+      "write_file",
+      "delete_file",
+      "move_file",
+      "copy_file",
+      "list_directory",
+      "create_directory",
+      "zip_files",
+      "unzip_files"
+    ]
+  },{
+  "operation": {
+    "action": "one_of: set_variable|append_to_array|parse_excel_data|parse_json|parse_xml|parse_csv|calculate|format_string|extract_regex|notify|log|encrypt|decrypt|hash|validate_schema|convert_type",
+    "variable": "string (for set_variable)",
+    "value": "any (for set_variable/append_to_array)",
+    "array": "string (for append_to_array)",
+    "expression": "string (for calculate)",
+    "source": "string (often {{var}})",
+    "pattern": "string (for extract_regex)",
+    "output_variable": "string (where to store result)",
+    "channel": "string (for notify)",
+    "recipients": "string[]|{{var}} (for notify)",
+    "subject": "string (optional)",
+    "message": "string (optional)",
+    "level": "one_of: DEBUG|INFO|WARNING|ERROR (for log)",
+    "schema": "object (for validate_schema)",
+    "algorithm": "string (for encrypt/decrypt/hash)",
+    "key_reference": "string (secret key reference)",
+    "target_type": "string (for convert_type)"
+  },{
+  "output_mapping": {
+    "$notes": [
+      "Outputs map a key into state based on a capture/mapping expression.",
+      "Common patterns in this workspace include literal tags like 'llm_response' and extractors like 'json_extract: field'."
+    ],
+    "examples": {
+      "llm_raw": "llm_response",
+      "field_from_llm_json": "json_extract: confidence",
+      "regex_capture": "regex: Result ID: (\\d+)",
+      "xpath_capture": "xpath://div[@id='result']"
+    }
+  },
+  "validation_check": {
+    "id": "string",
+    "check": "one_of: screen_text_contains|element_exists|value_in_range|custom",
+    "expected_values": "any[] (optional)",
+    "condition": "string (optional)",
+    "on_failure": "one_of: throw_exception|retry_node|fail_workflow",
+    "message": "string (optional)"
+  },
+  "error_handler": {
+    "error_type": "string (e.g., ElementNotFoundException, TimeoutException)",
+    "action": "one_of: retry|screenshot_and_fail|fail|ignore|escalate",
+    "max_retries": "number (optional)",
+    "delay_ms": "number (optional)",
+    "retry_policy": {
+      "strategy": "one_of: fixed|exponential_backoff|fibonacci|linear (optional)",
+      "base_delay_ms": "number (optional)",
+      "max_delay_ms": "number (optional)",
+      "multiplier": "number (optional, for exponential)",
+      "jitter": "boolean (optional, add randomness to avoid thundering herd)"
+    },
+    "trigger": {
+      "error_text_contains": "string (optional)",
+      "error_code": "string|number (optional)",
+      "http_status_codes": "number[] (optional)"
+    },
+    "recovery_strategy": "one_of: retry_node|continue|stop|fallback_node (optional)",
+    "recovery_steps": "step[] (optional)",
+    "fallback_node": "string (node_id, optional)",
+    "notify_on_error": "boolean (optional)",
+    "error_metadata": "object (optional, additional context)"
+  },{
+  "verification_check": {
+    "id": "string",
+    "condition": "string (expression)",
+    "on_fail": "one_of: fail_workflow|warn|continue",
+    "message": "string"
+  },
+  "llm_attachment": {
+    "type": "one_of: image|csv|text|json",
+    "source": "string (file path or {{var}})",
+    "description": "string (optional)"
+  }
+}

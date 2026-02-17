@@ -1,0 +1,708 @@
+{
+  "procedure_id": "invoice_processing_web_desktop_email",
+  "version": "1.2.0",
+  "status": "active",
+  "effective_date": "2026-02-09",
+  "description": "Multi-agent workflow: Download invoices from email, validate in web portal, process in desktop ERP, send confirmation",
+  "trigger": {
+    "type": "scheduled",
+    "schedule": "0 9 * * 1-5",
+    "event_config": {
+      "event_source": "email_inbox",
+      "event_filter": {
+        "subject_contains": "Invoice",
+        "has_attachments": true
+      }
+    }
+  },
+  "retrieval_metadata": {
+    "primary_intents": [
+      "process invoices",
+      "automate invoice workflow",
+      "validate vendor invoices"
+    ],
+    "negative_intents": [
+      "create invoice",
+      "delete invoice"
+    ],
+    "business_domain": "finance",
+    "applicability": {
+      "application_names": ["Outlook", "SAP ERP", "Vendor Portal"],
+      "account_types": ["accounts_payable", "finance_team"],
+      "channel": ["desktop", "web", "email"]
+    },
+    "keywords": ["invoice", "accounts payable", "vendor", "payment", "approval"]
+  },
+  "global_config": {
+    "screenshot_on_fail": true,
+    "max_retries": 3,
+    "retry_delay_ms": 2000,
+    "timeout_ms": 300000,
+    "on_failure": "error_notification_node",
+    "logging_level": "INFO",
+    "telemetry_enabled": true,
+    "checkpoint_strategy": "critical_nodes_only",
+    "checkpoint_storage": "database",
+    "resume_on_failure": true,
+    "checkpoint_retention_days": 30,
+    "execution_mode": "production",
+    "rate_limiting": {
+      "enabled": true,
+      "max_requests_per_minute": 60,
+      "max_concurrent_operations": 5
+    },
+    "secrets_config": {
+      "provider": "azure_keyvault",
+      "vault_url": "https://mycompany-vault.vault.azure.net",
+      "secret_references": {
+        "email_password": "email-automation-pwd",
+        "erp_api_key": "sap-erp-api-key",
+        "portal_credentials": "vendor-portal-creds"
+      }
+    },
+    "audit_config": {
+      "enabled": true,
+      "audit_level": "detailed",
+      "storage_location": "audit_logs/invoice_processing",
+      "retention_days": 365,
+      "include_sensitive_data": false
+    }
+  },
+  "variables_schema": {
+    "required": {
+      "execution_date": {
+        "type": "string",
+        "description": "Date of workflow execution",
+        "origin": "user_strict",
+        "default": "{{today}}"
+      },
+      "email_inbox": {
+        "type": "string",
+        "description": "Email address to monitor",
+        "origin": "user_strict",
+        "default": "ap@company.com"
+      }
+    },
+    "optional": {
+      "invoice_list": {
+        "type": "array",
+        "origin": "system_captured",
+        "description": "List of invoices to process"
+      },
+      "current_invoice": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Currently processing invoice data"
+      },
+      "validation_result": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Portal validation results"
+      },
+      "approval_status": {
+        "type": "string",
+        "origin": "system_captured",
+        "description": "Human approval decision"
+      },
+      "erp_transaction_id": {
+        "type": "string",
+        "origin": "system_captured",
+        "description": "ERP system transaction identifier"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "init_workflow",
+    "nodes": {
+      "init_workflow": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Initialize workflow and log start",
+        "is_checkpoint": true,
+        "steps": [
+          {
+            "step_id": "log_start",
+            "action": "log",
+            "value": "Starting invoice processing workflow for {{execution_date}}",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "screenshot_desktop",
+            "action": "screenshot",
+            "output_variable": "initial_state"
+          }
+        ],
+        "next_node": "fetch_emails"
+      },
+      "fetch_emails": {
+        "agent": "EMAIL",
+        "type": "sequence",
+        "description": "Fetch unread invoices from email inbox",
+        "telemetry": {
+          "track_duration": true,
+          "custom_metrics": {
+            "metric_type": "email_fetch"
+          }
+        },
+        "steps": [
+          {
+            "step_id": "search_invoices",
+            "action": "search_email",
+            "target": "{{email_inbox}}",
+            "value": {
+              "subject": "Invoice",
+              "unread": true,
+              "has_attachments": true,
+              "from_date": "{{execution_date}}"
+            },
+            "output_variable": "email_results",
+            "timeout_ms": 30000
+          },
+          {
+            "step_id": "download_attachments",
+            "action": "download_attachment",
+            "target": "{{email_results}}",
+            "file_path": "C:\\Temp\\Invoices\\{{execution_date}}",
+            "output_variable": "downloaded_files"
+          }
+        ],
+        "validations": [
+          {
+            "id": "check_emails_found",
+            "check": "custom",
+            "condition": "{{email_results.length}} > 0",
+            "on_failure": "fail_workflow",
+            "message": "No invoice emails found for processing"
+          }
+        ],
+        "error_handlers": [
+          {
+            "error_type": "EmailConnectionException",
+            "action": "retry",
+            "max_retries": 3,
+            "retry_policy": {
+              "strategy": "exponential_backoff",
+              "base_delay_ms": 5000,
+              "max_delay_ms": 30000,
+              "jitter": true
+            }
+          }
+        ],
+        "next_node": "parse_invoice_data"
+      },
+      "parse_invoice_data": {
+        "agent": "MasterAgent",
+        "type": "processing",
+        "description": "Extract invoice data from downloaded files",
+        "operations": [
+          {
+            "action": "parse_excel_data",
+            "source": "{{downloaded_files}}",
+            "output_variable": "invoice_list"
+          },
+          {
+            "action": "log",
+            "message": "Parsed {{invoice_list.length}} invoices",
+            "level": "INFO"
+          }
+        ],
+        "next_node": "validate_invoice_count"
+      },
+      "validate_invoice_count": {
+        "agent": "MasterAgent",
+        "type": "logic",
+        "description": "Check if invoices require approval",
+        "rules": [
+          {
+            "condition": "{{invoice_list.length}} > 10",
+            "next_node": "request_human_approval"
+          },
+          {
+            "condition": "{{invoice_list.length}} > 0",
+            "next_node": "loop_invoices"
+          }
+        ],
+        "default_next_node": "no_invoices_node"
+      },
+      "request_human_approval": {
+        "agent": "MasterAgent",
+        "type": "human_approval",
+        "description": "Request manager approval for batch processing",
+        "prompt": "Found {{invoice_list.length}} invoices to process. Proceed with batch?",
+        "decision_type": "approve_reject",
+        "timeout_ms": 3600000,
+        "timeout_action": "escalate",
+        "escalation_contact": "finance.manager@company.com",
+        "context_data": {
+          "invoice_count": "{{invoice_list.length}}",
+          "total_amount": "{{invoice_list.sum(amount)}}",
+          "execution_date": "{{execution_date}}"
+        },
+        "approval_level": "manager",
+        "on_approve": "loop_invoices",
+        "on_reject": "notify_rejection",
+        "on_timeout": "escalate_to_executive"
+      },
+      "loop_invoices": {
+        "agent": "MasterAgent",
+        "type": "loop",
+        "description": "Process each invoice sequentially",
+        "iterator": "invoice_list",
+        "iterator_variable": "current_invoice",
+        "index_variable": "invoice_index",
+        "body_node": "validate_in_portal",
+        "collect_variable": "processing_results",
+        "max_iterations": 100,
+        "continue_on_error": true,
+        "is_checkpoint": true,
+        "next_node": "generate_summary_report"
+      },
+      "validate_in_portal": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Validate invoice in vendor portal",
+        "sla": {
+          "max_duration_ms": 60000,
+          "on_breach": "warn"
+        },
+        "steps": [
+          {
+            "step_id": "open_portal",
+            "action": "navigate",
+            "url": "https://vendor.portal.com/invoices",
+            "timeout_ms": 15000
+          },
+          {
+            "step_id": "login_portal",
+            "action": "type",
+            "target": "#username",
+            "value": "{{secrets.portal_credentials.username}}",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "enter_password",
+            "action": "type",
+            "target": "#password",
+            "value": "{{secrets.portal_credentials.password}}",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "click_login",
+            "action": "click",
+            "target": "button[type='submit']",
+            "wait_after_ms": 2000
+          },
+          {
+            "step_id": "wait_dashboard",
+            "action": "wait_for_element",
+            "target": "#dashboard",
+            "timeout_ms": 10000
+          },
+          {
+            "step_id": "search_invoice",
+            "action": "type",
+            "target": "#invoice-search",
+            "value": "{{current_invoice.invoice_number}}",
+            "wait_after_ms": 1000
+          },
+          {
+            "step_id": "click_search",
+            "action": "click",
+            "target": "#search-btn",
+            "wait_after_ms": 2000
+          },
+          {
+            "step_id": "extract_validation_data",
+            "action": "extract_table_data",
+            "target": "#invoice-details-table",
+            "output_variable": "validation_result",
+            "timeout_ms": 5000
+          },
+          {
+            "step_id": "screenshot_validation",
+            "action": "take_screenshot",
+            "output_variable": "portal_screenshot"
+          }
+        ],
+        "error_handlers": [
+          {
+            "error_type": "ElementNotFoundException",
+            "action": "screenshot_and_fail",
+            "notify_on_error": true
+          },
+          {
+            "error_type": "TimeoutException",
+            "action": "retry",
+            "max_retries": 2,
+            "delay_ms": 3000
+          }
+        ],
+        "next_node": "check_validation_result"
+      },
+      "check_validation_result": {
+        "agent": "MasterAgent",
+        "type": "verification",
+        "description": "Verify portal validation passed",
+        "checks": [
+          {
+            "id": "vendor_exists",
+            "condition": "{{validation_result.vendor_status}} == 'Active'",
+            "on_fail": "fail_workflow",
+            "message": "Vendor is not active in portal"
+          },
+          {
+            "id": "amounts_match",
+            "condition": "{{validation_result.amount}} == {{current_invoice.amount}}",
+            "on_fail": "warn",
+            "message": "Invoice amount mismatch between email and portal"
+          }
+        ],
+        "next_node": "enrich_with_llm"
+      },
+      "enrich_with_llm": {
+        "agent": "LLMAgent",
+        "type": "llm_action",
+        "description": "Use LLM to extract additional invoice metadata",
+        "prompt": "Analyze this invoice and extract: vendor name, invoice date, due date, line items, tax amount. Invoice data: {{current_invoice}}",
+        "model": "gpt-4",
+        "temperature": 0.1,
+        "max_tokens": 1000,
+        "attachments": [
+          {
+            "type": "image",
+            "source": "{{portal_screenshot}}",
+            "description": "Portal validation screenshot"
+          }
+        ],
+        "retry": {
+          "max_retries": 2,
+          "delay_ms": 1000
+        },
+        "outputs": {
+          "extracted_metadata": "json_extract: metadata",
+          "confidence_score": "json_extract: confidence"
+        },
+        "next_node": "process_in_erp"
+      },
+      "process_in_erp": {
+        "agent": "DESKTOP",
+        "type": "sequence",
+        "description": "Enter invoice into SAP ERP system",
+        "is_checkpoint": true,
+        "steps": [
+          {
+            "step_id": "launch_sap",
+            "action": "launch_app",
+            "value": "C:\\Program Files\\SAP\\FrontEnd\\SAPgui\\saplogon.exe",
+            "wait_after_ms": 5000
+          },
+          {
+            "step_id": "wait_sap_window",
+            "action": "wait_for_window",
+            "title": "SAP Logon",
+            "timeout_ms": 30000
+          },
+          {
+            "step_id": "activate_sap",
+            "action": "activate_window",
+            "title": "SAP Logon",
+            "wait_after_ms": 1000
+          },
+          {
+            "step_id": "open_transaction",
+            "action": "type",
+            "value": "FB60",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "press_enter",
+            "action": "press_key",
+            "keys": ["Enter"],
+            "wait_after_ms": 2000
+          },
+          {
+            "step_id": "wait_invoice_screen",
+            "action": "wait_for_dialog",
+            "title": "Enter Incoming Invoice",
+            "timeout_ms": 15000
+          },
+          {
+            "step_id": "enter_vendor",
+            "action": "type",
+            "value": "{{extracted_metadata.vendor_code}}",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "tab_to_date",
+            "action": "press_key",
+            "keys": ["Tab"],
+            "wait_after_ms": 200
+          },
+          {
+            "step_id": "enter_invoice_date",
+            "action": "type",
+            "value": "{{extracted_metadata.invoice_date}}",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "enter_amount",
+            "action": "type",
+            "value": "{{current_invoice.amount}}",
+            "wait_after_ms": 500
+          },
+          {
+            "step_id": "save_transaction",
+            "action": "press_keys",
+            "keys": ["Ctrl", "S"],
+            "wait_after_ms": 3000
+          },
+          {
+            "step_id": "copy_doc_number",
+            "action": "copy_to_clipboard",
+            "output_variable": "erp_transaction_id"
+          },
+          {
+            "step_id": "screenshot_erp",
+            "action": "screenshot",
+            "output_variable": "erp_confirmation_screenshot"
+          }
+        ],
+        "error_handlers": [
+          {
+            "error_type": "WindowNotFoundException",
+            "action": "retry",
+            "max_retries": 2,
+            "recovery_steps": [
+              {
+                "step_id": "close_all_sap",
+                "action": "press_keys",
+                "keys": ["Alt", "F4"]
+              }
+            ]
+          }
+        ],
+        "next_node": "update_database"
+      },
+      "update_database": {
+        "agent": "DATABASE",
+        "type": "sequence",
+        "description": "Log processing result to tracking database",
+        "steps": [
+          {
+            "step_id": "insert_audit_record",
+            "action": "execute_query",
+            "connection_string": "{{secrets.db_connection}}",
+            "query": "INSERT INTO invoice_processing_log (invoice_number, vendor, amount, erp_transaction_id, processed_date, status) VALUES (@invoice_number, @vendor, @amount, @erp_id, @date, @status)",
+            "parameters": {
+              "invoice_number": "{{current_invoice.invoice_number}}",
+              "vendor": "{{extracted_metadata.vendor_name}}",
+              "amount": "{{current_invoice.amount}}",
+              "erp_id": "{{erp_transaction_id}}",
+              "date": "{{execution_date}}",
+              "status": "completed"
+            },
+            "timeout_ms": 5000
+          }
+        ],
+        "error_handlers": [
+          {
+            "error_type": "DatabaseConnectionException",
+            "action": "retry",
+            "retry_policy": {
+              "strategy": "exponential_backoff",
+              "base_delay_ms": 1000,
+              "max_delay_ms": 10000
+            }
+          }
+        ],
+        "next_node": "send_confirmation_email"
+      },
+      "send_confirmation_email": {
+        "agent": "EMAIL",
+        "type": "sequence",
+        "description": "Send confirmation email to stakeholders",
+        "steps": [
+          {
+            "step_id": "compose_email",
+            "action": "compose_email",
+            "recipients": ["ap.team@company.com", "{{current_invoice.requester_email}}"],
+            "subject": "Invoice {{current_invoice.invoice_number}} Processed Successfully",
+            "body": "Invoice {{current_invoice.invoice_number}} from {{extracted_metadata.vendor_name}} has been processed.\n\nAmount: ${{current_invoice.amount}}\nERP Transaction ID: {{erp_transaction_id}}\nProcessed Date: {{execution_date}}\n\nPortal Validation: Passed\nConfidence Score: {{confidence_score}}%",
+            "output_variable": "email_draft"
+          },
+          {
+            "step_id": "send_email",
+            "action": "send_email",
+            "value": "{{email_draft}}",
+            "wait_after_ms": 1000
+          }
+        ],
+        "next_node": null
+      },
+      "generate_summary_report": {
+        "agent": "MasterAgent",
+        "type": "transform",
+        "description": "Generate processing summary statistics",
+        "transformations": [
+          {
+            "type": "aggregate",
+            "source_variable": "processing_results",
+            "expression": "count, sum(amount), avg(confidence_score)",
+            "output_variable": "summary_stats"
+          },
+          {
+            "type": "filter",
+            "source_variable": "processing_results",
+            "expression": "status == 'failed'",
+            "output_variable": "failed_invoices"
+          }
+        ],
+        "next_node": "send_summary_email"
+      },
+      "send_summary_email": {
+        "agent": "EMAIL",
+        "type": "sequence",
+        "description": "Send daily summary report",
+        "steps": [
+          {
+            "step_id": "compose_summary",
+            "action": "compose_email",
+            "recipients": ["finance.manager@company.com", "ap.team@company.com"],
+            "subject": "Daily Invoice Processing Summary - {{execution_date}}",
+            "body": "Daily Invoice Processing Report\n\nTotal Processed: {{summary_stats.count}}\nTotal Amount: ${{summary_stats.sum_amount}}\nAverage Confidence: {{summary_stats.avg_confidence}}%\nFailed: {{failed_invoices.length}}\n\nWorkflow completed successfully.",
+            "output_variable": "summary_email"
+          },
+          {
+            "step_id": "send_summary",
+            "action": "send_email",
+            "value": "{{summary_email}}"
+          }
+        ],
+        "next_node": "workflow_complete"
+      },
+      "no_invoices_node": {
+        "agent": "MasterAgent",
+        "type": "processing",
+        "description": "Handle case when no invoices found",
+        "operations": [
+          {
+            "action": "log",
+            "message": "No invoices to process for {{execution_date}}",
+            "level": "INFO"
+          },
+          {
+            "action": "notify",
+            "channel": "email",
+            "recipients": ["ap.team@company.com"],
+            "subject": "No Invoices to Process",
+            "message": "No new invoices found for processing on {{execution_date}}"
+          }
+        ],
+        "next_node": "workflow_complete"
+      },
+      "notify_rejection": {
+        "agent": "EMAIL",
+        "type": "sequence",
+        "description": "Notify team of approval rejection",
+        "steps": [
+          {
+            "step_id": "send_rejection_notice",
+            "action": "send_email",
+            "recipients": ["ap.team@company.com"],
+            "subject": "Invoice Batch Processing Rejected",
+            "body": "Manager rejected batch processing for {{invoice_list.length}} invoices on {{execution_date}}. Manual review required."
+          }
+        ],
+        "next_node": "workflow_complete"
+      },
+      "escalate_to_executive": {
+        "agent": "MasterAgent",
+        "type": "human_approval",
+        "description": "Escalate to executive for approval",
+        "prompt": "Manager timeout - Executive approval needed for {{invoice_list.length}} invoices totaling ${{invoice_list.sum(amount)}}",
+        "decision_type": "approve_reject",
+        "timeout_ms": 7200000,
+        "timeout_action": "auto_reject",
+        "approval_level": "executive",
+        "on_approve": "loop_invoices",
+        "on_reject": "notify_rejection",
+        "on_timeout": "notify_rejection"
+      },
+      "error_notification_node": {
+        "agent": "EMAIL",
+        "type": "sequence",
+        "description": "Send error notification",
+        "steps": [
+          {
+            "step_id": "send_error_email",
+            "action": "send_email",
+            "recipients": ["it.support@company.com", "ap.team@company.com"],
+            "subject": "Invoice Processing Workflow Failed - {{execution_date}}",
+            "body": "Critical error in invoice processing workflow.\n\nExecution Date: {{execution_date}}\nError Details: {{error.message}}\nFailed Node: {{error.node_id}}\n\nPlease investigate immediately."
+          }
+        ],
+        "next_node": "workflow_failed"
+      },
+      "workflow_complete": {
+        "agent": "MasterAgent",
+        "type": "terminate",
+        "description": "Workflow completed successfully",
+        "status": "success",
+        "cleanup_actions": [
+          {
+            "action": "log",
+            "message": "Invoice processing workflow completed for {{execution_date}}",
+            "level": "INFO"
+          }
+        ],
+        "outputs": {
+          "total_processed": "{{summary_stats.count}}",
+          "total_amount": "{{summary_stats.sum_amount}}",
+          "execution_duration_ms": "{{telemetry.total_duration}}"
+        },
+        "final_audit_log": {
+          "workflow_id": "{{procedure_id}}",
+          "execution_date": "{{execution_date}}",
+          "status": "success"
+        }
+      },
+      "workflow_failed": {
+        "agent": "MasterAgent",
+        "type": "terminate",
+        "description": "Workflow failed with errors",
+        "status": "failed",
+        "error_actions": [
+          {
+            "action": "log",
+            "message": "Invoice processing workflow failed: {{error.message}}",
+            "level": "ERROR"
+          },
+          {
+            "action": "screenshot"
+          }
+        ],
+        "outputs": {
+          "error_details": "{{error}}",
+          "failed_node": "{{error.node_id}}"
+        }
+      }
+    }
+  },
+  "provenance": {
+    "compiled_on": "2026-02-09T10:30:00Z",
+    "compiler_agent_version": "1.2.0",
+    "human_reviewer": "finance.automation.team@company.com",
+    "sources": [
+      {
+        "doc_id": "INVOICE_PROC_SOP_v3.2",
+        "version": "3.2",
+        "section_ref": "Section 4: Automated Processing"
+      },
+      {
+        "doc_id": "SAP_INTEGRATION_GUIDE",
+        "version": "2.1",
+        "section_ref": "FB60 Transaction Automation"
+      }
+    ]
+  }
+}

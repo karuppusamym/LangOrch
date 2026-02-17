@@ -1,0 +1,54 @@
+# ---- OS / Editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# ---- Node / Next ----
+node_modules/
+.next/
+out/
+coverage/
+
+# ---- Environment / Secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Build / Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Local databases / checkpoints / artifacts ----
+*.db
+*.sqlite
+*.sqlite3
+backend/langorch.db
+backend/langgraph_checkpoints.sqlite
+backend/langgraph_checkpoints.sqlite-*
+backend/demo_agents/*.png
+backend/demo_agents/*.jpg
+backend/demo_agents/*.jpeg
+
+# ---- Temporary local scripts ----
+backend/tmp_*.py
+tmp_*.py
+
+# ---- Misc ----
+*.tmp
+*.bak
