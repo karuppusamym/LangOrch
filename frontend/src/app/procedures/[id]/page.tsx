@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { getProcedure, createRun, getGraph, listVersions } from "@/lib/api";
 import type { ProcedureDetail, Procedure } from "@/lib/types";
 
-const WorkflowGraph = lazy(() => import("@/components/WorkflowGraph"));
+const WorkflowGraph = dynamic(
+  () => import("@/components/WorkflowGraphWrapper"),
+  { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading graph...</p> }
+);
 
 export default function ProcedureDetailPage() {
   const params = useParams();
@@ -134,11 +138,7 @@ export default function ProcedureDetailPage() {
       {activeTab === "graph" && (
         <div>
           {graphLoading && <p className="text-sm text-gray-400">Loading graph...</p>}
-          {graphData && (
-            <Suspense fallback={<p className="text-sm text-gray-400">Loading graph...</p>}>
-              <WorkflowGraph graph={graphData} />
-            </Suspense>
-          )}
+          {graphData && <WorkflowGraph graph={graphData} />}
           {!graphLoading && !graphData && (
             <p className="text-sm text-gray-400">No graph data available.</p>
           )}
