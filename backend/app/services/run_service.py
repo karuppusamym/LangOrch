@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Approval, Artifact, ResourceLease, Run, RunEvent, StepIdempotency
+from app.utils.redaction import redact_sensitive_data
 
 
 async def create_run(
@@ -117,13 +118,16 @@ async def emit_event(
     attempt: int | None = None,
     payload: dict[str, Any] | None = None,
 ) -> RunEvent:
+    # Redact sensitive fields before persisting
+    sanitized_payload = redact_sensitive_data(payload) if payload else None
+    
     event = RunEvent(
         run_id=run_id,
         event_type=event_type,
         node_id=node_id,
         step_id=step_id,
         attempt=attempt,
-        payload_json=json.dumps(payload) if payload else None,
+        payload_json=json.dumps(sanitized_payload) if sanitized_payload else None,
     )
     db.add(event)
     await db.flush()
@@ -205,3 +209,75 @@ async def cleanup_runs_before(
     await db.execute(delete(Run).where(Run.run_id.in_(run_ids)))
     await db.flush()
     return len(run_ids)
+
+
+async def get_run_diagnostics(db: AsyncSession, run_id: str) -> dict:
+    """Gather diagnostic information for a run."""
+    run = await db.get(Run, run_id)
+    if not run:
+        return None
+
+    # Check for retry events
+    retry_stmt = (
+        select(RunEvent.event_id)
+        .where(RunEvent.run_id == run_id)
+        .where(RunEvent.event_type == "run_retry_requested")
+        .limit(1)
+    )
+    has_retry = (await db.execute(retry_stmt)).first() is not None
+
+    # Get idempotency entries
+    idem_stmt = select(StepIdempotency).where(StepIdempotency.run_id == run_id)
+    idem_result = await db.execute(idem_stmt)
+    idem_entries = [
+        {
+            "node_id": row.node_id,
+            "step_id": row.step_id,
+            "idempotency_key": row.idempotency_key,
+            "status": row.status,
+            "has_cached_result": row.result_json is not None,
+            "updated_at": row.updated_at,
+        }
+        for row in idem_result.scalars().all()
+    ]
+
+    # Get lease information
+    lease_stmt = select(ResourceLease).where(ResourceLease.run_id == run_id)
+    lease_result = await db.execute(lease_stmt)
+    lease_entries = [
+        {
+            "lease_id": row.lease_id,
+            "resource_key": row.resource_key,
+            "node_id": row.node_id,
+            "step_id": row.step_id,
+            "acquired_at": row.acquired_at,
+            "expires_at": row.expires_at,
+            "released_at": row.released_at,
+            "is_active": row.released_at is None,
+        }
+        for row in lease_result.scalars().all()
+    ]
+
+    # Event counts
+    total_events_stmt = select(RunEvent).where(RunEvent.run_id == run_id)
+    total_events = len((await db.execute(total_events_stmt)).scalars().all())
+
+    error_events_stmt = (
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id)
+        .where(RunEvent.event_type.in_(["error", "run_failed"]))
+    )
+    error_events = len((await db.execute(error_events_stmt)).scalars().all())
+
+    return {
+        "run_id": run.run_id,
+        "thread_id": run.thread_id,
+        "status": run.status,
+        "last_node_id": run.last_node_id,
+        "last_step_id": run.last_step_id,
+        "has_retry_event": has_retry,
+        "idempotency_entries": idem_entries,
+        "active_leases": lease_entries,
+        "total_events": total_events,
+        "error_events": error_events,
+    }

@@ -74,6 +74,15 @@ export async function deleteProcedure(id: string, version: string): Promise<void
   });
 }
 
+export async function getGraph(
+  id: string,
+  version: string
+): Promise<{ nodes: unknown[]; edges: unknown[] }> {
+  return request(
+    `/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/graph`
+  );
+}
+
 /* ── Runs ──────────────────────────────── */
 
 export async function listRuns(params?: {

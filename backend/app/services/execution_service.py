@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -17,6 +18,8 @@ from app.runtime.graph_builder import build_graph
 from app.runtime.state import OrchestratorState
 from app.db.models import RunEvent
 from app.services import approval_service, run_service
+from app.services.secrets_service import get_secrets_manager, configure_secrets_provider, EnvironmentSecretsProvider, VaultSecretsProvider
+from app.utils.metrics import record_run_started, record_run_completed
 
 logger = logging.getLogger("langorch.execution")
 
@@ -89,6 +92,10 @@ async def execute_run(run_id: str, db_factory) -> None:
             # Mark running
             await run_service.update_run_status(db, run_id, "running")
             await db.commit()
+            
+            # Record metrics
+            run_start_time = datetime.now(timezone.utc)
+            record_run_started()
 
             # Load procedure
             from app.services import procedure_service
@@ -119,15 +126,54 @@ async def execute_run(run_id: str, db_factory) -> None:
 
             bind_executors(ir)
 
-            # Phase 2: Build graph — pass db_factory so sequence nodes can
+            # Phase 2: Load secrets from configured provider
+            secrets_dict = {}
+            secrets_config = ir.global_config.get("secrets_config", {})
+            provider_type = secrets_config.get("provider", "env_vars")
+            
+            try:
+                # Configure secrets provider based on CKP config
+                if provider_type == "hashicorp_vault":
+                    vault_url = secrets_config.get("vault_url")
+                    if vault_url:
+                        provider = VaultSecretsProvider(vault_url=vault_url)
+                        configure_secrets_provider(provider)
+                        logger.info("Configured Vault secrets provider: %s", vault_url)
+                elif provider_type in ["azure_keyvault", "aws_secrets"]:
+                    logger.warning("Secrets provider '%s' not yet implemented, falling back to env_vars", provider_type)
+                    # Fallback to environment variables
+                    configure_secrets_provider(EnvironmentSecretsProvider())
+                else:
+                    # Default to environment variables
+                    configure_secrets_provider(EnvironmentSecretsProvider())
+                
+                # Load secrets referenced in CKP
+                secret_references = secrets_config.get("secret_references", {})
+                if secret_references:
+                    secrets_manager = get_secrets_manager()
+                    for secret_key, secret_ref in secret_references.items():
+                        # secret_ref could be a string (key name) or dict with metadata
+                        lookup_key = secret_ref if isinstance(secret_ref, str) else secret_ref.get("key", secret_key)
+                        secret_value = await secrets_manager.get_secret(lookup_key)
+                        if secret_value:
+                            secrets_dict[secret_key] = secret_value
+                            logger.info("Loaded secret: %s", secret_key)
+                        else:
+                            logger.warning("Secret not found: %s", secret_key)
+            
+            except Exception as exc:
+                logger.warning("Failed to load secrets: %s", exc)
+                # Continue execution with empty secrets - let workflow handle missing secrets
+
+            # Phase 3: Build graph — pass db_factory so sequence nodes can
             # resolve executors dynamically from the agent registry at runtime.
             graph = build_graph(ir, db_factory=db_factory, entry_node_id=resume_entry_node)
             
 
-            # Phase 3: Execute
+            # Phase 4: Execute
             initial_state: OrchestratorState = {
                 "vars": {**ir.variables_schema, **input_vars},
-                "secrets": {},
+                "secrets": secrets_dict,
                 "run_id": run_id,
                 "procedure_id": ir.procedure_id,
                 "procedure_version": ir.version,
@@ -165,12 +211,16 @@ async def execute_run(run_id: str, db_factory) -> None:
             terminal = final_state.get("terminal_status", "success")
             error = final_state.get("error")
             awaiting_approval = final_state.get("awaiting_approval")
+            
+            # Calculate run duration
+            run_duration = (datetime.now(timezone.utc) - run_start_time).total_seconds()
 
             if error:
                 await run_service.update_run_status(db, run_id, "failed")
                 await run_service.emit_event(
                     db, run_id, "run_failed", payload={"error": error}
                 )
+                record_run_completed(run_duration, "failed")
             elif terminal == "awaiting_approval" and isinstance(awaiting_approval, dict):
                 # Persist current vars so resume can continue without replaying side effects.
                 run.input_vars_json = json.dumps(final_state.get("vars", {}))
@@ -200,12 +250,14 @@ async def execute_run(run_id: str, db_factory) -> None:
             elif terminal == "failed":
                 await run_service.update_run_status(db, run_id, "failed")
                 await run_service.emit_event(db, run_id, "run_failed")
+                record_run_completed(run_duration, "failed")
             else:
                 await run_service.update_run_status(db, run_id, "completed")
                 await run_service.emit_event(
                     db, run_id, "run_completed",
                     payload={"outputs": final_state.get("vars", {})}
                 )
+                record_run_completed(run_duration, "completed")
 
             await db.commit()
             logger.info("Run %s finished with status: %s", run_id, terminal)

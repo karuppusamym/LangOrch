@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getProcedure, createRun, listVersions } from "@/lib/api";
+import { getProcedure, createRun, getGraph, listVersions } from "@/lib/api";
 import type { ProcedureDetail, Procedure } from "@/lib/types";
+
+const WorkflowGraph = lazy(() => import("@/components/WorkflowGraph"));
 
 export default function ProcedureDetailPage() {
   const params = useParams();
@@ -14,7 +16,9 @@ export default function ProcedureDetailPage() {
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
   const [runStarted, setRunStarted] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "ckp" | "versions">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions">("overview");
+  const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -49,7 +53,21 @@ export default function ProcedureDetailPage() {
   if (!procedure) return <p className="text-red-500">Procedure not found</p>;
 
   const ckp = procedure.ckp_json;
-  const nodes = (ckp as any)?.nodes ?? [];
+  const wfNodes = (ckp as any)?.workflow_graph?.nodes ?? {};
+  const nodeEntries = Object.entries(wfNodes);
+
+  async function loadGraph() {
+    if (graphData || graphLoading || !procedure) return;
+    setGraphLoading(true);
+    try {
+      const data = await getGraph(procedure.procedure_id, procedure.version);
+      setGraphData(data as any);
+    } catch (err) {
+      console.error("Failed to load graph:", err);
+    } finally {
+      setGraphLoading(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -76,17 +94,20 @@ export default function ProcedureDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "ckp", "versions"] as const).map((tab) => (
+        {(["overview", "graph", "ckp", "versions"] as const).map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => {
+              setActiveTab(tab);
+              if (tab === "graph") loadGraph();
+            }}
             className={`px-4 py-2 text-sm font-medium ${
               activeTab === tab
                 ? "border-b-2 border-primary-600 text-primary-600"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            {tab === "ckp" ? "CKP Source" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
         ))}
       </div>
@@ -94,18 +115,33 @@ export default function ProcedureDetailPage() {
       {/* Tab content */}
       {activeTab === "overview" && (
         <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-sm font-semibold text-gray-900">Workflow Nodes ({nodes.length})</h3>
+          <h3 className="mb-4 text-sm font-semibold text-gray-900">Workflow Nodes ({nodeEntries.length})</h3>
           <div className="space-y-3">
-            {nodes.map((node: any, i: number) => (
-              <div key={node.id ?? i} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
+            {nodeEntries.map(([nodeId, node]: [string, any]) => (
+              <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
                 <span className="badge badge-info">{node.type}</span>
                 <div>
-                  <p className="text-sm font-medium">{node.name ?? node.id}</p>
+                  <p className="text-sm font-medium">{nodeId}</p>
                   {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
+                  {node.agent && <p className="text-xs text-gray-400">Agent: {node.agent}</p>}
                 </div>
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {activeTab === "graph" && (
+        <div>
+          {graphLoading && <p className="text-sm text-gray-400">Loading graph...</p>}
+          {graphData && (
+            <Suspense fallback={<p className="text-sm text-gray-400">Loading graph...</p>}>
+              <WorkflowGraph graph={graphData} />
+            </Suspense>
+          )}
+          {!graphLoading && !graphData && (
+            <p className="text-sm text-gray-400">No graph data available.</p>
+          )}
         </div>
       )}
 

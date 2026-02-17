@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_db
 from app.schemas.procedures import ProcedureCreate, ProcedureDetail, ProcedureOut, ProcedureUpdate
 from app.services import procedure_service
+from app.services.graph_service import extract_graph
 
 router = APIRouter()
 
@@ -31,6 +32,17 @@ async def list_procedures(project_id: str | None = None, db: AsyncSession = Depe
 @router.get("/{procedure_id}/versions", response_model=list[ProcedureOut])
 async def list_versions(procedure_id: str, db: AsyncSession = Depends(get_db)):
     return await procedure_service.list_versions(db, procedure_id)
+
+
+@router.get("/{procedure_id}/{version}/graph")
+async def get_procedure_graph(procedure_id: str, version: str, db: AsyncSession = Depends(get_db)):
+    """Return the workflow graph topology (nodes + edges) for visualisation."""
+    proc = await procedure_service.get_procedure(db, procedure_id, version)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+    ckp = json.loads(proc.ckp_json)
+    workflow_graph = ckp.get("workflow_graph", {})
+    return extract_graph(workflow_graph)
 
 
 @router.get("/{procedure_id}/{version}", response_model=ProcedureDetail)

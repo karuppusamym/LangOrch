@@ -8,6 +8,7 @@ Sequence nodes dispatch steps dynamically:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Callable
@@ -35,6 +36,18 @@ from app.runtime.hil import resolve_approval_next_node
 logger = logging.getLogger("langorch.runtime")
 
 
+def _get_retry_config(state: OrchestratorState) -> dict[str, Any]:
+    """Extract retry configuration from state's global config."""
+    proc_id = state.get("procedure_id", "")
+    # In a real system, we'd fetch from procedure metadata
+    # For now, use reasonable defaults that can be overridden
+    return {
+        "max_retries": 3,
+        "retry_delay_ms": 1000,
+        "backoff_multiplier": 2.0,
+    }
+
+
 async def execute_sequence(
     node: IRNode, state: OrchestratorState, db_factory: Callable | None = None
 ) -> OrchestratorState:
@@ -50,6 +63,8 @@ async def execute_sequence(
         dispatch_to_mcp,
     )
     from app.services import run_service
+    from app.utils.redaction import redact_sensitive_data
+    from app.utils.metrics import record_retry_attempt, record_step_execution
 
     payload: IRSequencePayload = node.payload
     vs = dict(state.get("vars", {}))
@@ -57,118 +72,156 @@ async def execute_sequence(
 
     for step in payload.steps:
         rendered_params = render_template_dict(step.params, vs)
-        logger.info("Step %s: action=%s params=%s", step.step_id, step.action, rendered_params)
+        # Redact sensitive fields before logging
+        safe_params = redact_sensitive_data(rendered_params)
+        logger.info("Step %s: action=%s params=%s", step.step_id, step.action, safe_params)
 
-        result: Any = None
-        used_cached_result = False
-
-        if db_factory is not None and run_id:
-            async with db_factory() as db:
-                cached_result = await _get_completed_step_result(db, run_id, node.node_id, step.step_id)
-                if cached_result is not None:
-                    result = cached_result
-                    used_cached_result = True
-                    logger.info(
-                        "Step %s/%s reused cached idempotent result",
-                        node.node_id,
-                        step.step_id,
-                    )
-                else:
-                    await run_service.emit_event(
-                        db,
-                        run_id,
-                        "step_started",
-                        node_id=node.node_id,
-                        step_id=step.step_id,
-                        payload={"action": step.action},
-                    )
-                    await _mark_step_started(
-                        db,
-                        run_id,
-                        node.node_id,
-                        step.step_id,
-                        step.idempotency_key,
-                    )
-                await db.commit()
-
-        if used_cached_result:
-            if step.output_variable and result is not None:
-                vs[step.output_variable] = result
+        # Retry loop configuration
+        retry_config = _get_retry_config(state)
+        max_retries = retry_config.get("max_retries", 0)
+        attempt = 0
+        
+        while True:
+            result: Any = None
+            used_cached_result = False
 
             if db_factory is not None and run_id:
                 async with db_factory() as db:
-                    await run_service.emit_event(
-                        db,
-                        run_id,
-                        "step_completed",
-                        node_id=node.node_id,
-                        step_id=step.step_id,
-                        payload={
-                            "action": step.action,
-                            "output_variable": step.output_variable,
-                            "cached": True,
-                        },
-                    )
+                    cached_result = await _get_completed_step_result(db, run_id, node.node_id, step.step_id)
+                    if cached_result is not None:
+                        result = cached_result
+                        used_cached_result = True
+                        logger.info(
+                            "Step %s/%s reused cached idempotent result",
+                            node.node_id,
+                            step.step_id,
+                        )
+                    else:
+                        await run_service.emit_event(
+                            db,
+                            run_id,
+                            "step_started",
+                            node_id=node.node_id,
+                            step_id=step.step_id,
+                            payload={"action": step.action},
+                        )
+                        await _mark_step_started(
+                            db,
+                            run_id,
+                            node.node_id,
+                            step.step_id,
+                            step.idempotency_key,
+                        )
                     await db.commit()
-            continue
 
-        try:
-            # Fast path: internal actions
-            if step.executor_binding and step.executor_binding.kind == "internal":
-                result = _execute_internal_action(step.action, rendered_params, vs)
-            elif db_factory is not None:
-                # Dynamic resolution from agent registry
-                async with db_factory() as db:
-                    binding = await resolve_executor(db, node, step)
+            if used_cached_result:
+                if step.output_variable and result is not None:
+                    vs[step.output_variable] = result
 
-                if binding.kind == "internal":
+                if db_factory is not None and run_id:
+                    async with db_factory() as db:
+                        await run_service.emit_event(
+                            db,
+                            run_id,
+                            "step_completed",
+                            node_id=node.node_id,
+                            step_id=step.step_id,
+                            payload={
+                                "action": step.action,
+                                "output_variable": step.output_variable,
+                                "cached": True,
+                            },
+                        )
+                        await db.commit()
+                record_step_execution(node.node_id, "cached")
+                break  # Exit retry loop, continue to next step
+
+            try:
+                # Fast path: internal actions
+                if step.executor_binding and step.executor_binding.kind == "internal":
                     result = _execute_internal_action(step.action, rendered_params, vs)
-                elif binding.kind == "agent_http":
-                    lease_id: str | None = None
-                    if run_id and binding.ref:
-                        async with db_factory() as db:
-                            lease_id = await _acquire_agent_lease(
-                                db,
+                elif db_factory is not None:
+                    # Dynamic resolution from agent registry
+                    async with db_factory() as db:
+                        binding = await resolve_executor(db, node, step)
+
+                    if binding.kind == "internal":
+                        result = _execute_internal_action(step.action, rendered_params, vs)
+                    elif binding.kind == "agent_http":
+                        lease_id: str | None = None
+                        if run_id and binding.ref:
+                            async with db_factory() as db:
+                                lease_id = await _acquire_agent_lease(
+                                    db,
+                                    agent_url=binding.ref,
+                                    run_id=run_id,
+                                    node_id=node.node_id,
+                                    step_id=step.step_id,
+                                )
+                                await db.commit()
+
+                        try:
+                            result = await dispatch_to_agent(
                                 agent_url=binding.ref,
+                                action=step.action,
+                                params=rendered_params,
                                 run_id=run_id,
                                 node_id=node.node_id,
                                 step_id=step.step_id,
                             )
-                            await db.commit()
-
-                    try:
-                        result = await dispatch_to_agent(
-                            agent_url=binding.ref,
-                            action=step.action,
-                            params=rendered_params,
-                            run_id=run_id,
-                            node_id=node.node_id,
-                            step_id=step.step_id,
+                        finally:
+                            if lease_id and db_factory is not None:
+                                async with db_factory() as db:
+                                    await _release_lease(db, lease_id)
+                                    await db.commit()
+                    elif binding.kind == "mcp_tool":
+                        result = await dispatch_to_mcp(
+                            mcp_url=binding.ref,
+                            tool_name=step.action,
+                            arguments=rendered_params,
                         )
-                    finally:
-                        if lease_id and db_factory is not None:
-                            async with db_factory() as db:
-                                await _release_lease(db, lease_id)
-                                await db.commit()
-                elif binding.kind == "mcp_tool":
-                    result = await dispatch_to_mcp(
-                        mcp_url=binding.ref,
-                        tool_name=step.action,
-                        arguments=rendered_params,
-                    )
+                    else:
+                        logger.warning("Unsupported binding kind '%s' for step %s", binding.kind, step.step_id)
+                        result = {"action": step.action, "params": rendered_params}
                 else:
-                    logger.warning("Unsupported binding kind '%s' for step %s", binding.kind, step.step_id)
-                    result = {"action": step.action, "params": rendered_params}
-            else:
-                # No db_factory — fallback to internal handler (dev/test mode)
-                logger.warning("No db_factory available; falling back to internal handler for step %s", step.step_id)
-                result = _execute_internal_action(step.action, rendered_params, vs)
-        except Exception:
-            if db_factory is not None and run_id:
-                async with db_factory() as db:
-                    await _mark_step_failed(db, run_id, node.node_id, step.step_id)
-                    await db.commit()
-            raise
+                    # No db_factory — fallback to internal handler (dev/test mode)
+                    logger.warning("No db_factory available; falling back to internal handler for step %s", step.step_id)
+                    result = _execute_internal_action(step.action, rendered_params, vs)
+                
+                # Execution succeeded - exit retry loop
+                record_step_execution(node.node_id, "completed")
+                break
+                
+            except Exception as exc:
+                # Apply retry policy if enabled
+                if step.retry_on_failure and attempt < max_retries:
+                    delay_ms = retry_config.get("retry_delay_ms", 1000)
+                    multiplier = retry_config.get("backoff_multiplier", 2.0)
+                    actual_delay = delay_ms * (multiplier ** attempt) / 1000.0
+                    
+                    # Record retry attempt
+                    record_retry_attempt(node.node_id, step.step_id)
+                    
+                    logger.warning(
+                        "Step %s/%s failed (attempt %d/%d), retrying after %.2fs: %s",
+                        node.node_id,
+                        step.step_id,
+                        attempt + 1,
+                        max_retries,
+                        actual_delay,
+                        exc,
+                    )
+                    await asyncio.sleep(actual_delay)
+                    attempt += 1
+                    continue  # Retry the step (continue while loop)
+                
+                # Final failure after retries exhausted or retry not enabled
+                record_step_execution(node.node_id, "failed")
+                if db_factory is not None and run_id:
+                    async with db_factory() as db:
+                        await _mark_step_failed(db, run_id, node.node_id, step.step_id)
+                        await db.commit()
+                raise
 
         if step.output_variable and result is not None:
             vs[step.output_variable] = result

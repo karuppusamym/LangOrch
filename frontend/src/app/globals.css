@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* React Flow (workflow graph viewer) */
+@import "@xyflow/react/dist/style.css";
+
 :root {
   --sidebar-width: 260px;
 }

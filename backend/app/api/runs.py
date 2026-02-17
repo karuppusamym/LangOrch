@@ -8,9 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db, async_session
-from app.schemas.runs import ArtifactOut, RunCreate, RunOut
+from app.schemas.runs import ArtifactOut, RunCreate, RunDiagnostics, RunOut, CheckpointMetadata, CheckpointState
 from app.services import procedure_service, run_service
+from app.services import checkpoint_service
 from app.services.execution_service import execute_run
+from app.utils.metrics import get_metrics_summary
 
 router = APIRouter()
 
@@ -55,6 +57,12 @@ async def list_runs(
     )
 
 
+@router.get("/metrics/summary")
+async def get_metrics():
+    """Get operational metrics summary."""
+    return get_metrics_summary()
+
+
 @router.get("/{run_id}", response_model=RunOut)
 async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await run_service.get_run(db, run_id)
@@ -69,6 +77,40 @@ async def get_run_artifacts(run_id: str, db: AsyncSession = Depends(get_db)):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return await run_service.list_artifacts(db, run_id)
+
+
+@router.get("/{run_id}/diagnostics", response_model=RunDiagnostics)
+async def get_run_diagnostics(run_id: str, db: AsyncSession = Depends(get_db)):
+    diagnostics = await run_service.get_run_diagnostics(db, run_id)
+    if not diagnostics:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return diagnostics
+
+
+@router.get("/{run_id}/checkpoints", response_model=list[CheckpointMetadata])
+async def list_run_checkpoints(run_id: str, db: AsyncSession = Depends(get_db)):
+    """List all checkpoints for a run."""
+    run = await run_service.get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    thread_id = run.thread_id or run_id
+    checkpoints = await checkpoint_service.list_checkpoints(thread_id)
+    return checkpoints
+
+
+@router.get("/{run_id}/checkpoints/{checkpoint_id}", response_model=CheckpointState)
+async def get_checkpoint_state(run_id: str, checkpoint_id: str, db: AsyncSession = Depends(get_db)):
+    """Get state at a specific checkpoint."""
+    run = await run_service.get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    thread_id = run.thread_id or run_id
+    state = await checkpoint_service.get_checkpoint_state(thread_id, checkpoint_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+    return state
 
 
 @router.post("/{run_id}/cancel", response_model=RunOut)
