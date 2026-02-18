@@ -1,6 +1,6 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-18 (Batch 15: notify_on_error in IRErrorHandler — 319 tests)
+Last updated: 2026-02-18 (Batch 16: server-side input_vars validation + step-level dry_run — 344 tests)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -49,7 +49,7 @@ This document is the single authoritative source for **what is implemented vs wh
 | Frontend: project filter in procedures | 100% | 100% | Complete |
 | Frontend: workflow builder/editor | 100% | 0% | Not started |
 | Frontend→Backend API linkage | 100% | 100% | All 35+ call sites verified; 204-body bug fixed |
-| Backend tests (unit) | Target | 98% | **319 tests** — all passing |
+| Backend tests (unit) | Target | 98% | **344 tests** — all passing |
 | Backend tests (integration) | Target | 35% | 18 API tests |
 | Frontend tests | Target | 0% | Not started |
 | AuthN/AuthZ | Target | 0% | Not started (parked) |
@@ -365,8 +365,10 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
     - `ApprovalStatusBadge` → `@/components/shared/ApprovalStatusBadge.tsx` (DaisyUI badge style; used by 2 approval pages)
 58. **EventDot color map extended** — added `step_timeout: "bg-orange-500"`, `sla_breached: "bg-red-300"`, `node_error: "bg-red-500"`, `approval_expired: "bg-gray-500"` to the run detail timeline color map
 59. **`notify_on_error` in IRErrorHandler** — when `error_handler.notify_on_error=True`, `execute_sequence` emits a `step_error_notification` run event (with `error_type`, `error`, and `handler_action` in payload) AND fire-and-forgets `_fire_alert_webhook`; DB emit failures are swallowed to never abort handler logic; 7 new tests in `test_batch15.py`
+60. **Server-side `input_vars` validation** — new `app/utils/input_vars.py` module: `validate_input_vars(schema, input_vars)` mirrors frontend constraint rules (required, type coercion, allowed_values, regex fullmatch, min/max for numbers + strings); wired into `POST /api/runs` — returns HTTP 422 with `{message, errors}` when any field fails; 20 new tests across unit + API layers in `test_batch16.py`
+61. **Step-level `execution_mode: dry_run`** — `execution_mode` added to `OrchestratorState` TypedDict and propagated from `ir.global_config` into `initial_state`; in `execute_sequence`, any step with `agent_http` or `mcp_tool` binding is intercepted before dispatch: sets stub result `{dry_run: True, skipped_action, binding}`, emits `dry_run_step_skipped` event, skips lease acquisition; `internal` bindings still execute normally; 5 new tests in `test_batch16.py`
 
-**Total tests after Batch 15: 319 (up from 312)**
+**Total tests after Batch 16: 344 (up from 319)**
 
 ---
 

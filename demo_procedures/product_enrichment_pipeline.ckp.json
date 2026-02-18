@@ -1,0 +1,243 @@
+{
+  "procedure_id": "product-enrichment-demo",
+  "version": "1.0.0",
+  "description": "Canonical CKP product enrichment demo with approval gate.",
+  "global_config": {
+    "max_retries": 2,
+    "retry_delay_ms": 1000,
+    "backoff_multiplier": 2.0,
+    "timeout_ms": 30000,
+    "execution_mode": "production",
+    "audit_config": {
+      "enabled": true,
+      "audit_level": "standard",
+      "include_sensitive_data": false
+    }
+  },
+  "variables_schema": {
+    "required": {
+      "product_id": {
+        "type": "number",
+        "description": "Product ID to enrich (1-100)",
+        "origin": "user_strict",
+        "validation": {
+          "min": 1,
+          "max": 100
+        }
+      }
+    },
+    "optional": {
+      "enrichment_mode": {
+        "type": "string",
+        "origin": "user_lazy",
+        "description": "standard or premium",
+        "default": "standard"
+      },
+      "final_payload": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Final enrichment output"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "fetch_product",
+    "nodes": {
+      "fetch_product": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Prepare product baseline",
+        "steps": [
+          {
+            "step_id": "set_product_data",
+            "action": "set_variable",
+            "variable": "product_data",
+            "value": {
+              "id": "{{product_id}}",
+              "title": "Demo Product {{product_id}}",
+              "quality_seed": "{{enrichment_mode}}"
+            }
+          },
+          {
+            "step_id": "set_quality",
+            "action": "set_variable",
+            "variable": "quality_score",
+            "value": "medium"
+          },
+          {
+            "step_id": "log_fetch",
+            "action": "log",
+            "level": "INFO",
+            "message": "Prepared product {{product_id}} for enrichment"
+          }
+        ],
+        "next_node": "quality_check"
+      },
+      "quality_check": {
+        "agent": "MasterAgent",
+        "type": "logic",
+        "description": "Choose enrichment path",
+        "rules": [
+          {
+            "condition": "{{enrichment_mode}} == 'premium'",
+            "next_node": "premium_enrichment"
+          }
+        ],
+        "default_next_node": "standard_enrichment"
+      },
+      "premium_enrichment": {
+        "agent": "MasterAgent",
+        "type": "parallel",
+        "description": "Run premium enrichment branches",
+        "branches": [
+          {
+            "branch_id": "sentiment_branch",
+            "start_node": "premium_sentiment"
+          },
+          {
+            "branch_id": "tags_branch",
+            "start_node": "premium_tags"
+          }
+        ],
+        "wait_strategy": "all",
+        "next_node": "aggregate_results"
+      },
+      "premium_sentiment": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Mock sentiment analysis",
+        "steps": [
+          {
+            "step_id": "set_sentiment",
+            "action": "set_variable",
+            "variable": "sentiment",
+            "value": "positive"
+          }
+        ],
+        "next_node": "aggregate_results"
+      },
+      "premium_tags": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Mock tag extraction",
+        "steps": [
+          {
+            "step_id": "set_tags",
+            "action": "set_variable",
+            "variable": "tags",
+            "value": [
+              "demo",
+              "premium"
+            ]
+          }
+        ],
+        "next_node": "aggregate_results"
+      },
+      "standard_enrichment": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Run standard enrichment",
+        "steps": [
+          {
+            "step_id": "set_standard_output",
+            "action": "set_variable",
+            "variable": "enriched_data",
+            "value": {
+              "mode": "standard",
+              "product_id": "{{product_id}}"
+            }
+          }
+        ],
+        "next_node": "aggregate_results"
+      },
+      "aggregate_results": {
+        "agent": "MasterAgent",
+        "type": "processing",
+        "description": "Build final payload",
+        "operations": [
+          {
+            "action": "set_variable",
+            "variable": "final_payload",
+            "value": {
+              "product": "{{product_data}}",
+              "quality": "{{quality_score}}",
+              "mode": "{{enrichment_mode}}",
+              "sentiment": "{{sentiment}}",
+              "tags": "{{tags}}",
+              "standard": "{{enriched_data}}"
+            }
+          }
+        ],
+        "is_checkpoint": true,
+        "next_node": "approval_gate"
+      },
+      "approval_gate": {
+        "agent": "MasterAgent",
+        "type": "human_approval",
+        "description": "Require human review before publish",
+        "prompt": "Approve enrichment for product {{product_id}}?",
+        "decision_type": "approve_reject",
+        "timeout_ms": 300000,
+        "context_data": {
+          "product_id": "{{product_id}}",
+          "summary": "{{final_payload}}"
+        },
+        "on_approve": "publish_results",
+        "on_reject": "cleanup_rejected",
+        "on_timeout": "cleanup_rejected"
+      },
+      "publish_results": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Finalize approved enrichment",
+        "steps": [
+          {
+            "step_id": "log_publish",
+            "action": "log",
+            "level": "INFO",
+            "message": "Publishing enrichment for product {{product_id}}"
+          },
+          {
+            "step_id": "set_publish_response",
+            "action": "set_variable",
+            "variable": "publish_response",
+            "value": {
+              "status": "published",
+              "product_id": "{{product_id}}"
+            }
+          }
+        ],
+        "next_node": "success_termination"
+      },
+      "cleanup_rejected": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Handle rejected enrichment",
+        "steps": [
+          {
+            "step_id": "log_rejection",
+            "action": "log",
+            "level": "INFO",
+            "message": "Enrichment rejected for product {{product_id}}"
+          }
+        ],
+        "next_node": "rejection_termination"
+      },
+      "success_termination": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "final_payload": "{{final_payload}}",
+          "publish_response": "{{publish_response}}"
+        }
+      },
+      "rejection_termination": {
+        "type": "terminate",
+        "status": "failed",
+        "outputs": {
+          "reason": "rejected_or_timed_out"
+        }
+      }
+    }
+  }
+}

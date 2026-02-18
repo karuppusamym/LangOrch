@@ -465,6 +465,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                 "procedure_id": ir.procedure_id,
                 "procedure_version": ir.version,
                 "global_config": _gc_for_state,
+                "execution_mode": execution_mode,
                 "current_node_id": resume_entry_node or ir.start_node_id,
                 "current_step_id": None,
                 "next_node_id": None,

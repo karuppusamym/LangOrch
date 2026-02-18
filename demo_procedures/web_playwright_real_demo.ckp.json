@@ -1,0 +1,92 @@
+{
+  "procedure_id": "web-playwright-real-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "effective_date": "2026-02-18",
+  "description": "Real WEB automation demo using Playwright agent on example.com",
+  "global_config": {
+    "execution_mode": "production",
+    "max_retries": 2,
+    "retry_delay_ms": 1000,
+    "timeout_ms": 120000
+  },
+  "variables_schema": {
+    "required": {
+      "target_url": {
+        "type": "string",
+        "description": "Target page URL",
+        "origin": "user_strict",
+        "default": "https://example.com"
+      }
+    },
+    "optional": {
+      "page_title": {
+        "type": "string",
+        "origin": "system_captured",
+        "description": "Extracted title text"
+      },
+      "screenshot_artifact": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Screenshot result payload"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "open_page",
+    "nodes": {
+      "open_page": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Navigate, wait, extract and screenshot",
+        "steps": [
+          {
+            "step_id": "navigate",
+            "action": "navigate",
+            "url": "{{target_url}}"
+          },
+          {
+            "step_id": "wait_h1",
+            "action": "wait_for_element",
+            "target": "h1",
+            "timeout_ms": 15000
+          },
+          {
+            "step_id": "extract_h1",
+            "action": "extract_text",
+            "target": "h1",
+            "output_variable": "page_title"
+          },
+          {
+            "step_id": "screenshot",
+            "action": "screenshot",
+            "path": "c:/Users/karup/AGProjects/LangOrch/backend/demo_agents/playwright_real_demo.png",
+            "output_variable": "screenshot_artifact"
+          }
+        ],
+        "next_node": "validate_title"
+      },
+      "validate_title": {
+        "agent": "MasterAgent",
+        "type": "verification",
+        "checks": [
+          {
+            "id": "title_contains_example_domain",
+            "condition": "{{page_title}} contains 'Example Domain'",
+            "on_fail": "fail_workflow",
+            "message": "Expected 'Example Domain' in extracted H1 text"
+          }
+        ],
+        "next_node": "done"
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "title": "{{page_title}}",
+          "screenshot": "{{screenshot_artifact}}"
+        }
+      }
+    }
+  }
+}

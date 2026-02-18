@@ -1,6 +1,6 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-18 (updated after Batch 15: notify_on_error in IRErrorHandler — 319 tests)
+Last updated: 2026-02-18 (updated after Batch 16: server-side input_vars validation + step-level dry_run — 344 tests)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
@@ -74,6 +74,8 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ✅ **[Batch 14]** `IRLlmActionPayload.retry` dict for per-node LLM retry override
 - ✅ **[Batch 14]** `is_checkpoint` selective forcing: `_checkpoint_node_id` marker injected by `make_fn`, detected by streaming execution loop, `checkpoint_saved` event emitted
 - ✅ **[Batch 15]** `notify_on_error=True` in `IRErrorHandler` emits `step_error_notification` event + fires alert webhook
+- ✅ **[Batch 16]** Server-side `input_vars` validation at `POST /api/runs` — required, type, regex, allowed_values, min/max enforced via `app/utils/input_vars.py`; returns HTTP 422 with per-field error map
+- ✅ **[Batch 16]** Step-level `execution_mode=dry_run` — `agent_http` and `mcp_tool` bindings skipped; `dry_run_step_skipped` event emitted; `execution_mode` now propagated through `OrchestratorState`
 - ✅ **[Batch 7]** `IRErrorHandler` recovery_steps, fallback_node, retry, ignore, fail, screenshot_and_fail all dispatched
 - ✅ **[Batch 10]** `asyncio.wait_for(step.timeout_ms)` wraps internal + MCP + agent_http calls; emits `step_timeout` event
 - ✅ **[Batch 10]** `asyncio.sleep(wait_ms)` / `asyncio.sleep(wait_after_ms)` enforced per step
@@ -159,6 +161,7 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ✅ 278 backend tests (Batch 13): retry config, step_timeout events, SLA breach, alert webhook, Prometheus, shared UI
 - ✅ **312 backend tests** (Batch 14): explain service (19), step retry config (5), LLM retry (3), is_checkpoint marker (2), checkpoint event (2), endpoint (3)
 - ✅ **319 backend tests** (Batch 15): notify_on_error in IRErrorHandler (7)
+- ✅ **344 backend tests** (Batch 16): server-side input_vars validation (20) + step-level dry_run guard (5)
 
 ### Remaining gaps
 - Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
@@ -453,10 +456,10 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - `global_config` deep fields not enforced:
   - `screenshot_on_fail`, `timeout_ms` — parsed but not enforced globally
   - `checkpoint_strategy`, `checkpoint_retention_days` — not implemented
-  - `execution_mode` (dry_run/validation_only) — not respected
+  - `execution_mode` (dry_run/validation_only) — dry_run now implemented at step level (✅ Batch 16); `validation_only` still pending
   - `mock_external_calls`, `test_data_overrides` — not wired
   - `rate_limiting` — parsed but not enforced at workflow or platform level
-- `variables_schema.required[].validation` (regex, max, allowed_values) — parsed but not enforced at bind time
+- ~~`variables_schema.required[].validation` (regex, max, allowed_values)~~ — ✅ server-side enforcement via `validate_input_vars` in `POST /api/runs` (Batch 16)
 
 **Already fixed (no longer gaps)**:
 - ~~`max_retries`, `retry_delay_ms`~~ — ✅ enforced with exponential backoff

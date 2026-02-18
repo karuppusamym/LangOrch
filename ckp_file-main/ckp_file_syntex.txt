@@ -1,17 +1,24 @@
-
 {
   "$schema_name": "CKP Syntax Reference (informal)",
   "$schema_version": "2026-02-09",
   "$min_orchestrator_version": "1.0.0",
+  "$disclaimer": {
+    "purpose": "Human/LLM guidance only",
+    "authoritative_runtime_contract": "backend/app/compiler + backend/app/runtime",
+    "not_for": [
+      "Direct strict validation",
+      "Inferring runtime behavior over implemented code"
+    ]
+  },
   "$notes": [
     "This file is a human-friendly syntax/shape reference for CKP JSON files.",
-    "It is intentionally valid JSON (no comments). Treat string values like 'one_of:...' as guidance.",
+    "It is valid JSON and intended for understanding/documentation, not strict runtime validation.",
     "Variable templating uses {{var_name}} placeholders inside strings.",
-    "Keep node ids unique. Graph edges are represented by next_node / default_next_node / body_node / branches / start_node.",
-    "Examples in this workspace: ckp_orc_desktop_sql_excel_db_smart.json",
-    "Supports multi-agent orchestration: WEB, DESKTOP, LLM, EMAIL, API, DATABASE, and future extensibility.",
-    "Production-ready with checkpoints, human-in-the-loop, telemetry, and audit trails."
-  ],{
+    "Keep node ids unique. Graph edges use start_node / next_node / default_next_node / body_node / branches.start_node.",
+    "Canonical executable examples live in sample_workflow_multi_agent.json and sample_web_playwright_demo.json.",
+    "Supports multi-agent orchestration: WEB, DESKTOP, LLM, EMAIL, API, DATABASE, and extensibility.",
+    "Production concerns include checkpoints, human-in-the-loop, telemetry, and audit trails."
+  ],
   "root": {
     "procedure_id": "string (unique)",
     "version": "string (semver)",
@@ -24,7 +31,7 @@
       "webhook_config": {
         "endpoint": "string (optional)",
         "authentication": "object (optional)",
-        "allowed_sources": "string[] (IP whitelist, optional)"
+        "allowed_sources": "string[] (optional)"
       },
       "event_config": {
         "event_source": "string (optional)",
@@ -33,7 +40,7 @@
       },
       "file_watch_config": {
         "path": "string (optional)",
-        "pattern": "string (glob pattern, optional)",
+        "pattern": "string (glob, optional)",
         "event_types": "string[] (created|modified|deleted, optional)"
       }
     },
@@ -53,7 +60,7 @@
       "max_retries": "number",
       "retry_delay_ms": "number (optional)",
       "timeout_ms": "number",
-      "on_failure": "string (node_id; optional)",
+      "on_failure": "string (node_id, optional)",
       "logging_level": "one_of: DEBUG|INFO|WARNING|ERROR (optional)",
       "telemetry_enabled": "boolean (optional)",
       "checkpoint_strategy": "one_of: every_node|critical_nodes_only|disabled (optional)",
@@ -80,7 +87,7 @@
         "retention_days": "number (optional)",
         "include_sensitive_data": "boolean (optional)"
       }
-    },{
+    },
     "variables_schema": {
       "required": {
         "<var_name>": {
@@ -90,6 +97,7 @@
           "default": "any (optional)",
           "validation": {
             "regex": "string (optional)",
+            "min": "number (optional)",
             "max": "number (optional)",
             "allowed_values": "any[] (optional)",
             "sensitive": "boolean (optional)"
@@ -100,7 +108,8 @@
         "<var_name>": {
           "type": "one_of: string|number|boolean|array|object",
           "origin": "one_of: user_lazy|system_captured",
-          "description": "string"
+          "description": "string",
+          "default": "any (optional)"
         }
       }
     },
@@ -123,12 +132,12 @@
   },
   "node_definition": {
     "agent": "one_of: MasterAgent|WEB|DESKTOP|LLMAgent|EMAIL|API|DATABASE (optional for terminate)",
-    "type": "one_of: sequence|logic|loop|parallel|processing|verification|llm_action|terminate|sop|subflow|human_approval|transform",
+    "type": "one_of: sequence|logic|loop|parallel|processing|verification|llm_action|terminate|subflow|human_approval|transform",
     "description": "string (recommended)",
     "inputs": "object (optional; values may include {{vars}})",
     "outputs": "object (optional; see output_mapping)",
     "next_node": "string|null (node_id)",
-    "is_checkpoint": "boolean (optional; mark this node as checkpoint for resume)",
+    "is_checkpoint": "boolean (optional)",
     "sla": {
       "max_duration_ms": "number (optional)",
       "on_breach": "one_of: warn|fail|escalate (optional)",
@@ -137,11 +146,13 @@
     "telemetry": {
       "track_duration": "boolean (optional)",
       "track_retries": "boolean (optional)",
-      "custom_metrics": "object (optional)",
-      "trace_id": "string (optional, for distributed tracing)",
+      "custom_metrics": "object|array (optional)",
+      "trace_id": "string (optional)",
       "span_id": "string (optional)"
     },
-    "idempotency_key": "string (optional; ensure safe retries)",{
+    "idempotency_key": "string (optional; ensure safe retries)"
+  },
+  "node_type_payloads": {
     "sequence": {
       "steps": "step[]",
       "validations": "validation_check[] (optional)",
@@ -157,8 +168,8 @@
       "default_next_node": "string (node_id)"
     },
     "loop": {
-      "iterator": "string (state var name referencing an array)",
-      "iterator_variable": "string (e.g., current_record)",
+      "iterator": "string (array var name)",
+      "iterator_variable": "string",
       "index_variable": "string (optional)",
       "body_node": "string (node_id)",
       "collect_variable": "string (optional)",
@@ -187,7 +198,7 @@
     },
     "llm_action": {
       "prompt": "string (can include {{vars}})",
-      "model": "string (e.g., gpt-4)",
+      "model": "string",
       "temperature": "number (optional)",
       "max_tokens": "number (optional)",
       "attachments": "llm_attachment[] (optional)",
@@ -195,7 +206,7 @@
         "max_retries": "number (optional)",
         "delay_ms": "number (optional)"
       },
-      "outputs": "object (optional; see output_mapping)",
+      "outputs": "object (optional)",
       "next_node": "string (node_id)"
     },
     "terminate": {
@@ -206,13 +217,13 @@
       "final_audit_log": "object (optional)"
     },
     "human_approval": {
-      "prompt": "string (message to human reviewer)",
+      "prompt": "string",
       "decision_type": "one_of: approve_reject|select_option|provide_input",
-      "options": "string[] (optional, for select_option)",
+      "options": "string[] (optional)",
       "timeout_ms": "number (optional)",
       "timeout_action": "one_of: auto_approve|auto_reject|escalate (optional)",
       "escalation_contact": "string (optional)",
-      "context_data": "object (optional; data to show reviewer)",
+      "context_data": "object (optional)",
       "approval_level": "one_of: standard|manager|executive (optional)",
       "on_approve": "string (node_id)",
       "on_reject": "string (node_id)",
@@ -223,51 +234,57 @@
         {
           "type": "one_of: filter|map|reduce|join|aggregate|pivot|sort|deduplicate",
           "source_variable": "string",
-          "expression": "string (JSONPath/JMESPath/custom expression)",
+          "expression": "string",
           "output_variable": "string",
-          "params": "object (optional, type-specific parameters)"
+          "params": "object (optional)"
         }
       ],
       "next_node": "string (node_id)"
     },
     "subflow": {
-      "procedure_id": "string (reference to another CKP file)",
-      "version": "string (optional, defaults to latest)",
-      "input_mapping": "object (map parent vars to child vars)",
-      "output_mapping": "object (map child outputs back to parent state)",
+      "procedure_id": "string",
+      "version": "string (optional)",
+      "input_mapping": "object",
+      "output_mapping": "object",
       "on_failure": "one_of: fail_parent|continue|retry (optional)",
-      "inherit_context": "boolean (optional, share parent context)",
+      "inherit_context": "boolean (optional)",
       "next_node": "string (node_id)"
     }
-  },{
+  },
   "step": {
     "step_id": "string (recommended)",
     "action": "string (see action_catalog)",
-    "target": "string (selector or locator; optional per action)",
-    "value": "any (optional; often string with {{vars}})",
+    "target": "string (optional)",
+    "value": "any (optional)",
     "wait_ms": "number (optional)",
     "duration_ms": "number (optional)",
     "timeout_ms": "number (optional)",
     "wait_after_ms": "number (optional)",
-    "title": "string (optional; for window/dialog waits)",
-    "text": "string (optional; for navigator text)",
-    "keys": "string[] (optional; for press_keys)",
-    "cell": "string (optional; for click_cell)",
-    "file_path": "string (optional; for file operations)",
-    "sheet_name": "string (optional; for excel operations)",
-    "output_variable": "string (optional; where step stores a result)",
-    "connection_string": "string (optional; for database operations)",
-    "query": "string (optional; for database operations)",
-    "parameters": "object (optional; query parameters)",
-    "headers": "object (optional; for API operations)",
-    "method": "string (optional; HTTP method for API)",
-    "url": "string (optional; for API/web operations)",
-    "body": "any (optional; request body for API)",
+    "title": "string (optional)",
+    "text": "string (optional)",
+    "keys": "string[] (optional)",
+    "cell": "string (optional)",
+    "file_path": "string (optional)",
+    "sheet_name": "string (optional)",
+    "output_variable": "string (optional)",
+    "connection_string": "string (optional)",
+    "query": "string (optional)",
+    "parameters": "object (optional)",
+    "headers": "object (optional)",
+    "method": "string (optional)",
+    "url": "string (optional)",
+    "body": "any (optional)",
     "retry_on_failure": "boolean (optional)",
     "screenshot_on_complete": "boolean (optional)"
-  },{
+  },
   "action_catalog": {
-    "generic": ["wait", "screenshot", "log", "set_checkpoint", "restore_checkpoint"],
+    "generic": [
+      "wait",
+      "screenshot",
+      "log",
+      "set_checkpoint",
+      "restore_checkpoint"
+    ],
     "desktop": [
       "launch_app",
       "activate_window",
@@ -302,8 +319,19 @@
       "upload_file",
       "download_file"
     ],
-    "email": ["compose_email", "send_email", "read_email", "search_email", "download_attachment"],
-    "api": ["http_request", "graphql_query", "soap_request", "websocket_connect"],
+    "email": [
+      "compose_email",
+      "send_email",
+      "read_email",
+      "search_email",
+      "download_attachment"
+    ],
+    "api": [
+      "http_request",
+      "graphql_query",
+      "soap_request",
+      "websocket_connect"
+    ],
     "database": [
       "execute_query",
       "execute_procedure",
@@ -326,30 +354,29 @@
       "zip_files",
       "unzip_files"
     ]
-  },{
+  },
   "operation": {
     "action": "one_of: set_variable|append_to_array|parse_excel_data|parse_json|parse_xml|parse_csv|calculate|format_string|extract_regex|notify|log|encrypt|decrypt|hash|validate_schema|convert_type",
     "variable": "string (for set_variable)",
-    "value": "any (for set_variable/append_to_array)",
+    "value": "any",
     "array": "string (for append_to_array)",
-    "expression": "string (for calculate)",
+    "expression": "string",
     "source": "string (often {{var}})",
-    "pattern": "string (for extract_regex)",
-    "output_variable": "string (where to store result)",
-    "channel": "string (for notify)",
-    "recipients": "string[]|{{var}} (for notify)",
+    "pattern": "string",
+    "output_variable": "string",
+    "channel": "string",
+    "recipients": "string[]|{{var}}",
     "subject": "string (optional)",
     "message": "string (optional)",
-    "level": "one_of: DEBUG|INFO|WARNING|ERROR (for log)",
-    "schema": "object (for validate_schema)",
-    "algorithm": "string (for encrypt/decrypt/hash)",
-    "key_reference": "string (secret key reference)",
-    "target_type": "string (for convert_type)"
-  },{
+    "level": "one_of: DEBUG|INFO|WARNING|ERROR",
+    "schema": "object (optional)",
+    "algorithm": "string (optional)",
+    "key_reference": "string (optional)",
+    "target_type": "string (optional)"
+  },
   "output_mapping": {
     "$notes": [
-      "Outputs map a key into state based on a capture/mapping expression.",
-      "Common patterns in this workspace include literal tags like 'llm_response' and extractors like 'json_extract: field'."
+      "Outputs map keys into state based on capture/mapping expressions."
     ],
     "examples": {
       "llm_raw": "llm_response",
@@ -367,7 +394,7 @@
     "message": "string (optional)"
   },
   "error_handler": {
-    "error_type": "string (e.g., ElementNotFoundException, TimeoutException)",
+    "error_type": "string",
     "action": "one_of: retry|screenshot_and_fail|fail|ignore|escalate",
     "max_retries": "number (optional)",
     "delay_ms": "number (optional)",
@@ -375,8 +402,8 @@
       "strategy": "one_of: fixed|exponential_backoff|fibonacci|linear (optional)",
       "base_delay_ms": "number (optional)",
       "max_delay_ms": "number (optional)",
-      "multiplier": "number (optional, for exponential)",
-      "jitter": "boolean (optional, add randomness to avoid thundering herd)"
+      "multiplier": "number (optional)",
+      "jitter": "boolean (optional)"
     },
     "trigger": {
       "error_text_contains": "string (optional)",
@@ -387,8 +414,8 @@
     "recovery_steps": "step[] (optional)",
     "fallback_node": "string (node_id, optional)",
     "notify_on_error": "boolean (optional)",
-    "error_metadata": "object (optional, additional context)"
-  },{
+    "error_metadata": "object (optional)"
+  },
   "verification_check": {
     "id": "string",
     "condition": "string (expression)",
@@ -399,5 +426,13 @@
     "type": "one_of: image|csv|text|json",
     "source": "string (file path or {{var}})",
     "description": "string (optional)"
+  },
+  "compatibility_note": {
+    "runtime_contract": "Treat this as documentation only. The executing parser/validator in backend code is the source of truth.",
+    "non_goals": [
+      "Does not change CKP runtime behavior",
+      "Does not alter sample_workflow_multi_agent.json",
+      "Does not alter backend compiler or executor code"
+    ]
   }
 }

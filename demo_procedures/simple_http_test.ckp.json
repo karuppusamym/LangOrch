@@ -1,0 +1,86 @@
+{
+  "procedure_id": "simple-http-test",
+  "version": "1.0.0",
+  "description": "Minimal canonical CKP demo that validates parser->IR mapping.",
+  "global_config": {
+    "max_retries": 2,
+    "retry_delay_ms": 500,
+    "execution_mode": "production"
+  },
+  "variables_schema": {
+    "required": {
+      "post_id": {
+        "type": "number",
+        "description": "Post ID to process (1-100)",
+        "origin": "user_strict",
+        "default": 1,
+        "validation": {
+          "min": 1,
+          "max": 100
+        }
+      }
+    },
+    "optional": {
+      "api_response": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Mock response payload"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "fetch_data",
+    "nodes": {
+      "fetch_data": {
+        "agent": "MasterAgent",
+        "type": "sequence",
+        "description": "Generate a demo payload (internal-only for reliability)",
+        "steps": [
+          {
+            "step_id": "set_response",
+            "action": "set_variable",
+            "variable": "api_response",
+            "value": {
+              "id": "{{post_id}}",
+              "title": "Demo post {{post_id}}",
+              "source": "internal-mock"
+            }
+          },
+          {
+            "step_id": "log_result",
+            "action": "log",
+            "level": "INFO",
+            "message": "Prepared response for post {{post_id}}"
+          }
+        ],
+        "next_node": "check_response"
+      },
+      "check_response": {
+        "agent": "MasterAgent",
+        "type": "logic",
+        "rules": [
+          {
+            "condition": "{{api_response.id}} > 0",
+            "next_node": "success"
+          }
+        ],
+        "default_next_node": "failure"
+      },
+      "success": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "result": "ok",
+          "response": "{{api_response}}"
+        }
+      },
+      "failure": {
+        "type": "terminate",
+        "status": "failed",
+        "outputs": {
+          "result": "invalid_response"
+        }
+      }
+    }
+  }
+}

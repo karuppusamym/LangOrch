@@ -14,6 +14,7 @@ from app.services import checkpoint_service
 from app.services.execution_service import execute_run
 from app.utils.metrics import get_metrics_summary
 from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled
+from app.utils.input_vars import validate_input_vars
 
 router = APIRouter()
 
@@ -24,6 +25,18 @@ async def create_run(body: RunCreate, background: BackgroundTasks, db: AsyncSess
     proc = await procedure_service.get_procedure(db, body.procedure_id, body.procedure_version)
     if not proc:
         raise HTTPException(status_code=404, detail="Procedure not found")
+
+    # Validate input_vars against the procedure's variables_schema (if any)
+    import json as _json
+    _ckp = _json.loads(proc.ckp_json) if proc.ckp_json else {}
+    _schema = _ckp.get("variables_schema") or {}
+    if _schema:
+        _errors = validate_input_vars(_schema, body.input_vars)
+        if _errors:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Invalid input_vars", "errors": _errors},
+            )
 
     run = await run_service.create_run(
         db,

@@ -44,15 +44,33 @@ class AgentInstanceOut(BaseModel):
     def _parse_capabilities(cls, data: Any) -> Any:
         # data may be an ORM object or a plain dict
         if isinstance(data, dict):
-            raw = data.get("capabilities")
+            parsed = dict(data)
+            raw = parsed.get("capabilities")
             if isinstance(raw, str):
-                data["capabilities"] = [c.strip() for c in raw.split(",") if c.strip()]
+                parsed["capabilities"] = [c.strip() for c in raw.split(",") if c.strip()]
             elif raw is None:
-                data["capabilities"] = []
-        elif hasattr(data, "capabilities"):
+                parsed["capabilities"] = []
+            return parsed
+
+        if hasattr(data, "capabilities"):
             raw = data.capabilities
             if isinstance(raw, str):
-                data.capabilities = [c.strip() for c in raw.split(",") if c.strip()]
+                parsed_caps = [c.strip() for c in raw.split(",") if c.strip()]
             elif raw is None:
-                data.capabilities = []
+                parsed_caps = []
+            else:
+                parsed_caps = raw
+
+            return {
+                "agent_id": data.agent_id,
+                "name": data.name,
+                "channel": data.channel,
+                "base_url": data.base_url,
+                "status": data.status,
+                "concurrency_limit": data.concurrency_limit,
+                "resource_key": data.resource_key,
+                "capabilities": parsed_caps,
+                "updated_at": data.updated_at,
+            }
+
         return data

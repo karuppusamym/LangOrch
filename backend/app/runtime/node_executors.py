@@ -213,7 +213,27 @@ async def execute_sequence(
                     async with db_factory() as db:
                         binding = await resolve_executor(db, node, step)
 
-                    if binding.kind == "internal":
+                    # dry_run: skip external agent/MCP dispatch; emit a dry_run_step_skipped event
+                    _exec_mode = state.get("execution_mode", "production")
+                    if _exec_mode == "dry_run" and binding.kind in ("agent_http", "mcp_tool"):
+                        logger.info(
+                            "dry_run: skipping %s dispatch for step %s/%s (binding=%s)",
+                            binding.kind, node.node_id, step.step_id, binding.ref,
+                        )
+                        result = {"dry_run": True, "skipped_action": step.action, "binding": binding.kind}
+                        if db_factory is not None and run_id:
+                            async with db_factory() as db:
+                                await run_service.emit_event(
+                                    db, run_id, "dry_run_step_skipped",
+                                    node_id=node.node_id, step_id=step.step_id,
+                                    payload={
+                                        "action": step.action,
+                                        "binding": binding.kind,
+                                        "ref": binding.ref,
+                                    },
+                                )
+                                await db.commit()
+                    elif binding.kind == "internal":
                         result = await _execute_step_action(step.action, rendered_params, vs)
                     elif binding.kind == "agent_http":
                         lease_id: str | None = None
