@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getApproval, submitApprovalDecision } from "@/lib/api";
+import { ApprovalStatusBadge } from "@/components/shared/ApprovalStatusBadge";
 import type { Approval } from "@/lib/types";
 
 export default function ApprovalDetailPage() {
@@ -112,12 +113,3 @@ export default function ApprovalDetailPage() {
   );
 }
 
-function ApprovalStatusBadge({ status }: { status: string }) {
-  const cls: Record<string, string> = {
-    pending: "badge-warning",
-    approved: "badge-success",
-    rejected: "badge-error",
-    timed_out: "badge-neutral",
-  };
-  return <span className={`badge ${cls[status] ?? "badge-neutral"}`}>{status}</span>;
-}

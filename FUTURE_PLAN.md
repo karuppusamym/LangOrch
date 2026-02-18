@@ -1,6 +1,6 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-16
+Last updated: 2026-02-17 (updated after popup audit + Batch 12 completion)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
@@ -8,52 +8,72 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 
 ## Current implementation baseline (what is already done)
 
-## Strongly implemented
+### Strongly implemented
 - CKP compile pipeline (parse → validate → bind) and runtime execution graph
-- Runtime executors for `sequence`, `logic`, `loop`, `parallel`, `subflow`, `processing`, `verification`, `llm_action`, `human_approval`, `transform`, `terminate`
+- Runtime executors for all 11 node types: `sequence`, `logic`, `loop`, `parallel`, `subflow`, `processing`, `verification`, `llm_action`, `human_approval`, `transform`, `terminate`
 - Checkpoint-enabled invocation with SQLite checkpointer and thread-based context
 - Step idempotency persistence + cached replay path
 - Agent dispatch with resource lease acquisition/release
-- Retry preparation flow and retry fallback resume from `last_node_id`
+- Retry with exponential backoff (max_retries, retry_delay_ms, backoff_multiplier)
 - Run event timeline + SSE stream + step/subflow/artifact events
-- Artifact extraction/persistence + artifacts API + basic frontend rendering
-- Core CRUD APIs for procedures, runs, approvals, and agents
+- Artifact extraction/persistence + artifacts API + frontend rendering
+- Core CRUD APIs for procedures, runs, approvals, agents, projects, and leases — 35+ endpoints total
+- **Projects API**: full CRUD (`GET/POST/PUT/DELETE /api/projects`), project filter on procedure list
+- **Agent management**: register, update (status/capabilities), delete agents; background health polling every 60 s
+- **Leases API**: `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented
+- **Diagnostics API**: `GET /api/runs/{id}/diagnostics` — idempotency entries, active leases, event counts, retry markers
+- **Checkpoint introspection API**: `GET /api/runs/{id}/checkpoints` + `GET /api/runs/{id}/checkpoints/{cpid}`
+- **Secrets provider abstraction**: `EnvironmentSecretsProvider` (working) + `VaultSecretsProvider` (working), AWS/Azure stubs
+- **Event redaction**: recursive sensitive field sanitization (password, token, api_key, secret, etc.)
+- **In-memory metrics**: counters/histograms + `GET /api/runs/metrics/summary` endpoint
+- **Graph extraction API**: `GET /api/procedures/{id}/{version}/graph` → React Flow-compatible nodes/edges
+- **Workflow graph viewer (frontend)**: interactive React Flow with custom CKP nodes, color-coding, minimap, zoom/pan
+- **157 backend tests** across 8 test files — all passing (parser, validator, binder, redaction, metrics, secrets, graph, API)
+- **260 backend tests** across 13 test files — all passing (adds Batch 12: projects, agents PUT/DELETE, capabilities parsing)
+- 11-route frontend: Dashboard, Procedures (list/detail/edit), Runs (list/detail/timeline), Approvals (inbox/detail), Agents, Projects, Leases
 
-## Partially implemented
-- Secrets handling exists in runtime state, but no external secret provider integration
-- Telemetry field exists in state, but no metrics/export pipeline
+### Partially implemented
+- Secrets handling: env/vault working; AWS Secrets Manager and Azure Key Vault are stubs with env fallback
+- Telemetry fields parsed (track_duration, track_retries, custom_metrics) but not exported to any backend
 - Approval flow exists, but no role-based approver governance
-- Artifact support exists, but metadata normalization/retention controls are limited
+- Error handlers fully parsed into IR but NOT executed at runtime — execute_sequence uses simpler built-in retry instead
+- `wait`/`wait_after_ms` stored in steps but the `wait` action is a no-op placeholder (no `asyncio.sleep`)
+- `idempotency_key` custom templates stored but not evaluated — composite (run_id, node_id, step_id) key used instead
 
-## Not yet implemented (high impact gaps)
-- Trigger automation (scheduler, webhook, file/event driven execution)
+### Not yet implemented (high impact gaps)
+- Trigger automation (scheduler, webhook, file/event driven execution) — `trigger` field not parsed
 - AuthN/AuthZ and policy enforcement
-- Checkpoint introspection and replay diagnostics APIs/UI
-- Retry policy controls (max attempts, backoff/jitter, per-node policy)
-- Operator tooling (stale lease management, incident diagnostics)
-- Automated test suites + CI gates
-- Visual workflow builder and advanced run-debug UX
+- Step/node timeout enforcement — `timeout_ms` parsed but `asyncio.wait_for` never wraps calls
+- SLA monitoring — `sla.max_duration_ms` not tracked, no breach events
+- Stale lease management — `GET/DELETE /api/leases` endpoints not implemented
+- Rate limiting — `rate_limiting` parsed but not enforced
+- Frontend: no diagnostics/metrics pages, no input variables form for run-start
+- Artifact metadata normalization/retention controls are limited
+- Visual workflow builder/editor (read-only viewer exists)
+- Automated frontend tests + CI gates
 
 ---
 
 ## Gap analysis by domain
 
 ## 1) Execution correctness and recoverability
-### Current
-- Durable graph execution and retry resume foundations are in place.
+### Current — UPDATED 2026-02-17
+- ✅ Durable graph execution with LangGraph SQLite checkpointer
+- ✅ `GET /api/runs/{id}/diagnostics` — idempotency entries, active leases, event counts, retry markers
+- ✅ `GET /api/runs/{id}/checkpoints` — full checkpoint introspection
+- ✅ Retry with exponential backoff (max_retries, delay_ms, backoff_multiplier) enforced globally
 
-### Gaps
-- No first-class API/UI for checkpoint introspection by `run_id`/`thread_id`
-- Retry behavior is not policy-driven yet (per-node retry configs are missing)
-- Idempotency diagnostics are not exposed in operator-friendly APIs
+### Remaining gaps
+- Error handlers (`recovery_steps`, `fallback_node`, `retry_policy`) are parsed into IR but NOT executed — execute_sequence uses simpler retry instead
+- Step-level `timeout_ms` not enforced — `asyncio.wait_for` never wraps agent calls
+- `wait` action is a no-op placeholder — `asyncio.sleep` not called
+- Custom `idempotency_key` templates not evaluated
 
-### Implementation next
-- Add `GET /api/runs/{run_id}/diagnostics` including:
-  - last node/step
-  - retry markers
-  - idempotency decisions
-  - lease state snapshot
-- Add configurable retry policy model in CKP/runtime binding
+### Next implementation items
+- Invoke `IRErrorHandler.recovery_steps` and `fallback_node` in `execute_sequence` when step fails after all retries
+- Wrap agent HTTP calls with `asyncio.wait_for(step.timeout_ms / 1000)` and emit `step_timeout` event
+- Implement `asyncio.sleep(wait_ms)` for the `wait` action
+- Add configurable retry policy model with per-node override
 
 ## 2) Automation and orchestration triggers
 ### Current
@@ -68,54 +88,83 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - Emit explicit trigger-origin events (`triggered_by`, `trigger_type`, `trigger_id`)
 
 ## 3) Security and governance
-### Current
-- Basic platform operation without identity enforcement.
+### Current — UPDATED 2026-02-17
+- ✅ Secrets provider abstraction: `EnvironmentSecretsProvider` (prefix-based, working) + `VaultSecretsProvider` (hvac, KV v1/v2, working)
+- ✅ Event redaction: recursive sensitive field sanitization active in all event emission paths
+- AWS Secrets Manager and Azure Key Vault are provider stubs (fall back to env with warning)
 
-### Gaps
-- No platform AuthN/AuthZ
-- No secrets provider abstraction
-- No redaction policy for sensitive run payloads/events
+### Remaining gaps
+- No platform AuthN/AuthZ — all 26 endpoints are open
+- No role-based approval governance (any caller can submit approval decisions)
+- Redaction policy is hardcoded key-name patterns — not configurable from CKP `audit_config`
 
-### Implementation next
+### Next implementation items
 - Add auth middleware and role model (`operator`, `approver`, `admin`)
-- Add secrets resolver abstraction (env + pluggable vault adapters)
-- Add event/log redaction pipeline with field policy map
+- Implement AWS Secrets Manager and Azure Key Vault provider adapters
+- Make redaction field list configurable from `global_config.audit_config`
 
 ## 4) Observability and operations
-### Current
-- Timeline events and run status APIs exist.
+### Current — UPDATED 2026-02-17
+- ✅ Event timeline + SSE stream working
+- ✅ In-memory metrics (counters + histograms) with `GET /api/runs/metrics/summary`
+- ✅ Run diagnostics API (`GET /api/runs/{id}/diagnostics`) — idempotency, lease, event, retry data
+- ✅ `graph_service.py` provides React Flow graph data for workflow visualization
+- ✅ `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented with UI on /leases page
 
-### Gaps
-- No structured metrics, tracing, alerting hooks, or operator diagnostics console
+### Remaining gaps
+- Metrics are process-local in-memory — not persistent, not exported (no Prometheus/OpenTelemetry)
+- `sla.max_duration_ms` not tracked — no breach events, no escalation
+- No alert hooks for failed/stuck runs
+- `telemetry` fields (track_duration, track_retries, custom_metrics) parsed but not acted on
 
-### Implementation next
-- Add metrics export (`run_duration`, `run_failures`, `approval_wait_time`)
-- Add run diagnostics endpoint and failure classification
-- Add lease operations API (list stale leases, force release with audit trail)
+### Next implementation items
+- Track node execution start time vs `sla.max_duration_ms`, emit `sla_breached` event
+- Add Prometheus-compatible `/metrics` endpoint using existing in-memory MetricsCollector
+- Add alert hooks (configurable webhook or log-based) for `run_failed` and stuck runs
 
 ## 5) Frontend operations UX
-### Current
-- Runs, procedures, approvals, and artifacts have baseline pages.
+### Current — UPDATED 2026-02-17
+- ✅ 11 routes: Dashboard, Procedures (list/detail/edit), Runs (list/detail/timeline/artifacts), Approvals (inbox/detail), Agents, Projects, Leases
+- ✅ Workflow graph viewer implemented with React Flow, custom CKP node types, minimap, color-coding
+- ✅ Live run timeline with SSE subscription + event deduplication + auto-scroll
+- ✅ Artifacts list with auto-refresh on `artifact_created` SSE events
+- ✅ Procedure CKP JSON edit inline + version management
+- ✅ Runs: filters, date range, quick presets, bulk cleanup, cancel/delete
+- ✅ Projects CRUD page: list, create, inline-edit, delete
+- ✅ Agents page: register, capabilities checkboxes, toggle online/offline, delete
+- ✅ Leases page: list active leases, force-release with confirmation
+- ✅ All destructive actions use in-app `ConfirmDialog` — no browser `confirm()`/`alert()` calls
+- ✅ `masteragent` channel available in agent registration dropdown
 
-### Gaps
-- No visual workflow authoring, limited timeline filtering/grouping, limited artifact UX.
+### Remaining gaps
+- No UI for `GET /api/runs/{id}/diagnostics` data — API exists but no page displays it
+- No UI for `GET /api/runs/metrics/summary` — API exists but no metrics panel on dashboard
+- `createRun` always sends `{}` for `input_vars` — no form reads `variables_schema` from the procedure
+- No retry-path overlay in timeline
+- No LLM/agent invocation detail panel (model used, tokens, latency)
+- No approval SLA/escalation indicators
+- Duplicate UI components: `StatusBadge` defined independently on 2+ pages
 
-### Implementation next
-- Add timeline filters and retry-path rendering
-- Add richer artifact panel (preview/download/group by node/step)
-- Start workflow builder foundation with read-only graph visualization first
+### Next implementation items
+- Add diagnostics tab to run detail page using existing `GET /api/runs/{id}/diagnostics`
+- Add metrics card to dashboard using `GET /api/runs/metrics/summary`
+- Add input variables form modal at run-start that reads `variables_schema` from the procedure
+- Extract `StatusBadge` and `ApprovalStatusBadge` into `src/components/shared/`
 
 ## 6) Quality and delivery discipline
-### Current
-- Ad-hoc validation and manual smoke flows are present.
+### Current — UPDATED 2026-02-17
+- ✅ 260 backend tests across 13 files — all passing (parser, validator, binder, redaction, metrics, secrets, graph, API, batch12)
+- ✅ Tests cover: all node types, compiler edge cases, redaction patterns, metrics, secrets provider, graph extraction, projects CRUD, agents PUT/DELETE, capabilities parsing, API integration
 
-### Gaps
-- No committed automated backend/frontend test suites and no CI quality gates.
+### Remaining gaps
+- Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
+- No frontend unit or e2e tests
+- No CI pipeline (lint + type-check + tests + build gates)
 
-### Implementation next
-- Add backend unit + integration tests for runtime edge cases
-- Add frontend smoke/e2e tests for primary operator paths
-- Add CI pipeline for lint + test + build
+### Next implementation items
+- Add backend integration tests for: parallel branch execution, checkpoint resume, approval decision flow, subflow execution
+- Add frontend e2e tests with Playwright for primary operator paths (import procedure, start run, approve, view timeline)
+- Add GitHub Actions CI pipeline: `ruff` + `pyright` + `pytest` + `next build`
 
 ---
 
@@ -392,108 +441,108 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 ## Critical implementation gaps (CKP spec vs current code)
 
 ### Missing CKP top-level fields in parser/IR
-**Current state**: Parser reads only `procedure_id`, `version`, `global_config` (shallow), `variables_schema` (shallow), `workflow_graph`.
+**Current state** (as of 2026-02-17 audit): Parser reads `procedure_id`, `version`, `global_config` including `secrets_config` and `audit_config`, `variables_schema`, `workflow_graph`.
 
-**Missing from IR and runtime**:
+**Still missing from IR and runtime**:
 - `trigger` field (manual/scheduled/webhook/event/file_watch) — not parsed, no DB model, no scheduler/webhook handler
 - `retrieval_metadata` (intents, domain, keywords) — not stored, no search/discovery API
 - `provenance` (compiled_on, compiler_version, sources) — not captured in IR or DB
 - `global_config` deep fields not enforced:
-  - `screenshot_on_fail`, `max_retries`, `retry_delay_ms`, `timeout_ms` are not enforced globally
-  - `checkpoint_strategy`, `checkpoint_retention_days` not implemented
-  - `execution_mode` (dry_run/validation_only) not respected
-  - `mock_external_calls`, `test_data_overrides` not wired
-  - `rate_limiting` not enforced at workflow or platform level
-  - `secrets_config` (provider, vault_url) not integrated
-  - `audit_config` (storage, retention, include_sensitive_data) not implemented
-- `variables_schema.required[].validation` (regex, max, allowed_values, sensitive flag) — parsed but not enforced in runtime variable binding
+  - `screenshot_on_fail`, `timeout_ms` — parsed but not enforced globally
+  - `checkpoint_strategy`, `checkpoint_retention_days` — not implemented
+  - `execution_mode` (dry_run/validation_only) — not respected
+  - `mock_external_calls`, `test_data_overrides` — not wired
+  - `rate_limiting` — parsed but not enforced at workflow or platform level
+- `variables_schema.required[].validation` (regex, max, allowed_values) — parsed but not enforced at bind time
+
+**Already fixed (no longer gaps)**:
+- ~~`max_retries`, `retry_delay_ms`~~ — ✅ enforced with exponential backoff
+- ~~`secrets_config` (provider, vault_url)~~ — ✅ integrated via secrets_service
+- ~~`audit_config`~~ — ✅ redaction active
+- ~~`variables_schema.*.sensitive` flag~~ — ✅ drives redaction
 
 ### Missing node-level policy enforcement
-**Current state**: Nodes parse `sla`, `telemetry`, `idempotency_key` but do not enforce them.
-
-**Missing behavior**:
-- `sla.max_duration_ms` / `on_breach` / `escalation_handler` not monitored or enforced
-- `telemetry.track_duration`, `track_retries`, `custom_metrics` fields exist but metrics not exported
-- `idempotency_key` is stored per step but not used for custom key templates from CKP policy
+**Still missing**:
+- `sla.max_duration_ms` / `on_breach` / `escalation_handler` — not monitored or enforced
+- `telemetry.track_duration`, `track_retries`, `custom_metrics` — fields parsed but not exported
+- Custom `idempotency_key` templates from CKP policy — composite key used instead
 
 ### Missing step-level features
-**Current state**: Steps execute action dispatch + idempotency + retry-on-failure.
-
-**Missing**:
-- Step-level retry policies (`llm_action.retry.max_retries`, `delay_ms`) not deeply enforced
-- Step timeout not enforced independently from global timeout
-- `validation` fields in steps not checked before execution
+**Still missing**:
+- Step `timeout_ms` not enforced — `asyncio.wait_for` never wraps agent calls
+- `wait_ms` / `wait_after_ms` — stored but `wait` action is a no-op placeholder
+- Per-step retry policy override (llm_action `retry.max_retries`, `delay_ms`) — global policy used instead
 
 ### Missing node type completions
-**Current state**: All node types are implemented at runtime.
-
 **Gaps in error/compensation flow**:
-- Error handlers with `recovery_steps` parsed but not executed
-- `on_error` transition targets not added to graph wiring
-- Compensation/rollback steps mentioned in CKP spec but no runtime implementation
+- Error handlers (`recovery_steps`, `fallback_node`) are fully parsed into IR but NOT executed — execute_sequence uses simpler built-in retry
+- Compensation/rollback steps not runtime-implemented
 
 ### Missing operator/diagnostic APIs
-**Current state**: Basic run/event timeline exists.
+**Already implemented (no longer missing)**:
+- ✅ `GET /api/runs/{run_id}/diagnostics` — implemented with idempotency, lease, retry, event data
+- ✅ `GET /api/runs/{run_id}/checkpoints` — implemented with LangGraph saver introspection
+- ✅ `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented
 
-**Missing**:
-- No `GET /api/runs/{run_id}/diagnostics` (idempotency/lease/retry/checkpoint state snapshot)
-- No `GET /api/runs/{run_id}/checkpoints` (checkpoint timeline introspection)
-- No `GET /api/leases` or force-release stale lease tooling
-- No dry-run explain mode API for workflow route simulation
+**Still missing**:
+- Dry-run explain mode API for workflow route simulation
 
-### Missing UI features vs spec
-**Current state**: Runs/procedures/approvals pages exist with basic timeline + artifact rendering.
+### Missing UI features
+**Already implemented**:
+- ✅ Workflow graph viewer (React Flow, read-only) with custom CKP nodes, minimap, types
+- ✅ Projects, leases, agents pages with full CRUD and in-app `ConfirmDialog` (no browser popups)
 
-**Missing**:
-- No workflow graph viewer (read-only or editable)
-- No retry-path visualization in timeline
-- No step-by-step debugger with variable inspection
-- No LLM/agent invocation detail panel (model used, tokens, latency)
-- No approval SLA/escalation indicators
-- No operator diagnostics console
+**Still missing**:
+- Frontend page for diagnostics data (API exists, no UI page)
+- Frontend metrics panel (API exists, no dashboard widget)
+- Input variables form at run-start
+- Retry-path visualization in timeline
+- LLM/agent invocation detail panel
+- Approval SLA/escalation indicators
+- Operator diagnostics console page
 
 ---
 
-## Suggested execution order for immediate next sprints
+## Suggested execution order for next sprints
 
-### Sprint 1: CKP spec completion + diagnostics foundation
-1. Add missing IR fields (`trigger`, `retrieval_metadata`, `provenance`)
-2. Extend parser to capture trigger + provenance + deep global_config
-3. Add run diagnostics API (`GET /api/runs/{run_id}/diagnostics`)
-4. Add checkpoint introspection API (`GET /api/runs/{run_id}/checkpoints`)
+### Sprint 1: Quick runtime fixes (already in backlog)
+1. Implement `asyncio.sleep(wait_ms)` for the `wait` action in `execute_sequence`
+2. Wrap agent HTTP calls with `asyncio.wait_for(timeout_ms / 1000)` and emit `step_timeout` event
+3. Invoke `IRErrorHandler.recovery_steps` / `fallback_node` in `execute_sequence` when applicable
+4. Fix input variables: read procedure `variables_schema` in frontend, prompt at run-start
 
-### Sprint 2: Policy enforcement (retry + timeout + SLA)
-1. Implement configurable retry policy model (max_attempts, backoff, jitter)
-2. Implement node-level SLA monitoring and breach actions
-3. Implement step-level timeout enforcement
-4. Implement global rate limiting (workflow concurrency + requests/min)
+### Sprint 2: Frontend UX quick wins
+1. Add diagnostics tab to run detail page using existing `GET /api/runs/{id}/diagnostics`
+2. Add metrics panel to dashboard using `GET /api/runs/metrics/summary`
+3. Extract shared UI components (`StatusBadge`, `ApprovalStatusBadge`) into `src/components/shared/`
+4. Add input variables form modal at run-start from `variables_schema`
 
-### Sprint 3: Trigger automation
-1. Add trigger model + DB table
+### Sprint 3: Operator tooling
+1. Implement SLA monitoring: track node start vs `sla.max_duration_ms`, emit `sla_breached` event
+2. Add Prometheus-compatible `/metrics` endpoint using existing `MetricsCollector`
+3. Add alert hooks (configurable webhook) for `run_failed` events
+4. Add dry-run explain mode API for workflow route simulation
+
+### Sprint 4: Policy enforcement hardening
+1. Enforce `variables_schema` validation (regex, allowed_values, required) at bind time
+2. Implement `global_config.rate_limiting` at workflow concurrency level
+3. Add per-node retry policy override support (llm_action `retry.max_retries`, `delay_ms`)
+4. Respect `global_config.execution_mode` dry_run flag
+
+### Sprint 5: Trigger automation
+1. Add `trigger` field parsing to IR + DB table
 2. Implement scheduler worker (cron expression evaluation)
-3. Implement webhook trigger endpoint with signature verification
+3. Implement webhook trigger endpoint with request signing verification
 4. Add trigger audit trail and dedupe window logic
 
-### Sprint 4: Security and governance
-1. Implement secrets resolver abstraction + provider adapters (env, vault)
-2. Implement event/payload redaction policy
-3. Add AuthN/AuthZ middleware + role model
-4. Add audit trail enrichment with identity + sensitive flag handling
-
-### Sprint 5: Observability and operator tools
-1. Implement metrics export (OpenTelemetry or Prometheus-compatible)
-2. Add lease operations API (list stale leases, force release)
-3. Add alert hooks for failed/stuck runs
-4. Add dry-run explain mode API
-
-### Sprint 6: Frontend UX upgrades
-1. Add workflow graph viewer (React Flow, read-only first)
-2. Add retry-path visualization in timeline
-3. Add LLM/agent observability panel
-4. Add diagnostics console page
+### Sprint 6: Security and governance
+1. Add AuthN/AuthZ middleware + role model (`operator`, `approver`, `admin`)
+2. Implement AWS Secrets Manager and Azure Key Vault provider adapters
+3. Make redaction field list configurable from `global_config.audit_config`
+4. Add role-based check on approval decision submission
 
 ### Sprint 7: Testing and CI hardening
-1. Add backend unit tests (compiler validation, retry logic, idempotency)
-2. Add backend integration tests (parallel/subflow, checkpoint recovery)
-3. Add frontend e2e tests (Playwright for runs/procedures/approvals flows)
-4. Add CI pipeline (lint + type-check + tests + build gates)
+1. Add backend integration tests for: parallel branch execution, checkpoint resume, approval decision flow, subflow
+2. Add frontend e2e tests with Playwright for primary operator paths
+3. Add GitHub Actions CI pipeline: ruff + pyright + pytest + next build
+4. Add backend performance/concurrency tests for lease management

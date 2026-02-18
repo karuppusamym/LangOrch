@@ -148,6 +148,8 @@ class IRLlmActionPayload:
     model: str = "gpt-4"
     temperature: float = 0.7
     max_tokens: int | None = None
+    system_prompt: str | None = None
+    json_mode: bool = False
     attachments: list[IRLlmAttachment] = field(default_factory=list)
     retry: dict[str, Any] | None = None
     outputs: dict[str, str] = field(default_factory=dict)
@@ -231,3 +233,5 @@ class IRProcedure:
     variables_schema: dict[str, Any] = field(default_factory=dict)
     start_node_id: str = ""
     nodes: dict[str, IRNode] = field(default_factory=dict)
+    provenance: dict[str, Any] | None = None
+    retrieval_metadata: dict[str, Any] | None = None

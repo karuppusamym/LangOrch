@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     LLM_API_KEY: str | None = None
     LLM_TIMEOUT_SECONDS: float = 60.0
 
+    # ── Alert hooks ─────────────────────────────────────────────
+    # When set, a POST is sent to this URL on run_failed events
+    ALERT_WEBHOOK_URL: str | None = None
+
+    # ── Rate limiting ───────────────────────────────────────────
+    # Default max concurrent runs per procedure (0 = unlimited)
+    RATE_LIMIT_MAX_CONCURRENT: int = 0
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

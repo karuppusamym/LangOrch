@@ -18,6 +18,7 @@ class OrchestratorState(TypedDict, total=False):
     run_id: str
     procedure_id: str
     procedure_version: str
+    global_config: dict  # global_config from CKP IR — retry, rate_limit, sla, etc.
 
     # Cursor — tracks where we are
     current_node_id: str

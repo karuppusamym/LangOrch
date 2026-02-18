@@ -48,6 +48,8 @@ def parse_ckp(ckp: dict[str, Any]) -> IRProcedure:
         variables_schema=ckp.get("variables_schema", {}),
         start_node_id=wf.get("start_node", ""),
         nodes=nodes,
+        provenance=ckp.get("provenance"),
+        retrieval_metadata=ckp.get("retrieval_metadata"),
     )
 
 
@@ -205,6 +207,8 @@ def _parse_llm_action(d: dict) -> IRLlmActionPayload:
         model=d.get("model", "gpt-4"),
         temperature=d.get("temperature", 0.7),
         max_tokens=d.get("max_tokens"),
+        system_prompt=d.get("system_prompt"),
+        json_mode=bool(d.get("json_mode", False)),
         attachments=attachments,
         retry=d.get("retry"),
         outputs=d.get("outputs", {}),

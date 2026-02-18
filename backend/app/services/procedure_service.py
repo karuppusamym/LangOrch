@@ -26,6 +26,8 @@ async def import_procedure(db: AsyncSession, ckp: dict[str, Any], project_id: st
         effective_date=ckp.get("effective_date"),
         description=ckp.get("description"),
         ckp_json=json.dumps(ckp),
+        provenance_json=json.dumps(ckp["provenance"]) if ckp.get("provenance") else None,
+        retrieval_metadata_json=json.dumps(ckp["retrieval_metadata"]) if ckp.get("retrieval_metadata") else None,
         project_id=project_id,
     )
     db.add(proc)
@@ -34,12 +36,35 @@ async def import_procedure(db: AsyncSession, ckp: dict[str, Any], project_id: st
     return proc
 
 
-async def list_procedures(db: AsyncSession, project_id: str | None = None) -> list[Procedure]:
+async def list_procedures(
+    db: AsyncSession,
+    project_id: str | None = None,
+    status: str | None = None,
+    tags: list[str] | None = None,
+) -> list[Procedure]:
     stmt = select(Procedure).order_by(Procedure.created_at.desc())
     if project_id:
         stmt = stmt.where(Procedure.project_id == project_id)
+    if status:
+        stmt = stmt.where(Procedure.status == status)
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    procs = list(result.scalars().all())
+    if tags:
+        # Post-filter: retrieval_metadata_json must contain ALL requested tags
+        import json as _json
+        filtered = []
+        for proc in procs:
+            if not proc.retrieval_metadata_json:
+                continue
+            try:
+                meta = _json.loads(proc.retrieval_metadata_json)
+                proc_tags = set(meta.get("tags") or [])
+                if all(t in proc_tags for t in tags):
+                    filtered.append(proc)
+            except Exception:
+                pass
+        return filtered
+    return procs
 
 
 async def get_procedure(db: AsyncSession, procedure_id: str, version: str | None = None) -> Procedure | None:
@@ -82,6 +107,10 @@ async def update_procedure(
     proc.effective_date = ckp.get("effective_date", proc.effective_date)
     proc.description = ckp.get("description", proc.description)
     proc.ckp_json = json.dumps(ckp)
+    if "provenance" in ckp:
+        proc.provenance_json = json.dumps(ckp["provenance"]) if ckp["provenance"] else None
+    if "retrieval_metadata" in ckp:
+        proc.retrieval_metadata_json = json.dumps(ckp["retrieval_metadata"]) if ckp["retrieval_metadata"] else None
     await db.flush()
     await db.refresh(proc)
     return proc

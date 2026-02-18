@@ -25,8 +25,14 @@ async def import_procedure(body: ProcedureCreate, db: AsyncSession = Depends(get
 
 
 @router.get("", response_model=list[ProcedureOut])
-async def list_procedures(project_id: str | None = None, db: AsyncSession = Depends(get_db)):
-    return await procedure_service.list_procedures(db, project_id)
+async def list_procedures(
+    project_id: str | None = None,
+    status: str | None = None,
+    tags: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+    return await procedure_service.list_procedures(db, project_id, status=status, tags=tag_list)
 
 
 @router.get("/{procedure_id}/versions", response_model=list[ProcedureOut])
@@ -50,20 +56,7 @@ async def get_procedure(procedure_id: str, version: str, db: AsyncSession = Depe
     proc = await procedure_service.get_procedure(db, procedure_id, version)
     if not proc:
         raise HTTPException(status_code=404, detail="Procedure not found")
-    # parse ckp_json from TEXT to dict for response
-    proc_dict = {
-        "id": proc.id,
-        "procedure_id": proc.procedure_id,
-        "version": proc.version,
-        "name": proc.name,
-        "status": proc.status,
-        "effective_date": proc.effective_date,
-        "description": proc.description,
-        "project_id": proc.project_id,
-        "created_at": proc.created_at,
-        "ckp_json": json.loads(proc.ckp_json),
-    }
-    return proc_dict
+    return proc
 
 
 @router.put("/{procedure_id}/{version}", response_model=ProcedureOut)

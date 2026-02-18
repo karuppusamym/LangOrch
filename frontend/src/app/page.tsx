@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { listProcedures, listRuns, listApprovals, listAgents } from "@/lib/api";
-import type { Procedure, Run, Approval, AgentInstance } from "@/lib/types";
+import { listProcedures, listRuns, listApprovals, listAgents, getMetricsSummary } from "@/lib/api";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import type { Procedure, Run, Approval, AgentInstance, MetricsSummary } from "@/lib/types";
 
 interface Stats {
   procedures: number;
@@ -15,6 +16,7 @@ interface Stats {
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [metrics, setMetrics] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -33,6 +35,8 @@ export default function DashboardPage() {
           onlineAgents: agents.filter((a) => a.status === "online").length,
           recentRuns: runs.slice(0, 5),
         });
+        // Load metrics separately (best-effort)
+        getMetricsSummary().then(setMetrics).catch(() => null);
       } catch (err) {
         console.error("Dashboard load error", err);
       } finally {
@@ -67,6 +71,23 @@ export default function DashboardPage() {
           </Link>
         ))}
       </div>
+
+      {/* Metrics panel */}
+      {metrics?.counters && Object.keys(metrics.counters).length > 0 && (
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-4 text-base font-semibold text-gray-900">Runtime Metrics</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {Object.entries(metrics.counters).map(([key, val]) => (
+              <div key={key} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                <p className="text-[10px] text-gray-500 break-all">{key}</p>
+                <p className="mt-1 text-sm font-bold text-gray-800">
+                  {typeof val === "object" ? JSON.stringify(val) : String(val)}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Recent runs */}
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -104,16 +125,4 @@ export default function DashboardPage() {
       </div>
     </div>
   );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const cls: Record<string, string> = {
-    completed: "badge-success",
-    running: "badge-info",
-    pending: "badge-neutral",
-    waiting_approval: "badge-warning",
-    failed: "badge-error",
-    cancelled: "badge-neutral",
-  };
-  return <span className={`badge ${cls[status] ?? "badge-neutral"}`}>{status}</span>;
 }

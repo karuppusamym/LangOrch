@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { cleanupRuns, deleteRun, listRuns, cancelRun } from "@/lib/api";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { StatusBadge } from "@/components/shared/StatusBadge";
 import type { Run } from "@/lib/types";
 
 export default function RunsPage() {
@@ -14,19 +16,31 @@ export default function RunsPage() {
   const [createdTo, setCreatedTo] = useState("");
   const [cleanupBefore, setCleanupBefore] = useState("");
   const [cleanupPreviewCount, setCleanupPreviewCount] = useState<number | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const PAGE_SIZE = 100;
 
   useEffect(() => {
-    loadRuns();
+    setOffset(0);
+    void loadRuns(0);
   }, [order, createdFrom, createdTo]);
 
-  async function loadRuns() {
+  async function loadRuns(newOffset = 0, append = false) {
     try {
       const data = await listRuns({
         order,
         createdFrom: createdFrom ? new Date(createdFrom).toISOString() : undefined,
         createdTo: createdTo ? new Date(createdTo).toISOString() : undefined,
+        limit: PAGE_SIZE,
+        offset: newOffset,
       });
-      setRuns(data);
+      if (append) {
+        setRuns((prev) => [...prev, ...data]);
+      } else {
+        setRuns(data);
+      }
+      setHasMore(data.length === PAGE_SIZE);
     } catch (err) {
       console.error(err);
     } finally {
@@ -44,7 +58,13 @@ export default function RunsPage() {
   }
 
   async function handleDelete(runId: string) {
-    if (!confirm("Delete this run and all its events?")) return;
+    setConfirmDeleteId(runId);
+  }
+
+  async function confirmDelete() {
+    if (!confirmDeleteId) return;
+    const runId = confirmDeleteId;
+    setConfirmDeleteId(null);
     try {
       await deleteRun(runId);
       loadRuns();
@@ -146,7 +166,7 @@ export default function RunsPage() {
           title="Created to"
         />
         <button
-          onClick={loadRuns}
+          onClick={() => { setOffset(0); void loadRuns(0); }}
           className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-100"
         >
           Refresh
@@ -266,19 +286,31 @@ export default function RunsPage() {
           </table>
         </div>
       )}
+      {hasMore && (
+        <div className="flex justify-center pt-2">
+          <button
+            onClick={() => {
+              const next = offset + PAGE_SIZE;
+              setOffset(next);
+              void loadRuns(next, true);
+            }}
+            className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Load more
+          </button>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="Delete Run"
+        message="Delete this run and all its events? This cannot be undone."
+        confirmLabel="Delete"
+        danger
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const cls: Record<string, string> = {
-    completed: "badge-success",
-    running: "badge-info",
-    created: "badge-neutral",
-    waiting_approval: "badge-warning",
-    failed: "badge-error",
-    canceled: "badge-neutral",
-    cancelled: "badge-neutral",
-  };
-  return <span className={`badge ${cls[status] ?? "badge-neutral"}`}>{status}</span>;
-}

@@ -13,6 +13,7 @@ from app.services import procedure_service, run_service
 from app.services import checkpoint_service
 from app.services.execution_service import execute_run
 from app.utils.metrics import get_metrics_summary
+from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled
 
 router = APIRouter()
 
@@ -45,6 +46,8 @@ async def list_runs(
     created_from: datetime | None = None,
     created_to: datetime | None = None,
     order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     return await run_service.list_runs(
@@ -54,6 +57,8 @@ async def list_runs(
         created_from=created_from,
         created_to=created_to,
         order=order,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -115,6 +120,7 @@ async def get_checkpoint_state(run_id: str, checkpoint_id: str, db: AsyncSession
 
 @router.post("/{run_id}/cancel", response_model=RunOut)
 async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    _mark_run_cancelled(run_id)  # signal in-process cancellation
     run = await run_service.update_run_status(db, run_id, "canceled")
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -20,7 +20,11 @@ async def create_approval(
     decision_type: str,
     options: list[str] | None = None,
     context_data: dict[str, Any] | None = None,
+    timeout_ms: int | None = None,
 ) -> Approval:
+    expires_at: datetime | None = None
+    if timeout_ms is not None:
+        expires_at = datetime.now(timezone.utc) + timedelta(milliseconds=timeout_ms)
     approval = Approval(
         run_id=run_id,
         node_id=node_id,
@@ -28,6 +32,7 @@ async def create_approval(
         decision_type=decision_type,
         options_json=json.dumps(options) if options else None,
         context_data_json=json.dumps(context_data) if context_data else None,
+        expires_at=expires_at,
     )
     db.add(approval)
     await db.flush()
@@ -64,3 +69,16 @@ async def submit_decision(
     await db.flush()
     await db.refresh(approval)
     return approval
+
+
+async def get_expired_approvals(db: AsyncSession) -> list[Approval]:
+    """Return all pending approvals whose expires_at is in the past."""
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(Approval)
+        .where(Approval.status == "pending")
+        .where(Approval.expires_at.is_not(None))
+        .where(Approval.expires_at < now)
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())

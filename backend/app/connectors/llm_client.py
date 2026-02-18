@@ -24,6 +24,8 @@ class LLMClient:
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        system_prompt: str | None = None,
+        json_mode: bool = False,
     ) -> dict[str, Any]:
         if not self.api_key:
             raise LLMCallError("LLM_API_KEY is not configured")
@@ -32,13 +34,19 @@ class LLMClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         body: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "temperature": temperature,
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
 
         url = f"{self.base_url}/chat/completions"
         logger.info("LLM call: model=%s", model)

@@ -36,6 +36,8 @@ class ProcedureOut(BaseModel):
 
 class ProcedureDetail(ProcedureOut):
     ckp_json: dict[str, Any]
+    provenance: dict[str, Any] | None = None
+    retrieval_metadata: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -44,4 +46,12 @@ class ProcedureDetail(ProcedureOut):
     def _parse_ckp(cls, data: Any) -> Any:
         if hasattr(data, "ckp_json") and isinstance(data.ckp_json, str):
             data.ckp_json = json.loads(data.ckp_json)
+        if hasattr(data, "provenance_json") and isinstance(data.provenance_json, str):
+            data.provenance = json.loads(data.provenance_json)
+        elif hasattr(data, "provenance_json") and data.provenance_json is None:
+            data.provenance = None
+        if hasattr(data, "retrieval_metadata_json") and isinstance(data.retrieval_metadata_json, str):
+            data.retrieval_metadata = json.loads(data.retrieval_metadata_json)
+        elif hasattr(data, "retrieval_metadata_json") and data.retrieval_metadata_json is None:
+            data.retrieval_metadata = None
         return data

@@ -4,11 +4,13 @@ import type {
   Artifact,
   Procedure,
   ProcedureDetail,
+  Project,
   Run,
   RunEvent,
   Approval,
   AgentInstance,
-  ActionCatalog,
+  RunDiagnostics,
+  MetricsSummary,
 } from "./types";
 
 const API_BASE = "/api";
@@ -22,13 +24,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.text();
     throw new Error(`API ${res.status}: ${body}`);
   }
+  // 204 No Content — no body to parse
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as unknown as T;
+  }
   return res.json();
 }
 
 /* ── Procedures ────────────────────────── */
 
-export async function listProcedures(): Promise<Procedure[]> {
-  return request("/procedures");
+export async function listProcedures(params?: {
+  status?: string;
+  tags?: string[];
+  project_id?: string;
+}): Promise<Procedure[]> {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.tags?.length) q.set("tags", params.tags.join(","));
+  if (params?.project_id) q.set("project_id", params.project_id);
+  const qs = q.toString();
+  return request(`/procedures${qs ? `?${qs}` : ""}`);
 }
 
 export async function getProcedure(id: string, version?: string): Promise<ProcedureDetail> {
@@ -46,10 +61,13 @@ export async function getProcedure(id: string, version?: string): Promise<Proced
   );
 }
 
-export async function importProcedure(ckpJson: Record<string, unknown>): Promise<Procedure> {
+export async function importProcedure(
+  ckpJson: Record<string, unknown>,
+  projectId?: string
+): Promise<Procedure> {
   return request("/procedures", {
     method: "POST",
-    body: JSON.stringify({ ckp_json: ckpJson }),
+    body: JSON.stringify({ ckp_json: ckpJson, project_id: projectId ?? null }),
   });
 }
 
@@ -90,12 +108,16 @@ export async function listRuns(params?: {
   createdFrom?: string;
   createdTo?: string;
   order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
 }): Promise<Run[]> {
   const q = new URLSearchParams();
   if (params?.status && params.status !== "all") q.set("status", params.status);
   if (params?.createdFrom) q.set("created_from", params.createdFrom);
   if (params?.createdTo) q.set("created_to", params.createdTo);
   if (params?.order) q.set("order", params.order);
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
   const qs = q.toString();
   return request(`/runs${qs ? `?${qs}` : ""}`);
 }
@@ -185,6 +207,7 @@ export async function registerAgent(data: {
   base_url: string;
   resource_key?: string;
   concurrency_limit?: number;
+  capabilities?: string[];
 }): Promise<AgentInstance> {
   return request("/agents", {
     method: "POST",
@@ -192,8 +215,65 @@ export async function registerAgent(data: {
   });
 }
 
-/* ── Catalog ───────────────────────────── */
+export async function updateAgent(
+  agentId: string,
+  data: { status?: string; base_url?: string; concurrency_limit?: number; capabilities?: string[] }
+): Promise<AgentInstance> {
+  return request(`/agents/${encodeURIComponent(agentId)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
 
-export async function getActionCatalog(): Promise<ActionCatalog> {
+export async function deleteAgent(agentId: string): Promise<void> {
+  await request(`/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+}
+
+export async function getActionCatalog(): Promise<Record<string, string[]>> {
   return request("/actions");
+}
+
+/* ── Projects ──────────────────────────────────── */
+
+export async function listProjects(): Promise<Project[]> {
+  return request("/projects");
+}
+
+export async function createProject(data: { name: string; description?: string }): Promise<Project> {
+  return request("/projects", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateProject(
+  projectId: string,
+  data: { name?: string; description?: string }
+): Promise<Project> {
+  return request(`/projects/${encodeURIComponent(projectId)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await request(`/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+}
+
+/* ── Diagnostics & Metrics ────────────────── */
+
+export async function getRunDiagnostics(runId: string): Promise<RunDiagnostics> {
+  return request(`/runs/${runId}/diagnostics`);
+}
+
+export async function getMetricsSummary(): Promise<MetricsSummary> {
+  return request("/runs/metrics/summary");
+}
+
+/* ── Leases ────────────────────────────── */
+
+export async function listLeases(resourceKey?: string): Promise<import("./types").ResourceLeaseDiagnostic[]> {
+  const q = resourceKey ? `?resource_key=${encodeURIComponent(resourceKey)}` : "";
+  return request(`/leases${q}`);
+}
+
+export async function revokeLease(leaseId: string): Promise<void> {
+  await request(`/leases/${leaseId}`, { method: "DELETE" });
 }

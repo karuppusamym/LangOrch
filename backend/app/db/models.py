@@ -56,6 +56,8 @@ class Procedure(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     ckp_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON stored as TEXT
+    provenance_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # provenance block
+    retrieval_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # retrieval_metadata block
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
     )
@@ -123,6 +125,7 @@ class Approval(Base):
     decision_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ── Step idempotency ────────────────────────────────────────────

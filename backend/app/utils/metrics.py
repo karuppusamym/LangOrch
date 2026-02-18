@@ -10,6 +10,9 @@ Provides simple counters for key operational metrics:
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
+import logging
+
+logger = logging.getLogger("langorch.metrics")
 
 
 class MetricsCollector:
@@ -112,6 +115,17 @@ def record_step_execution(node_id: str, status: str):
     metrics.increment_counter("step_execution_total", labels={"node_id": node_id, "status": status})
 
 
-def get_metrics_summary() -> dict[str, Any]:
+def record_step_timeout(node_id: str, step_id: str, timeout_ms: int):
+    """Record a step timeout event."""
+    metrics.increment_counter("step_timeout_total", labels={"node_id": node_id, "step_id": step_id})
+    logger.warning("Step timeout: node=%s step=%s timeout_ms=%d", node_id, step_id, timeout_ms)
+
+
+def record_custom_metric(name: str, value: int = 1, labels: dict[str, str] | None = None):
+    """Increment a custom metric counter defined in node telemetry.custom_metrics."""
+    metrics.increment_counter(name, value=value, labels=labels)
+
+
+def get_metrics_summary() -> dict:
     """Get a summary of all metrics."""
     return metrics.get_all_metrics()

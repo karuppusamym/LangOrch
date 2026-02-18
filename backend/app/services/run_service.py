@@ -47,6 +47,8 @@ async def list_runs(
     created_from: datetime | None = None,
     created_to: datetime | None = None,
     order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
 ) -> list[Run]:
     stmt = select(Run)
     if project_id:
@@ -59,6 +61,7 @@ async def list_runs(
         stmt = stmt.where(Run.created_at <= created_to)
 
     stmt = stmt.order_by(Run.created_at.asc() if order == "asc" else Run.created_at.desc())
+    stmt = stmt.limit(limit).offset(offset)
 
     result = await db.execute(stmt)
     return list(result.scalars().all())

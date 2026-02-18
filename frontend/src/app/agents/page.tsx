@@ -1,11 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { listAgents, registerAgent } from "@/lib/api";
+import { listAgents, registerAgent, updateAgent, deleteAgent, getActionCatalog } from "@/lib/api";
+import { useToast } from "@/components/Toast";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { AgentInstance } from "@/lib/types";
 
+const CHANNELS = ["web", "desktop", "email", "api", "database", "llm", "masteragent"];
+
+const STATUS_COLORS: Record<string, string> = {
+  online:  "bg-green-500",
+  offline: "bg-gray-400",
+  busy:    "bg-yellow-500",
+};
+
 export default function AgentsPage() {
-  const [agents, setAgents] = useState<AgentInstance[]>([]);
+  const [agents, setAgents]   = useState<AgentInstance[]>([]);
+  const [catalog, setCatalog] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [showRegister, setShowRegister] = useState(false);
   const [form, setForm] = useState({
@@ -15,11 +26,14 @@ export default function AgentsPage() {
     base_url: "http://localhost:9000",
     resource_key: "",
     concurrency_limit: 1,
+    capabilities: [] as string[],
   });
   const [error, setError] = useState("");
+  const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<AgentInstance | null>(null);
+  const { toast } = useToast();
 
   useEffect(() => {
-    loadAgents();
+    void Promise.all([loadAgents(), loadCatalog()]);
   }, []);
 
   async function loadAgents() {
@@ -33,16 +47,30 @@ export default function AgentsPage() {
     }
   }
 
+  async function loadCatalog() {
+    try { setCatalog(await getActionCatalog()); } catch (_) { /* non-critical */ }
+  }
+
+  function toggleCapability(action: string) {
+    setForm((prev) => ({
+      ...prev,
+      capabilities: prev.capabilities.includes(action)
+        ? prev.capabilities.filter((c) => c !== action)
+        : [...prev.capabilities, action],
+    }));
+  }
+
   async function handleRegister() {
     setError("");
-    if (!form.agent_id || !form.name || !form.base_url) {
-      setError("Agent ID, name, and base URL are required");
+    if (!form.name || !form.base_url) {
+      setError("Name and base URL are required");
       return;
     }
     try {
       await registerAgent({
         ...form,
         resource_key: form.resource_key || `${form.channel}_default`,
+        capabilities: form.capabilities.length > 0 ? form.capabilities : undefined,
       });
       setShowRegister(false);
       setForm({
@@ -52,14 +80,46 @@ export default function AgentsPage() {
         base_url: "http://localhost:9000",
         resource_key: "",
         concurrency_limit: 1,
+        capabilities: [],
       });
-      loadAgents();
+      toast("Agent registered successfully", "success");
+      void loadAgents();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed");
+      const msg = err instanceof Error ? err.message : "Registration failed";
+      setError(msg);
+      toast(msg, "error");
     }
   }
 
-  const CHANNELS = ["web", "desktop", "email", "api", "database", "llm"];
+  const channelActions = catalog[form.channel] ?? [];
+
+  async function handleStatusToggle(agent: AgentInstance) {
+    try {
+      const next = agent.status === "online" ? "offline" : "online";
+      await updateAgent(agent.agent_id, { status: next });
+      toast(`Agent marked ${next}`, "success");
+      void loadAgents();
+    } catch {
+      toast("Failed to update agent status", "error");
+    }
+  }
+
+  async function handleDelete(agent: AgentInstance) {
+    setConfirmDeleteAgent(agent);
+  }
+
+  async function doDeleteAgent() {
+    if (!confirmDeleteAgent) return;
+    const agent = confirmDeleteAgent;
+    setConfirmDeleteAgent(null);
+    try {
+      await deleteAgent(agent.agent_id);
+      toast("Agent deleted", "success");
+      void loadAgents();
+    } catch {
+      toast("Failed to delete agent", "error");
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -155,21 +215,61 @@ export default function AgentsPage() {
               />
             </div>
           </div>
-          {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-          <div className="mt-4 flex gap-2">
-            <button
-              onClick={handleRegister}
-              className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
-            >
-              Register
-            </button>
-            <button
-              onClick={() => { setShowRegister(false); setError(""); }}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-          </div>
+          {/* Capabilities */}
+          {channelActions.length > 0 && (
+            <div className="col-span-2 mt-2">
+              <div className="mb-2 flex items-center justify-between">
+                <label className="text-xs text-gray-500">
+                  Capabilities{" "}
+                  <span className="text-gray-400">(leave empty = accepts all actions for channel)</span>
+                </label>
+                <div className="flex gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, capabilities: channelActions })}
+                    className="text-primary-600 hover:underline"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, capabilities: [] })}
+                    className="text-gray-400 hover:underline"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {channelActions.map((action) => (
+                  <label key={action} className="flex cursor-pointer items-center gap-1 rounded-full border border-gray-200 px-3 py-1 text-xs hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3"
+                      checked={form.capabilities.includes(action)}
+                      onChange={() => toggleCapability(action)}
+                    />
+                    {action}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={handleRegister}
+            className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
+          >
+            Register
+          </button>
+          <button
+            onClick={() => { setShowRegister(false); setError(""); }}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+        </div>
         </div>
       )}
 
@@ -194,35 +294,64 @@ export default function AgentsPage() {
               <div className="mt-3 space-y-1 text-xs text-gray-500">
                 <p>
                   <span className="text-gray-400">Channel:</span>{" "}
-                  <span className="badge badge-info">{agent.channel}</span>
+                  <span className="rounded-full bg-primary-50 px-2 py-0.5 text-primary-700">{agent.channel}</span>
                 </p>
-                <p>
-                  <span className="text-gray-400">URL:</span> {agent.base_url}
-                </p>
-                <p>
-                  <span className="text-gray-400">Resource:</span> {agent.resource_key}
-                </p>
-                <p>
-                  <span className="text-gray-400">Concurrency:</span> {agent.concurrency_limit}
-                </p>
+                <p><span className="text-gray-400">URL:</span> {agent.base_url}</p>
+                <p><span className="text-gray-400">Resource:</span> {agent.resource_key}</p>
+                <p><span className="text-gray-400">Concurrency:</span> {agent.concurrency_limit}</p>
+              </div>
+              {agent.capabilities.length > 0 && (
+                <div className="mt-3">
+                  <p className="mb-1 text-xs text-gray-400">Capabilities</p>
+                  <div className="flex flex-wrap gap-1">
+                    {agent.capabilities.map((cap) => (
+                      <span key={cap} className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
+                        {cap}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => handleStatusToggle(agent)}
+                  className={`flex-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    agent.status === "online"
+                      ? "border-gray-300 text-gray-600 hover:bg-gray-50"
+                      : "border-green-300 text-green-700 hover:bg-green-50"
+                  }`}
+                >
+                  Mark {agent.status === "online" ? "Offline" : "Online"}
+                </button>
+                <button
+                  onClick={() => handleDelete(agent)}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                >
+                  Delete
+                </button>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmDeleteAgent !== null}
+        title="Delete Agent"
+        message={confirmDeleteAgent ? `Delete agent "${confirmDeleteAgent.name}"? This cannot be undone.` : ""}
+        confirmLabel="Delete"
+        danger
+        onConfirm={doDeleteAgent}
+        onCancel={() => setConfirmDeleteAgent(null)}
+      />
     </div>
   );
 }
 
 function AgentStatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    online: "bg-green-500",
-    offline: "bg-gray-400",
-    busy: "bg-yellow-500",
-  };
   return (
     <div className="flex items-center gap-1.5">
-      <div className={`h-2 w-2 rounded-full ${colors[status] ?? "bg-gray-400"}`} />
+      <div className={`h-2 w-2 rounded-full ${STATUS_COLORS[status] ?? "bg-gray-400"}`} />
       <span className="text-xs text-gray-500">{status}</span>
     </div>
   );

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable
 
 from langgraph.graph import StateGraph, END
 
+from app.utils.token_bucket import acquire_rate_limit
 from app.compiler.ir import (
     IRHumanApprovalPayload,
     IRLogicPayload,
@@ -32,6 +34,60 @@ from app.runtime.state import OrchestratorState
 
 logger = logging.getLogger("langorch.graph_builder")
 
+
+async def _check_sla(
+    node_id: str,
+    t0: float,
+    max_ms: int,
+    on_breach: str,
+    escalation_handler: str | None,
+    state: OrchestratorState,
+    db_factory: Callable | None,
+) -> dict | None:
+    """Check SLA timing after a node completes.
+
+    Returns a state-patch dict if routing should be overridden (escalate mode),
+    raises RuntimeError if on_breach=="fail", returns None otherwise.
+    """
+    elapsed_ms = (asyncio.get_event_loop().time() - t0) * 1000.0
+    if elapsed_ms <= max_ms:
+        return None
+    run_id = state.get("run_id", "")
+    logger.warning(
+        "SLA breach: node '%s' took %.0fms, limit %dms (on_breach=%s)",
+        node_id, elapsed_ms, max_ms, on_breach,
+    )
+    if db_factory and run_id:
+        from app.services import run_service
+        try:
+            async with db_factory() as db:
+                await run_service.emit_event(
+                    db, run_id, "sla_breached",
+                    node_id=node_id,
+                    payload={
+                        "elapsed_ms": round(elapsed_ms),
+                        "limit_ms": max_ms,
+                        "on_breach": on_breach,
+                        "escalation_handler": escalation_handler,
+                    },
+                )
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to emit sla_breached event: %s", exc)
+
+    if on_breach == "fail":
+        raise RuntimeError(
+            f"SLA breach: node '{node_id}' exceeded {max_ms}ms limit "
+            f"(took {round(elapsed_ms)}ms)"
+        )
+    if on_breach == "escalate" and escalation_handler:
+        logger.info(
+            "SLA breach escalation: routing node '%s' → '%s'",
+            node_id, escalation_handler,
+        )
+        return {"next_node_id": escalation_handler}
+    return None
+
 # Map CKP node type → executor function
 _NODE_EXECUTORS: dict[str, Any] = {
     "sequence": execute_sequence,
@@ -48,7 +104,7 @@ _NODE_EXECUTORS: dict[str, Any] = {
 }
 
 # Node types whose executors need db_factory (for dynamic agent dispatch)
-_NEEDS_DB: set[str] = {"sequence", "subflow"}
+_NEEDS_DB: set[str] = {"sequence", "subflow", "llm_action"}
 
 
 def build_graph(
@@ -68,6 +124,33 @@ def build_graph(
 
     graph = StateGraph(OrchestratorState)
 
+    # Build optional concurrency semaphore from global_config rate_limiting
+    _rate_cfg = ir.global_config.get("rate_limiting") or {}
+    _max_concurrent: int | None = (
+        int(_rate_cfg["max_concurrent_operations"])
+        if _rate_cfg.get("enabled") and _rate_cfg.get("max_concurrent_operations")
+        else None
+    )
+    _semaphore: asyncio.Semaphore | None = (
+        asyncio.Semaphore(_max_concurrent) if _max_concurrent and _max_concurrent > 0 else None
+    )
+    if _semaphore:
+        logger.info(
+            "Rate limiting: max_concurrent_operations=%d for procedure '%s'",
+            _max_concurrent, ir.procedure_id,
+        )
+
+    _max_rpm: int | None = (
+        int(_rate_cfg["max_requests_per_minute"])
+        if _rate_cfg.get("enabled") and _rate_cfg.get("max_requests_per_minute")
+        else None
+    )
+    if _max_rpm:
+        logger.info(
+            "Rate limiting: max_requests_per_minute=%d for procedure '%s'",
+            _max_rpm, ir.procedure_id,
+        )
+
     # Add a node function for every CKP node
     for nid, ir_node in ir.nodes.items():
         executor = _NODE_EXECUTORS.get(ir_node.type)
@@ -75,21 +158,64 @@ def build_graph(
             logger.warning("No executor for node type '%s', skipping node '%s'", ir_node.type, nid)
             continue
 
-        # Closure to capture ir_node and db_factory
-        def make_fn(node: IRNode, needs_db: bool):
+        # Closure to capture ir_node, db_factory, and semaphore
+        def make_fn(node: IRNode, needs_db: bool, sem: asyncio.Semaphore | None, max_rpm: int | None = None):
+            _sla = node.sla or {}
+            _max_ms: int | None = int(_sla["max_duration_ms"]) if _sla.get("max_duration_ms") else None
+            _on_breach: str = str(_sla.get("on_breach") or "warn")
+            _escalation_handler: str | None = _sla.get("escalation_handler") or None
+            _custom_metrics: list | None = (node.telemetry or {}).get("custom_metrics")
+
+            def _emit_custom_metrics():
+                if _custom_metrics:
+                    from app.utils.metrics import record_custom_metric
+                    for cm in _custom_metrics:
+                        if isinstance(cm, str):
+                            record_custom_metric(cm)
+                        elif isinstance(cm, dict) and cm.get("name"):
+                            record_custom_metric(cm["name"], value=int(cm.get("value", 1)))
+
             if node.type == "parallel":
                 async def fn(state: OrchestratorState) -> OrchestratorState:
-                    return await execute_parallel(node, state, db_factory=db_factory, nodes=ir.nodes)
+                    async def _run():
+                        if max_rpm:
+                            await acquire_rate_limit(ir.procedure_id, max_rpm)
+                        _t0 = asyncio.get_event_loop().time()
+                        result = await execute_parallel(node, state, db_factory=db_factory, nodes=ir.nodes)
+                        _emit_custom_metrics()
+                        if _max_ms:
+                            patch = await _check_sla(node.node_id, _t0, _max_ms, _on_breach, _escalation_handler, state, db_factory)
+                            if patch:
+                                return {**result, **patch}
+                        return result
+                    if sem:
+                        async with sem:
+                            return await _run()
+                    return await _run()
             elif needs_db:
                 async def fn(state: OrchestratorState) -> OrchestratorState:
-                    return await _NODE_EXECUTORS[node.type](node, state, db_factory=db_factory)
+                    async def _run():
+                        if max_rpm:
+                            await acquire_rate_limit(ir.procedure_id, max_rpm)
+                        _t0 = asyncio.get_event_loop().time()
+                        result = await _NODE_EXECUTORS[node.type](node, state, db_factory=db_factory)
+                        _emit_custom_metrics()
+                        if _max_ms:
+                            patch = await _check_sla(node.node_id, _t0, _max_ms, _on_breach, _escalation_handler, state, db_factory)
+                            if patch:
+                                return {**result, **patch}
+                        return result
+                    if sem:
+                        async with sem:
+                            return await _run()
+                    return await _run()
             else:
                 def fn(state: OrchestratorState) -> OrchestratorState:
                     return _NODE_EXECUTORS[node.type](node, state)
             fn.__name__ = f"node_{node.node_id}"
             return fn
 
-        graph.add_node(nid, make_fn(ir_node, ir_node.type in _NEEDS_DB))
+        graph.add_node(nid, make_fn(ir_node, ir_node.type in _NEEDS_DB, _semaphore, _max_rpm))
 
     # Set entry point (default = procedure start)
     graph.set_entry_point(entry_node_id or ir.start_node_id)

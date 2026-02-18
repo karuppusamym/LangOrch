@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { getProcedure, createRun, getGraph, listVersions } from "@/lib/api";
+import { useToast } from "@/components/Toast";
+import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import type { ProcedureDetail, Procedure } from "@/lib/types";
 
 const WorkflowGraph = dynamic(
@@ -14,15 +16,20 @@ const WorkflowGraph = dynamic(
 
 export default function ProcedureDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const procedureId = params.id as string;
 
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [runStarted, setRunStarted] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions">("overview");
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [showVarsModal, setShowVarsModal] = useState(false);
+  const [varsForm, setVarsForm] = useState<Record<string, string>>({});
+  const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
+  const [runCreating, setRunCreating] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     async function load() {
@@ -42,15 +49,69 @@ export default function ProcedureDetailPage() {
     load();
   }, [procedureId]);
 
-  async function handleStartRun() {
+  const schema = (procedure?.ckp_json as any)?.variables_schema ?? {};
+  const schemaEntries = Object.entries(schema) as [string, any][];
+
+  function openStartRun() {
     if (!procedure) return;
+    if (schemaEntries.length > 0) {
+      // Pre-fill defaults
+      const defaults: Record<string, string> = {};
+      schemaEntries.forEach(([k, v]) => {
+        defaults[k] = v?.default !== undefined ? String(v.default) : "";
+      });
+      setVarsForm(defaults);
+      setVarsErrors({});
+      setShowVarsModal(true);
+    } else {
+      void doCreateRun({});
+    }
+  }
+
+  async function doCreateRun(vars: Record<string, unknown>) {
+    if (!procedure) return;
+    setRunCreating(true);
     try {
-      const run = await createRun(procedure.procedure_id, procedure.version);
-      setRunStarted(true);
-      // Could navigate to /runs/{run.run_id}
+      const run = await createRun(procedure.procedure_id, procedure.version, vars);
+      router.push(`/runs/${run.run_id}`);
     } catch (err) {
       console.error(err);
+      setRunCreating(false);
     }
+  }
+
+  function validateVarField(key: string, raw: string, meta: Record<string, any>): string {
+    const validation = (meta?.validation ?? {}) as Record<string, any>;
+    const vtype = (meta?.type ?? "string") as string;
+    if (meta?.required && !raw.trim()) return "This field is required";
+    if (!raw) return "";
+    if (validation.regex) {
+      try {
+        if (!new RegExp(`^(?:${validation.regex as string})$`).test(raw))
+          return `Must match pattern: ${validation.regex as string}`;
+      } catch { /* invalid regex — skip */ }
+    }
+    if (vtype === "number") {
+      const num = Number(raw);
+      if (validation.min !== undefined && num < (validation.min as number))
+        return `Minimum value is ${validation.min as number}`;
+      if (validation.max !== undefined && num > (validation.max as number))
+        return `Maximum value is ${validation.max as number}`;
+    }
+    const allowed = validation.allowed_values as string[] | undefined;
+    if (allowed && !allowed.includes(raw)) return `Must be one of: ${allowed.join(", ")}`;
+    return "";
+  }
+
+  function handleVarChange(key: string, raw: string, meta: Record<string, any>) {
+    setVarsForm((prev) => ({ ...prev, [key]: raw }));
+    const err = validateVarField(key, raw, meta);
+    setVarsErrors((prev) => {
+      const next = { ...prev };
+      if (err) next[key] = err;
+      else delete next[key];
+      return next;
+    });
   }
 
   if (loading) return <p className="text-gray-500">Loading procedure...</p>;
@@ -82,17 +143,23 @@ export default function ProcedureDetailPage() {
             ← Procedures
           </Link>
           <h2 className="mt-2 text-xl font-bold text-gray-900">{procedure.name}</h2>
+          <div className="mt-1 flex items-center gap-2">
+            <StatusBadge status={procedure.status ?? "draft"} />
+            {procedure.effective_date && (
+              <span className="text-xs text-gray-400">Effective: {procedure.effective_date}</span>
+            )}
+          </div>
           <p className="mt-1 text-sm text-gray-500">{procedure.description}</p>
           <p className="mt-1 text-xs text-gray-400">
             ID: {procedure.procedure_id} · Version: {procedure.version}
           </p>
         </div>
         <button
-          onClick={handleStartRun}
-          disabled={runStarted}
+          onClick={openStartRun}
+          disabled={runCreating}
           className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
         >
-          {runStarted ? "Run Started" : "Start Run"}
+          {runCreating ? "Starting…" : "Start Run"}
         </button>
       </div>
 
@@ -132,6 +199,31 @@ export default function ProcedureDetailPage() {
               </div>
             ))}
           </div>
+          {/* Provenance */}
+          {procedure.provenance && (
+            <div className="mt-6">
+              <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Provenance</h4>
+              <pre className="rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto">
+                {JSON.stringify(procedure.provenance, null, 2)}
+              </pre>
+            </div>
+          )}
+          {/* Retrieval Metadata */}
+          {procedure.retrieval_metadata && (
+            <div className="mt-4">
+              <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Retrieval Metadata</h4>
+              {Array.isArray((procedure.retrieval_metadata as any)?.tags) && (
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {((procedure.retrieval_metadata as any).tags as string[]).map((tag: string) => (
+                    <span key={tag} className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700">{tag}</span>
+                  ))}
+                </div>
+              )}
+              <pre className="rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto">
+                {JSON.stringify(procedure.retrieval_metadata, null, 2)}
+              </pre>
+            </div>
+          )}
         </div>
       )}
 
@@ -171,6 +263,123 @@ export default function ProcedureDetailPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {/* Input Variables Modal */}
+      {showVarsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="mb-4 text-base font-semibold text-gray-900">Set Input Variables</h3>
+            <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
+              {schemaEntries.map(([key, meta]) => {
+                const validation = (meta?.validation ?? {}) as Record<string, any>;
+                const allowed = validation.allowed_values as string[] | undefined;
+                const isRequired = !!meta?.required;
+                const fieldErr = varsErrors[key];
+                const borderCls = fieldErr
+                  ? "border-red-400 focus:border-red-500"
+                  : "border-gray-300 focus:border-primary-500";
+                return (
+                  <div key={key}>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      {key}
+                      {meta?.type && <span className="ml-1 text-gray-400">({meta.type})</span>}
+                      {isRequired && <span className="ml-1 text-red-500">*</span>}
+                    </label>
+                    {meta?.description && (
+                      <p className="mb-1 text-xs text-gray-400">{meta.description}</p>
+                    )}
+                    {allowed ? (
+                      <select
+                        value={varsForm[key] ?? ""}
+                        onChange={(e) => handleVarChange(key, e.target.value, meta)}
+                        className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
+                      >
+                        <option value="">— select —</option>
+                        {allowed.map((v: string) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                    ) : meta?.type === "array" || meta?.type === "object" ? (
+                      <textarea
+                        value={varsForm[key] ?? ""}
+                        onChange={(e) => handleVarChange(key, e.target.value, meta)}
+                        placeholder={meta?.type === "array" ? '["item1","item2"]' : '{"key":"value"}'}
+                        rows={3}
+                        className={`w-full rounded-lg border p-2 text-sm focus:outline-none font-mono ${borderCls}`}
+                      />
+                    ) : (
+                      <input
+                        type={meta?.type === "number" ? "number" : "text"}
+                        value={varsForm[key] ?? ""}
+                        onChange={(e) => handleVarChange(key, e.target.value, meta)}
+                        placeholder={meta?.default !== undefined ? String(meta.default) : ""}
+                        className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
+                      />
+                    )}
+                    {fieldErr ? (
+                      <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
+                    ) : (
+                      <span className="mt-1 inline-flex gap-3">
+                        {validation.regex && (
+                          <span className="text-xs text-gray-400">
+                            Pattern: <code className="font-mono">{validation.regex as string}</code>
+                          </span>
+                        )}
+                        {validation.min !== undefined && (
+                          <span className="text-xs text-gray-400">Min: {validation.min as number}</span>
+                        )}
+                        {validation.max !== undefined && (
+                          <span className="text-xs text-gray-400">Max: {validation.max as number}</span>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                onClick={() => {
+                  const allErrors: Record<string, string> = {};
+                  schemaEntries.forEach(([k, meta]) => {
+                    const e = validateVarField(k, varsForm[k] ?? "", meta);
+                    if (e) allErrors[k] = e;
+                  });
+                  if (Object.keys(allErrors).length > 0) {
+                    setVarsErrors(allErrors);
+                    return;
+                  }
+                  const parsed: Record<string, unknown> = {};
+                  let parseError = false;
+                  schemaEntries.forEach(([k, meta]) => {
+                    const raw = varsForm[k];
+                    if (meta?.type === "array" || meta?.type === "object") {
+                      try { parsed[k] = JSON.parse(raw ?? "null"); } catch {
+                        toast(`Invalid JSON for "${k}"`, "error");
+                        parseError = true;
+                      }
+                    } else {
+                      parsed[k] = meta?.type === "number" ? Number(raw) : raw;
+                    }
+                  });
+                  if (parseError) return;
+                  setShowVarsModal(false);
+                  void doCreateRun(parsed);
+                }}
+                disabled={runCreating || Object.keys(varsErrors).length > 0}
+                className="flex-1 rounded-lg bg-green-600 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {runCreating ? "Starting…" : "Start Run"}
+              </button>
+              <button
+                onClick={() => setShowVarsModal(false)}
+                className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
