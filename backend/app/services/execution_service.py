@@ -143,21 +143,54 @@ async def _invoke_graph_with_checkpointer(
     initial_state: OrchestratorState,
     thread_id: str,
     timeout_ms: int | None = None,
+    db_factory=None,
+    run_id: str | None = None,
 ):
     runnable_config = {"configurable": {"thread_id": thread_id}}
     checkpointer_url = settings.CHECKPOINTER_URL
 
-    async def _invoke(compiled):
-        coro = compiled.ainvoke(initial_state, config=runnable_config)
-        if timeout_ms and timeout_ms > 0:
-            try:
-                return await asyncio.wait_for(coro, timeout=timeout_ms / 1000.0)
-            except asyncio.TimeoutError:
-                raise TimeoutError(
-                    f"Procedure execution timed out after {timeout_ms}ms "
-                    f"(global_config.timeout_ms)"
-                )
-        return await coro
+    async def _invoke(compiled) -> OrchestratorState:
+        """Stream graph events and detect selective checkpoint markers."""
+        final: OrchestratorState = {}
+        try:
+            stream_coro = compiled.astream(
+                initial_state,
+                config=runnable_config,
+                stream_mode="updates",
+            )
+            if timeout_ms and timeout_ms > 0:
+                # Wrap the whole stream iteration inside a timeout
+                async def _consume():
+                    nonlocal final
+                    async for chunk in stream_coro:
+                        # chunk is {node_name: state_patch}
+                        for _node_name, state_patch in chunk.items():
+                            if isinstance(state_patch, dict):
+                                final = {**final, **state_patch}
+                                # Detect is_checkpoint marker
+                                ckp_nid = state_patch.get("_checkpoint_node_id")
+                                if ckp_nid and db_factory and run_id:
+                                    await _emit_checkpoint_event(db_factory, run_id, ckp_nid)
+                    return final
+
+                try:
+                    return await asyncio.wait_for(_consume(), timeout=timeout_ms / 1000.0)
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        f"Procedure execution timed out after {timeout_ms}ms "
+                        f"(global_config.timeout_ms)"
+                    )
+            else:
+                async for chunk in stream_coro:
+                    for _node_name, state_patch in chunk.items():
+                        if isinstance(state_patch, dict):
+                            final = {**final, **state_patch}
+                            ckp_nid = state_patch.get("_checkpoint_node_id")
+                            if ckp_nid and db_factory and run_id:
+                                await _emit_checkpoint_event(db_factory, run_id, ckp_nid)
+                return final
+        except asyncio.TimeoutError:
+            raise
 
     if checkpointer_url:
         # Honor checkpoint_strategy: "none" → skip checkpointing even if URL is set
@@ -181,6 +214,22 @@ async def _invoke_graph_with_checkpointer(
 
     compiled = graph.compile()
     return await _invoke(compiled)
+
+
+async def _emit_checkpoint_event(db_factory, run_id: str, node_id: str) -> None:
+    """Emit a checkpoint_saved DB event for a selective is_checkpoint node."""
+    try:
+        async with db_factory() as db:
+            await run_service.emit_event(
+                db,
+                run_id,
+                "checkpoint_saved",
+                node_id=node_id,
+                payload={"reason": "is_checkpoint", "node_id": node_id},
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to emit checkpoint_saved event for run %s node %s: %s", run_id, node_id, exc)
 
 
 async def execute_run(run_id: str, db_factory) -> None:
@@ -450,7 +499,8 @@ async def execute_run(run_id: str, db_factory) -> None:
                 else None
             )
             final_state = await _invoke_graph_with_checkpointer(
-                graph, initial_state, thread_id, timeout_ms=global_timeout_ms
+                graph, initial_state, thread_id, timeout_ms=global_timeout_ms,
+                db_factory=db_factory, run_id=run_id,
             )
 
             # Determine outcome

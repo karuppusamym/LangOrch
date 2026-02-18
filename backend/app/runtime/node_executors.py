@@ -55,6 +55,24 @@ def _get_retry_config(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
+def _get_step_retry_config(step: Any, state: OrchestratorState) -> dict[str, Any]:
+    """Merge step-level retry override with the global retry policy.
+
+    Step-level retry config is stored in ``step.retry_config`` (a dict with
+    ``max_retries`` / ``retry_delay_ms`` / ``backoff_multiplier`` keys).
+    Any key not present in the step config falls back to the global policy.
+    """
+    global_cfg = _get_retry_config(state)
+    step_rc: dict[str, Any] = getattr(step, "retry_config", None) or {}
+    if not step_rc:
+        return global_cfg
+    return {
+        "max_retries":        int(step_rc.get("max_retries")        or global_cfg["max_retries"]),
+        "retry_delay_ms":     int(step_rc.get("retry_delay_ms")     or step_rc.get("delay_ms") or global_cfg["retry_delay_ms"]),
+        "backoff_multiplier": float(step_rc.get("backoff_multiplier") or global_cfg["backoff_multiplier"]),
+    }
+
+
 async def execute_sequence(
     node: IRNode, state: OrchestratorState, db_factory: Callable | None = None
 ) -> OrchestratorState:
@@ -99,8 +117,8 @@ async def execute_sequence(
             logger.debug("Step %s: waiting %dms before execution", step.step_id, step.wait_ms)
             await asyncio.sleep(step.wait_ms / 1000.0)
 
-        # Retry loop configuration
-        retry_config = _get_retry_config(state)
+        # Retry loop configuration — step-level override wins over global policy
+        retry_config = _get_step_retry_config(step, state)
         max_retries = retry_config.get("max_retries", 0)
         attempt = 0
         _step_start_time = __import__('time').monotonic()
@@ -325,6 +343,32 @@ async def execute_sequence(
                     for _rs in (getattr(_eh, "recovery_steps", None) or []):
                         _rs_rendered = render_template_dict(_rs.params or {}, vs)
                         await _execute_step_action(_rs.action, _rs_rendered, vs)
+
+                    # notify_on_error: emit a step_error_notification event + fire alert webhook
+                    if getattr(_eh, "notify_on_error", False):
+                        if db_factory is not None and run_id:
+                            try:
+                                async with db_factory() as _ndb:
+                                    await run_service.emit_event(
+                                        _ndb,
+                                        run_id,
+                                        "step_error_notification",
+                                        node_id=node.node_id,
+                                        step_id=step.step_id,
+                                        payload={
+                                            "error_type": _et,
+                                            "error": str(exc),
+                                            "handler_action": _eh_action,
+                                        },
+                                    )
+                                    await _ndb.commit()
+                            except Exception:  # never abort handler logic
+                                logger.warning("notify_on_error: failed to emit event", exc_info=True)
+                        try:
+                            from app.services.execution_service import _fire_alert_webhook  # noqa: PLC0415
+                            asyncio.ensure_future(_fire_alert_webhook(run_id or "", exc))
+                        except Exception:
+                            logger.warning("notify_on_error: failed to fire alert webhook", exc_info=True)
 
                     # action: "retry" — apply handler's own retry policy
                     if _eh_action == "retry":
@@ -706,20 +750,46 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
     prompt = render_template_str(payload.prompt, vs)
     logger.info("LLM action: model=%s prompt=%s", payload.model, prompt[:100])
 
-    try:
-        llm_result = await asyncio.to_thread(
-            LLMClient().complete,
-            prompt=prompt,
-            model=payload.model,
-            temperature=payload.temperature,
-            max_tokens=payload.max_tokens,
-            system_prompt=payload.system_prompt,
-            json_mode=payload.json_mode,
-        )
-    except LLMCallError as exc:
+    # Build node-level retry config: payload.retry overrides global policy
+    global_cfg = _get_retry_config(state)
+    node_retry: dict[str, Any] = payload.retry or {}
+    max_retries = int(node_retry.get("max_retries") or global_cfg["max_retries"])
+    retry_delay_ms = int(node_retry.get("retry_delay_ms") or node_retry.get("delay_ms") or global_cfg["retry_delay_ms"])
+    backoff_multiplier = float(node_retry.get("backoff_multiplier") or global_cfg["backoff_multiplier"])
+
+    attempt = 0
+    last_exc: Exception | None = None
+    while True:
+        try:
+            llm_result = await asyncio.to_thread(
+                LLMClient().complete,
+                prompt=prompt,
+                model=payload.model,
+                temperature=payload.temperature,
+                max_tokens=payload.max_tokens,
+                system_prompt=payload.system_prompt,
+                json_mode=payload.json_mode,
+            )
+            last_exc = None
+            break
+        except LLMCallError as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                delay_s = retry_delay_ms * (backoff_multiplier ** attempt) / 1000.0
+                logger.warning(
+                    "LLM action node %s failed (attempt %d/%d), retrying in %.2fs: %s",
+                    node.node_id, attempt + 1, max_retries, delay_s, exc,
+                )
+                record_retry_attempt(node.node_id, node.node_id)
+                await asyncio.sleep(delay_s)
+                attempt += 1
+            else:
+                break
+
+    if last_exc:
         return {
             **state,
-            "error": {"message": str(exc), "node_id": node.node_id},
+            "error": {"message": str(last_exc), "node_id": node.node_id},
             "terminal_status": "failed",
             "next_node_id": None,
             "current_node_id": node.node_id,

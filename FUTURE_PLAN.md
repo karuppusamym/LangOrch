@@ -1,6 +1,6 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-17 (updated after popup audit + Batch 12 completion)
+Last updated: 2026-02-18 (updated after Batch 15: notify_on_error in IRErrorHandler — 319 tests)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
@@ -57,23 +57,26 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 ## Gap analysis by domain
 
 ## 1) Execution correctness and recoverability
-### Current — UPDATED 2026-02-17
+### Current — UPDATED 2026-02-18
 - ✅ Durable graph execution with LangGraph SQLite checkpointer
 - ✅ `GET /api/runs/{id}/diagnostics` — idempotency entries, active leases, event counts, retry markers
 - ✅ `GET /api/runs/{id}/checkpoints` — full checkpoint introspection
 - ✅ Retry with exponential backoff (max_retries, delay_ms, backoff_multiplier) enforced globally
 
 ### Remaining gaps
-- Error handlers (`recovery_steps`, `fallback_node`, `retry_policy`) are parsed into IR but NOT executed — execute_sequence uses simpler retry instead
-- Step-level `timeout_ms` not enforced — `asyncio.wait_for` never wraps agent calls
-- `wait` action is a no-op placeholder — `asyncio.sleep` not called
-- Custom `idempotency_key` templates not evaluated
+- ~~Error handlers (`recovery_steps`, `fallback_node`, `retry_policy`) are parsed into IR but NOT executed~~ → ✅ Fully implemented (Batches 7 + 15)
+- ~~Step-level `timeout_ms` not enforced~~ → ✅ `asyncio.wait_for` wraps all three binding paths (internal, agent_http, mcp_tool)
+- ~~`wait` action is a no-op placeholder~~ → ✅ `wait_ms` / `wait_after_ms` both call `asyncio.sleep`
+- ~~Custom `idempotency_key` templates not evaluated~~ → ✅ Jinja2 rendering applied
 
 ### Next implementation items
-- Invoke `IRErrorHandler.recovery_steps` and `fallback_node` in `execute_sequence` when step fails after all retries
-- Wrap agent HTTP calls with `asyncio.wait_for(step.timeout_ms / 1000)` and emit `step_timeout` event
-- Implement `asyncio.sleep(wait_ms)` for the `wait` action
-- Add configurable retry policy model with per-node override
+- ✅ **[Batch 14]** `IRStep.retry_config` dict for per-step retry policy override (max_retries/delay_ms/backoff_multiplier)
+- ✅ **[Batch 14]** `IRLlmActionPayload.retry` dict for per-node LLM retry override
+- ✅ **[Batch 14]** `is_checkpoint` selective forcing: `_checkpoint_node_id` marker injected by `make_fn`, detected by streaming execution loop, `checkpoint_saved` event emitted
+- ✅ **[Batch 15]** `notify_on_error=True` in `IRErrorHandler` emits `step_error_notification` event + fires alert webhook
+- ✅ **[Batch 7]** `IRErrorHandler` recovery_steps, fallback_node, retry, ignore, fail, screenshot_and_fail all dispatched
+- ✅ **[Batch 10]** `asyncio.wait_for(step.timeout_ms)` wraps internal + MCP + agent_http calls; emits `step_timeout` event
+- ✅ **[Batch 10]** `asyncio.sleep(wait_ms)` / `asyncio.sleep(wait_after_ms)` enforced per step
 
 ## 2) Automation and orchestration triggers
 ### Current
@@ -152,9 +155,10 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - Extract `StatusBadge` and `ApprovalStatusBadge` into `src/components/shared/`
 
 ## 6) Quality and delivery discipline
-### Current — UPDATED 2026-02-17
-- ✅ 260 backend tests across 13 files — all passing (parser, validator, binder, redaction, metrics, secrets, graph, API, batch12)
-- ✅ Tests cover: all node types, compiler edge cases, redaction patterns, metrics, secrets provider, graph extraction, projects CRUD, agents PUT/DELETE, capabilities parsing, API integration
+### Current — UPDATED 2026-02-18 (Batch 15)
+- ✅ 278 backend tests (Batch 13): retry config, step_timeout events, SLA breach, alert webhook, Prometheus, shared UI
+- ✅ **312 backend tests** (Batch 14): explain service (19), step retry config (5), LLM retry (3), is_checkpoint marker (2), checkpoint event (2), endpoint (3)
+- ✅ **319 backend tests** (Batch 15): notify_on_error in IRErrorHandler (7)
 
 ### Remaining gaps
 - Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
@@ -201,9 +205,8 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
   - explicit input/output schemas
   - version pinning policy for subflow references
 - Add workflow dry-run explain mode:
-  - route simulation
-  - variable dependency report
-  - side-effect risk flags
+  - ✅ **[Batch 14]** `POST /api/procedures/{id}/{version}/explain` — static analysis endpoint returns nodes, edges, variables (required/produced/missing), reachable route trace, external calls, policy summary
+  - ✅ **[Batch 14]** `explain_service.py` — pure IR analysis; no execution, no DB writes
 
 ### Acceptance criteria
 - Teams can evolve workflows safely with clear interface contracts

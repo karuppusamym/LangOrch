@@ -115,7 +115,8 @@ def _parse_step(s: dict) -> IRStep:
     # Collect all step params except known meta fields
     meta_keys = {
         "step_id", "action", "timeout_ms", "wait_ms", "wait_after_ms",
-        "retry_on_failure", "output_variable", "screenshot_on_complete",
+        "retry_on_failure", "retry_config", "output_variable", "screenshot_on_complete",
+        "idempotency_key",
     }
     params = {k: v for k, v in s.items() if k not in meta_keys}
 
@@ -127,7 +128,9 @@ def _parse_step(s: dict) -> IRStep:
         wait_ms=s.get("wait_ms"),
         wait_after_ms=s.get("wait_after_ms"),
         retry_on_failure=s.get("retry_on_failure", False),
+        retry_config=s.get("retry_config"),
         output_variable=s.get("output_variable"),
+        idempotency_key=s.get("idempotency_key"),
     )
 
 

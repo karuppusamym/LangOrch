@@ -54,31 +54,43 @@ def _make_node(step):
 class TestGlobalTimeout:
     """_invoke_graph_with_checkpointer raises TimeoutError when timeout_ms exceeded."""
 
+    def _make_graph_with_astream(self, chunks):
+        """Return a mock graph whose compiled.astream yields the given chunks."""
+        import asyncio
+
+        async def _astream(*args, **kwargs):
+            for chunk in chunks:
+                yield chunk
+
+        graph = MagicMock()
+        compiled = MagicMock()
+        compiled.astream = _astream
+        graph.compile = MagicMock(return_value=compiled)
+        return graph
+
     @pytest.mark.asyncio
     async def test_no_timeout_succeeds(self):
         from app.services.execution_service import _invoke_graph_with_checkpointer
 
-        graph = MagicMock()
-        compiled = MagicMock()
-        compiled.ainvoke = AsyncMock(return_value={"vars": {}})
-        graph.compile = MagicMock(return_value=compiled)
+        graph = self._make_graph_with_astream([{"node1": {"vars": {}}}])
 
         result = await _invoke_graph_with_checkpointer(
             graph, {"vars": {}}, "thread-1", timeout_ms=None
         )
-        assert result == {"vars": {}}
+        assert result.get("vars") == {}
 
     @pytest.mark.asyncio
     async def test_timeout_raises(self):
         from app.services.execution_service import _invoke_graph_with_checkpointer
+        import asyncio
 
-        async def slow_invoke(*args, **kwargs):
+        async def _slow_astream(*args, **kwargs):
             await asyncio.sleep(5)
-            return {"vars": {}}
+            yield {"node1": {"vars": {}}}
 
         graph = MagicMock()
         compiled = MagicMock()
-        compiled.ainvoke = slow_invoke
+        compiled.astream = _slow_astream
         graph.compile = MagicMock(return_value=compiled)
 
         with pytest.raises(TimeoutError, match="timed out after 50ms"):
@@ -91,26 +103,25 @@ class TestGlobalTimeout:
         """timeout_ms=0 is treated as disabled (same as None)."""
         from app.services.execution_service import _invoke_graph_with_checkpointer
 
-        graph = MagicMock()
-        compiled = MagicMock()
-        compiled.ainvoke = AsyncMock(return_value={"vars": {"ok": True}})
-        graph.compile = MagicMock(return_value=compiled)
+        graph = self._make_graph_with_astream([{"node1": {"vars": {"ok": True}}}])
 
         result = await _invoke_graph_with_checkpointer(
             graph, {"vars": {}}, "thread-1", timeout_ms=0
         )
-        assert result == {"vars": {"ok": True}}
+        assert result.get("vars") == {"ok": True}
 
     @pytest.mark.asyncio
     async def test_timeout_message_includes_ms(self):
         from app.services.execution_service import _invoke_graph_with_checkpointer
+        import asyncio
 
-        async def slow(*a, **kw):
+        async def _slow_astream(*args, **kwargs):
             await asyncio.sleep(10)
+            yield {"node1": {}}
 
         graph = MagicMock()
         compiled = MagicMock()
-        compiled.ainvoke = slow
+        compiled.astream = _slow_astream
         graph.compile = MagicMock(return_value=compiled)
 
         with pytest.raises(TimeoutError) as exc_info:

@@ -49,3 +49,7 @@ class OrchestratorState(TypedDict, total=False):
 
     # Terminal status
     terminal_status: str | None
+
+    # Selective checkpointing — set by graph_builder when node.is_checkpoint=True
+    # execution_service reads this to force-save a checkpoint snapshot after the node
+    _checkpoint_node_id: str | None

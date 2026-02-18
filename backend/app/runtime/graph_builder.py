@@ -165,6 +165,7 @@ def build_graph(
             _on_breach: str = str(_sla.get("on_breach") or "warn")
             _escalation_handler: str | None = _sla.get("escalation_handler") or None
             _custom_metrics: list | None = (node.telemetry or {}).get("custom_metrics")
+            _is_ckp: bool = node.is_checkpoint  # capture for closure
 
             def _emit_custom_metrics():
                 if _custom_metrics:
@@ -174,6 +175,12 @@ def build_graph(
                             record_custom_metric(cm)
                         elif isinstance(cm, dict) and cm.get("name"):
                             record_custom_metric(cm["name"], value=int(cm.get("value", 1)))
+
+            def _apply_checkpoint_marker(result: OrchestratorState, node_id: str) -> OrchestratorState:
+                """Inject _checkpoint_node_id so execution_service can force-save."""
+                if _is_ckp:
+                    return {**result, "_checkpoint_node_id": node_id}
+                return result
 
             if node.type == "parallel":
                 async def fn(state: OrchestratorState) -> OrchestratorState:
@@ -186,8 +193,8 @@ def build_graph(
                         if _max_ms:
                             patch = await _check_sla(node.node_id, _t0, _max_ms, _on_breach, _escalation_handler, state, db_factory)
                             if patch:
-                                return {**result, **patch}
-                        return result
+                                result = {**result, **patch}
+                        return _apply_checkpoint_marker(result, node.node_id)
                     if sem:
                         async with sem:
                             return await _run()
@@ -203,15 +210,16 @@ def build_graph(
                         if _max_ms:
                             patch = await _check_sla(node.node_id, _t0, _max_ms, _on_breach, _escalation_handler, state, db_factory)
                             if patch:
-                                return {**result, **patch}
-                        return result
+                                result = {**result, **patch}
+                        return _apply_checkpoint_marker(result, node.node_id)
                     if sem:
                         async with sem:
                             return await _run()
                     return await _run()
             else:
                 def fn(state: OrchestratorState) -> OrchestratorState:
-                    return _NODE_EXECUTORS[node.type](node, state)
+                    result = _NODE_EXECUTORS[node.type](node, state)
+                    return _apply_checkpoint_marker(result, node.node_id)
             fn.__name__ = f"node_{node.node_id}"
             return fn
 

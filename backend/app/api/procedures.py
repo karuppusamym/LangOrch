@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
 from app.schemas.procedures import ProcedureCreate, ProcedureDetail, ProcedureOut, ProcedureUpdate
 from app.services import procedure_service
 from app.services.graph_service import extract_graph
+from app.services.explain_service import explain_procedure
+from app.compiler.parser import parse_ckp
+from app.compiler.validator import validate_ir
+from app.compiler.binder import bind_executors
 
 router = APIRouter()
+
+
+class ExplainRequest(BaseModel):
+    """Optional body for the explain endpoint — can supply input variable values."""
+    input_vars: dict[str, Any] = {}
 
 
 @router.post("", response_model=ProcedureOut, status_code=201)
@@ -49,6 +60,30 @@ async def get_procedure_graph(procedure_id: str, version: str, db: AsyncSession 
     ckp = json.loads(proc.ckp_json)
     workflow_graph = ckp.get("workflow_graph", {})
     return extract_graph(workflow_graph)
+
+
+@router.post("/{procedure_id}/{version}/explain")
+async def explain_procedure_route(
+    procedure_id: str,
+    version: str,
+    body: ExplainRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Dry-run static analysis — return node/edge/variable/route descriptions.
+
+    No execution or DB writes occur.  Useful for pre-flight validation and
+    documenting what a procedure will do before running it.
+    """
+    proc = await procedure_service.get_procedure(db, procedure_id, version)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+    try:
+        ckp = json.loads(proc.ckp_json)
+        ir = bind_executors(validate_ir(parse_ckp(ckp)))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"IR compilation failed: {exc}")
+    input_vars = (body.input_vars if body else None) or {}
+    return explain_procedure(ir, input_vars=input_vars)
 
 
 @router.get("/{procedure_id}/{version}", response_model=ProcedureDetail)

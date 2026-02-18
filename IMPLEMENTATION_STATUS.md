@@ -1,6 +1,6 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-17 (Batch 13: _get_retry_config from global_config, step_timeout events, SLA breach events, rate semaphore, alert webhook, Prometheus endpoint, shared UI components — 278 tests)
+Last updated: 2026-02-18 (Batch 15: notify_on_error in IRErrorHandler — 319 tests)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -10,27 +10,30 @@ This document is the single authoritative source for **what is implemented vs wh
 
 | Domain | Spec Coverage | Implementation | Status |
 |--------|---------------|----------------|---------|
-| CKP compiler (parse → validate → bind) | 100% | 95% | Complete |
+| CKP compiler (parse → validate → bind) | 100% | 98% | Complete — step retry_config field added |
 | CKP top-level fields (trigger, provenance) | 100% | 70% | trigger not parsed; provenance parsed+stored |
 | All 11 node type executors | 100% | 100% | Complete |
-| Global config enforcement | 100% | 85% | timeout, on_failure, rate_limit, execution_mode, vars_schema all enforced |
-| Policy: retry/backoff | 100% | 100% | Complete |
-| Policy: timeout/SLA (global) | 100% | 100% | asyncio.wait_for wraps full graph invocation |
+| Global config enforcement | 100% | 90% | timeout, on_failure, rate_limit, execution_mode, vars_schema all enforced |
+| Policy: retry/backoff (global) | 100% | 100% | Complete |
+| Policy: retry/backoff (per-step) | 100% | 100% | Step-level retry_config overrides global |
+| Policy: retry/backoff (per-node llm_action) | 100% | 100% | payload.retry dict overrides global for LLM nodes |
+| Policy: timeout/SLA (global) | 100% | 100% | asyncio.wait_for wraps full graph stream |
 | Policy: timeout/SLA (step-level) | 100% | 40% | Agent+MCP steps timed; internal steps not |
 | Policy: rate limiting | 100% | 80% | max_concurrent_operations + max_requests_per_minute both enforced |
 | Trigger automation | 100% | 0% | Not started |
-| Checkpointing + replay | 100% | 95% | checkpoint_strategy="none" supported; replay working |
+| Checkpointing + replay | 100% | 100% | checkpoint_strategy="none" supported; is_checkpoint per-node forcing; checkpoint_saved event emitted |
 | Step idempotency | 100% | 95% | Template key evaluation implemented |
 | Multi-agent concurrency (leases) | 100% | 95% | Near-complete |
 | Human-in-the-loop | 100% | 100% | Approval expiry auto-timeout implemented |
 | Secrets provider (env + Vault) | 100% | 80% | Working; AWS/Azure stubs |
-| Observability (events + SSE) | 100% | 95% | Near-complete |
+| Observability (events + SSE) | 100% | 98% | checkpoint_saved event added |
 | Observability (in-memory metrics) | 100% | 100% | Prometheus `/api/metrics` text endpoint added |
 | Observability (telemetry fields) | 100% | 50% | track_duration+track_retries emitted; custom_metrics recorded |
 | Redaction | 100% | 90% | Implemented |
 | Diagnostics API | 100% | 100% | Complete |
 | Checkpoint introspection API | 100% | 100% | Complete |
 | Graph extraction API | 100% | 100% | Complete |
+| Dry-run explain API | 100% | 100% | POST /{id}/{version}/explain — static analysis, no execution |
 | Projects CRUD | 100% | 100% | Complete — backend + frontend |
 | Agent capabilities + health polling | 100% | 100% | Complete — capabilities in UI, health loop polls /health |
 | Agent management (update/delete) | 100% | 100% | PUT/DELETE endpoints + frontend buttons |
@@ -46,7 +49,7 @@ This document is the single authoritative source for **what is implemented vs wh
 | Frontend: project filter in procedures | 100% | 100% | Complete |
 | Frontend: workflow builder/editor | 100% | 0% | Not started |
 | Frontend→Backend API linkage | 100% | 100% | All 35+ call sites verified; 204-body bug fixed |
-| Backend tests (unit) | Target | 98% | **278 tests** — all passing |
+| Backend tests (unit) | Target | 98% | **319 tests** — all passing |
 | Backend tests (integration) | Target | 35% | 18 API tests |
 | Frontend tests | Target | 0% | Not started |
 | AuthN/AuthZ | Target | 0% | Not started (parked) |
@@ -107,6 +110,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | GET /api/procedures/{id}/versions | Complete |
 | GET/PUT/DELETE /api/procedures/{id}/{version} | Complete |
 | GET /api/procedures/{id}/{version}/graph | Complete |
+| POST /api/procedures/{id}/{version}/explain | Complete — dry-run static analysis, no execution |
 | POST/GET /api/runs | Complete |
 | GET /api/runs/metrics/summary | Complete |
 | GET /api/runs/{id} | Complete |
@@ -360,8 +364,9 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
     - `ProcedureStatusBadge` → `@/components/shared/ProcedureStatusBadge.tsx` (pill style; used by 3 procedure pages)
     - `ApprovalStatusBadge` → `@/components/shared/ApprovalStatusBadge.tsx` (DaisyUI badge style; used by 2 approval pages)
 58. **EventDot color map extended** — added `step_timeout: "bg-orange-500"`, `sla_breached: "bg-red-300"`, `node_error: "bg-red-500"`, `approval_expired: "bg-gray-500"` to the run detail timeline color map
+59. **`notify_on_error` in IRErrorHandler** — when `error_handler.notify_on_error=True`, `execute_sequence` emits a `step_error_notification` run event (with `error_type`, `error`, and `handler_action` in payload) AND fire-and-forgets `_fire_alert_webhook`; DB emit failures are swallowed to never abort handler logic; 7 new tests in `test_batch15.py`
 
-**Total tests after Batch 13: 278 (up from 260)**
+**Total tests after Batch 15: 319 (up from 312)**
 
 ---
 

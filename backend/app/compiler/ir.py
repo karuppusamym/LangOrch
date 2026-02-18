@@ -28,6 +28,7 @@ class IRStep:
     wait_ms: int | None = None
     wait_after_ms: int | None = None
     retry_on_failure: bool = False
+    retry_config: dict[str, Any] | None = None  # per-step retry override
     output_variable: str | None = None
     idempotency_key: str | None = None
     executor_binding: ExecutorBinding | None = None
