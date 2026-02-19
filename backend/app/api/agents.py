@@ -41,6 +41,15 @@ async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(g
     return inst
 
 
+@router.get("/{agent_id}", response_model=AgentInstanceOut)
+async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
 @router.put("/{agent_id}", response_model=AgentInstanceOut)
 async def update_agent(agent_id: str, body: AgentInstanceUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == agent_id))

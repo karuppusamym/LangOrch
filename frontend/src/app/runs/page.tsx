@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { cleanupRuns, deleteRun, listRuns, cancelRun } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -19,7 +19,22 @@ export default function RunsPage() {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<"cancel" | "delete" | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const PAGE_SIZE = 100;
+
+  // Auto-refresh every 15s when active runs exist
+  useEffect(() => {
+    const hasActive = runs.some((r) => r.status === "running" || r.status === "created" || r.status === "waiting_approval");
+    if (hasActive && !pollRef.current) {
+      pollRef.current = setInterval(() => void loadRuns(0), 15_000);
+    } else if (!hasActive && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [runs]);
 
   useEffect(() => {
     setOffset(0);
@@ -71,6 +86,41 @@ export default function RunsPage() {
     } catch (err) {
       console.error(err);
     }
+  }
+
+  function toggleSelect(runId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === filteredRuns.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredRuns.map((r) => r.run_id)));
+    }
+  }
+
+  async function executeBulkAction() {
+    if (!bulkAction || selectedIds.size === 0) return;
+    const action = bulkAction;
+    setBulkAction(null);
+    const ids = Array.from(selectedIds);
+    let successCount = 0;
+    for (const id of ids) {
+      try {
+        if (action === "cancel") await cancelRun(id);
+        else if (action === "delete") await deleteRun(id);
+        successCount++;
+      } catch { /* skip individual failures */ }
+    }
+    setSelectedIds(new Set());
+    loadRuns();
+    console.log(`Bulk ${action}: ${successCount}/${ids.length} succeeded`);
   }
 
   async function handleCleanup() {
@@ -231,21 +281,63 @@ export default function RunsPage() {
           No runs match the current filter.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr className="text-left text-gray-500">
-                <th className="px-6 py-3 font-medium">Run ID</th>
-                <th className="px-6 py-3 font-medium">Procedure</th>
-                <th className="px-6 py-3 font-medium">Version</th>
-                <th className="px-6 py-3 font-medium">Status</th>
-                <th className="px-6 py-3 font-medium">Created</th>
-                <th className="px-6 py-3 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filteredRuns.map((run) => (
-                <tr key={run.run_id} className="hover:bg-gray-50">
+        <>
+          {/* Bulk action bar */}
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-2">
+              <span className="text-sm font-medium text-primary-700">{selectedIds.size} selected</span>
+              <button
+                onClick={() => setBulkAction("cancel")}
+                className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+              >
+                Cancel Selected
+              </button>
+              <button
+                onClick={() => setBulkAction("delete")}
+                className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+              >
+                Delete Selected
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="ml-auto text-xs text-gray-500 hover:text-gray-700"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr className="text-left text-gray-500">
+                  <th className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      checked={filteredRuns.length > 0 && selectedIds.size === filteredRuns.length}
+                      onChange={toggleSelectAll}
+                      className="rounded"
+                      title="Select all"
+                    />
+                  </th>
+                  <th className="px-6 py-3 font-medium">Run ID</th>
+                  <th className="px-6 py-3 font-medium">Procedure</th>
+                  <th className="px-6 py-3 font-medium">Version</th>
+                  <th className="px-6 py-3 font-medium">Status</th>
+                  <th className="px-6 py-3 font-medium">Created</th>
+                  <th className="px-6 py-3 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredRuns.map((run) => (
+                  <tr key={run.run_id} className={`hover:bg-gray-50 ${selectedIds.has(run.run_id) ? "bg-primary-50/50" : ""}`}>
+                    <td className="px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(run.run_id)}
+                        onChange={() => toggleSelect(run.run_id)}
+                        className="rounded"
+                      />
+                    </td>
                   <td className="px-6 py-3">
                     <Link
                       href={`/runs/${run.run_id}`}
@@ -285,6 +377,7 @@ export default function RunsPage() {
             </tbody>
           </table>
         </div>
+        </>
       )}
       {hasMore && (
         <div className="flex justify-center pt-2">
@@ -309,6 +402,16 @@ export default function RunsPage() {
         danger
         onConfirm={confirmDelete}
         onCancel={() => setConfirmDeleteId(null)}
+      />
+
+      <ConfirmDialog
+        open={bulkAction !== null}
+        title={bulkAction === "cancel" ? "Bulk Cancel Runs" : "Bulk Delete Runs"}
+        message={`${bulkAction === "cancel" ? "Cancel" : "Delete"} ${selectedIds.size} selected run(s)? ${bulkAction === "delete" ? "This cannot be undone." : ""}`}
+        confirmLabel={bulkAction === "cancel" ? "Cancel Runs" : "Delete Runs"}
+        danger
+        onConfirm={executeBulkAction}
+        onCancel={() => setBulkAction(null)}
       />
     </div>
   );

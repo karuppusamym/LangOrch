@@ -3,7 +3,7 @@
 Mirrors the frontend validation logic so that invalid inputs are rejected at the
 API boundary before reaching the executor.
 
-Schema format (per-variable):
+Schema format (per-variable, flat/normalized):
     {
         "type": "string" | "number" | "boolean" | "array" | "object",
         "required": true | false,
@@ -16,11 +16,46 @@ Schema format (per-variable):
             "allowed_values": ["a", "b", ...]
         }
     }
+
+Also accepts the CKP spec nested format:
+    {"required": {"<var>": {...}}, "optional": {"<var>": {...}}}
+which is automatically flattened before validation.
 """
 from __future__ import annotations
 
 import re
 from typing import Any
+
+
+def normalize_variables_schema(raw: Any) -> dict[str, Any]:
+    """Normalize variables_schema to a flat dict keyed by variable name.
+
+    Handles two input forms:
+    1. CKP spec format: {"required": {"var": {...}}, "optional": {"var": {...}}}
+       → flattened to {"var": {..., "required": True/False}}
+    2. Flat dict format: {"var": {"type": "string", ...}}
+       → passed through as-is
+    3. Any non-dict (list, None, etc.) → returns {}
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    has_required_key = "required" in raw and isinstance(raw["required"], dict)
+    has_optional_key = "optional" in raw and isinstance(raw["optional"], dict)
+
+    if has_required_key or has_optional_key:
+        flat: dict[str, Any] = {}
+        for var_name, meta in (raw.get("required") or {}).items():
+            entry = dict(meta) if isinstance(meta, dict) else {}
+            entry["required"] = True
+            flat[var_name] = entry
+        for var_name, meta in (raw.get("optional") or {}).items():
+            entry = dict(meta) if isinstance(meta, dict) else {}
+            entry.setdefault("required", False)
+            flat[var_name] = entry
+        return flat
+
+    return raw
 
 
 def validate_input_vars(
@@ -29,11 +64,15 @@ def validate_input_vars(
 ) -> dict[str, str]:
     """Validate *input_vars* against *schema*.
 
+    Automatically normalizes the schema from the CKP nested format if needed.
     Returns a dict of ``{field_name: error_message}`` for every failing field.
     An empty dict means all fields are valid.
     """
     if not schema:
         return {}
+
+    # Normalize nested CKP format to flat format before validation
+    schema = normalize_variables_schema(schema)
 
     vars_: dict[str, Any] = input_vars or {}
     errors: dict[str, str] = {}

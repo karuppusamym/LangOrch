@@ -80,6 +80,8 @@ class Run(Base):
     input_vars_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_node_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_step_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # set for sub-procedure child runs
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
     )

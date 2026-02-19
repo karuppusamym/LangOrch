@@ -5,11 +5,13 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getApproval, submitApprovalDecision } from "@/lib/api";
 import { ApprovalStatusBadge } from "@/components/shared/ApprovalStatusBadge";
+import { useToast } from "@/components/Toast";
 import type { Approval } from "@/lib/types";
 
 export default function ApprovalDetailPage() {
   const params = useParams();
   const approvalId = params.id as string;
+  const { toast } = useToast();
 
   const [approval, setApproval] = useState<Approval | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,8 +40,10 @@ export default function ApprovalDetailPage() {
         comment || undefined
       );
       setApproval(updated);
+      toast(`Approval ${decision}`, "success");
     } catch (err) {
       console.error(err);
+      toast("Decision failed", "error");
     }
   }
 
@@ -56,6 +60,9 @@ export default function ApprovalDetailPage() {
         <div className="mb-6 flex items-center gap-3">
           <ApprovalStatusBadge status={approval.status} />
           <span className="text-xs text-gray-400">ID: {approval.approval_id.slice(0, 12)}…</span>
+          {approval.expires_at && approval.status === "pending" && (
+            <CountdownBadge expiresAt={approval.expires_at} />
+          )}
         </div>
 
         <h2 className="text-lg font-semibold text-gray-900">{approval.prompt}</h2>
@@ -82,6 +89,35 @@ export default function ApprovalDetailPage() {
             </div>
           )}
         </div>
+
+        {/* Context data */}
+        {approval.context_data && Object.keys(approval.context_data).length > 0 && (
+          <div className="mt-6 rounded-lg border border-blue-100 bg-blue-50 p-4">
+            <h3 className="mb-2 text-xs font-semibold text-blue-700">Context Data</h3>
+            <div className="space-y-1.5">
+              {Object.entries(approval.context_data).map(([k, v]) => (
+                <div key={k} className="flex gap-2 text-xs">
+                  <span className="font-medium text-blue-600 min-w-[100px]">{k}:</span>
+                  <span className="text-blue-800 break-all">
+                    {typeof v === "object" ? JSON.stringify(v, null, 2) : String(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Decision options */}
+        {approval.options && approval.options.length > 0 && (
+          <div className="mt-4 rounded-lg border border-gray-100 bg-gray-50 p-4">
+            <h3 className="mb-2 text-xs font-semibold text-gray-700">Available Options</h3>
+            <div className="flex flex-wrap gap-2">
+              {approval.options.map((opt) => (
+                <span key={opt} className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-700 border border-gray-200">{opt}</span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {approval.status === "pending" && (
           <div className="mt-8 space-y-4 border-t border-gray-200 pt-6">
@@ -110,6 +146,28 @@ export default function ApprovalDetailPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function CountdownBadge({ expiresAt }: { expiresAt: string }) {
+  const [remaining, setRemaining] = useState("");
+  useEffect(() => {
+    function tick() {
+      const diff = new Date(expiresAt).getTime() - Date.now();
+      if (diff <= 0) { setRemaining("expired"); return; }
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      setRemaining(`${m}m ${s}s`);
+    }
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+  const isUrgent = remaining !== "expired" && new Date(expiresAt).getTime() - Date.now() < 120_000;
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${isUrgent ? "bg-red-100 text-red-600 animate-pulse" : "bg-gray-100 text-gray-500"}`}>
+      ⏱ {remaining}
+    </span>
   );
 }
 

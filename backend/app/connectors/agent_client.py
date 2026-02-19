@@ -51,10 +51,16 @@ class AgentClient:
             "node_id": node_id,
             "step_id": step_id,
         }
-        logger.info("Agent call: %s action=%s", self.agent_url, action)
+        # Propagate correlation headers so agent logs can be linked to LangOrch run
+        correlation_headers = {
+            "X-Run-ID": run_id,
+            "X-Node-ID": node_id,
+            "X-Step-ID": step_id,
+        }
+        logger.info("Agent call: %s action=%s run=%s", self.agent_url, action, run_id)
 
         try:
-            resp = await self._client.post("/execute", json=payload)
+            resp = await self._client.post("/execute", json=payload, headers=correlation_headers)
             resp.raise_for_status()
             data = resp.json()
 

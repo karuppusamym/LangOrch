@@ -13,6 +13,12 @@ body {
   @apply bg-surface-secondary text-gray-900 antialiased;
 }
 
+/* Dark mode base */
+.dark body,
+html.dark body {
+  @apply bg-gray-950 text-gray-100;
+}
+
 /* Status badges */
 .badge {
   @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;

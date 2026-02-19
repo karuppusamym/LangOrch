@@ -85,6 +85,17 @@ async def lifespan(app: FastAPI):
     # Create tables on startup (dev convenience — use Alembic in prod)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Idempotent column migrations for new fields (SQLite-safe ADD COLUMN)
+    _new_cols = [
+        "ALTER TABLE runs ADD COLUMN error_message TEXT",
+        "ALTER TABLE runs ADD COLUMN parent_run_id VARCHAR(64)",
+    ]
+    async with engine.begin() as conn:
+        for stmt in _new_cols:
+            try:
+                await conn.execute(__import__("sqlalchemy").text(stmt))
+            except Exception:
+                pass  # column already exists — ignore
     _expiry_task = asyncio.create_task(_approval_expiry_loop())
     _health_task = asyncio.create_task(_agent_health_loop())
     try:

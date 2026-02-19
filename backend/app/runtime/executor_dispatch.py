@@ -136,10 +136,13 @@ async def dispatch_to_mcp(
     mcp_url: str,
     tool_name: str,
     arguments: dict[str, Any],
+    run_id: str = "",
+    node_id: str = "",
+    step_id: str = "",
 ) -> dict[str, Any]:
     """Call an MCP tool server and return the result."""
     client = MCPClient(mcp_url)
     try:
-        return await client.call_tool(tool_name, arguments)
+        return await client.call_tool(tool_name, arguments, run_id=run_id, node_id=node_id, step_id=step_id)
     finally:
         await client.close()

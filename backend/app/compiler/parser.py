@@ -29,6 +29,7 @@ from app.compiler.ir import (
     IRVerificationCheck,
     IRVerificationPayload,
 )
+from app.utils.input_vars import normalize_variables_schema as _normalize_variables_schema
 
 
 def parse_ckp(ckp: dict[str, Any]) -> IRProcedure:
@@ -45,7 +46,7 @@ def parse_ckp(ckp: dict[str, Any]) -> IRProcedure:
         procedure_id=ckp["procedure_id"],
         version=ckp["version"],
         global_config=ckp.get("global_config", {}),
-        variables_schema=ckp.get("variables_schema", {}),
+        variables_schema=_normalize_variables_schema(ckp.get("variables_schema", {})),
         start_node_id=wf.get("start_node", ""),
         nodes=nodes,
         provenance=ckp.get("provenance"),

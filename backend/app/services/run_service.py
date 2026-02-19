@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Approval, Artifact, ResourceLease, Run, RunEvent, StepIdempotency
-from app.utils.redaction import redact_sensitive_data
+from app.utils.redaction import redact_sensitive_data, build_patterns
 
 
 async def create_run(
@@ -78,7 +78,7 @@ async def update_run_status(db: AsyncSession, run_id: str, status: str, **kwargs
     run.status = status
     if status == "running" and not run.started_at:
         run.started_at = datetime.now(timezone.utc)
-    if status in ("succeeded", "completed", "failed", "canceled"):
+    if status in ("succeeded", "completed", "failed", "canceled", "cancelled"):
         run.ended_at = datetime.now(timezone.utc)
     for k, v in kwargs.items():
         if hasattr(run, k):
@@ -97,6 +97,7 @@ async def prepare_retry(db: AsyncSession, run_id: str) -> Run | None:
     run.status = "created"
     run.ended_at = None
     run.last_step_id = None
+    run.error_message = None  # clear previous failure reason
     if not run.thread_id:
         run.thread_id = run.run_id
 
@@ -120,9 +121,12 @@ async def emit_event(
     step_id: str | None = None,
     attempt: int | None = None,
     payload: dict[str, Any] | None = None,
+    extra_redacted_fields: list[str] | None = None,
 ) -> RunEvent:
     # Redact sensitive fields before persisting
-    sanitized_payload = redact_sensitive_data(payload) if payload else None
+    # Merge default patterns with any extra fields from CKP audit_config
+    patterns = build_patterns(extra_redacted_fields) if extra_redacted_fields else None
+    sanitized_payload = redact_sensitive_data(payload, extra_patterns=patterns) if payload else None
     
     event = RunEvent(
         run_id=run_id,

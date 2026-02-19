@@ -25,8 +25,11 @@ class RunOut(BaseModel):
     input_vars: dict[str, Any] | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    duration_seconds: float | None = None
     last_node_id: str | None = None
     last_step_id: str | None = None
+    error_message: str | None = None
+    parent_run_id: str | None = None
     project_id: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -35,14 +38,39 @@ class RunOut(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _parse_input_vars(cls, data: Any) -> Any:
-        # Handle ORM model → dict conversion for input_vars_json
-        if hasattr(data, "input_vars_json"):
+    def _parse_fields(cls, data: Any) -> Any:
+        # When coming from ORM → build a plain dict to avoid mutating the ORM object
+        if hasattr(data, "__dict__") and hasattr(data, "run_id"):
+            d: dict[str, Any] = {
+                "run_id": data.run_id,
+                "procedure_id": data.procedure_id,
+                "procedure_version": data.procedure_version,
+                "thread_id": data.thread_id,
+                "status": data.status,
+                "started_at": data.started_at,
+                "ended_at": data.ended_at,
+                "last_node_id": data.last_node_id,
+                "last_step_id": data.last_step_id,
+                "error_message": data.error_message if hasattr(data, "error_message") else None,
+                "parent_run_id": data.parent_run_id if hasattr(data, "parent_run_id") else None,
+                "project_id": data.project_id,
+                "created_at": data.created_at,
+                "updated_at": data.updated_at,
+            }
+            # Parse input_vars from JSON string
             raw = data.input_vars_json
-            if isinstance(raw, str):
-                data.input_vars = json.loads(raw) if raw else None
-            else:
-                data.input_vars = raw
+            d["input_vars"] = json.loads(raw) if isinstance(raw, str) and raw else raw
+            # Compute duration
+            if d["started_at"] and d["ended_at"]:
+                d["duration_seconds"] = (d["ended_at"] - d["started_at"]).total_seconds()
+            return d
+        # Plain dict path
+        if isinstance(data, dict):
+            if "input_vars_json" in data and "input_vars" not in data:
+                raw = data.get("input_vars_json")
+                data["input_vars"] = json.loads(raw) if isinstance(raw, str) and raw else raw
+            if data.get("started_at") and data.get("ended_at") and "duration_seconds" not in data:
+                data["duration_seconds"] = (data["ended_at"] - data["started_at"]).total_seconds()
         return data
 
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from app.db.engine import async_session, get_db
 from app.schemas.approvals import ApprovalDecision, ApprovalOut
@@ -18,6 +20,43 @@ router = APIRouter()
 @router.get("", response_model=list[ApprovalOut])
 async def list_approvals(status: str | None = None, db: AsyncSession = Depends(get_db)):
     return await approval_service.list_approvals(db, status)
+
+
+@router.get("/stream")
+async def stream_approvals(request: Request):
+    """SSE endpoint — polls DB for approval changes and streams them."""
+
+    async def event_generator():
+        last_snapshot: dict[str, str] = {}
+        while True:
+            if await request.is_disconnected():
+                break
+            async with (await _get_approval_session()) as db:
+                approvals = await approval_service.list_approvals(db, None)
+                current_snapshot: dict[str, str] = {}
+                for a in approvals:
+                    aid = str(a.approval_id)
+                    current_snapshot[aid] = a.status
+                    if aid not in last_snapshot or last_snapshot[aid] != a.status:
+                        yield {
+                            "event": "approval_update",
+                            "id": aid,
+                            "data": json.dumps({
+                                "approval_id": aid,
+                                "run_id": str(a.run_id),
+                                "node_id": a.node_id,
+                                "prompt": a.prompt,
+                                "status": a.status,
+                                "decided_by": a.decided_by,
+                                "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+                                "expires_at": a.expires_at.isoformat() if a.expires_at else None,
+                                "created_at": a.created_at.isoformat() if a.created_at else None,
+                            }),
+                        }
+                last_snapshot = current_snapshot
+            await asyncio.sleep(2)
+
+    return EventSourceResponse(event_generator())
 
 
 @router.get("/{approval_id}", response_model=ApprovalOut)
@@ -65,3 +104,7 @@ async def submit_decision(
         background.add_task(execute_run, run.run_id, async_session)
 
     return approval
+
+
+async def _get_approval_session():
+    return async_session()

@@ -527,7 +527,8 @@ async def execute_run(run_id: str, db_factory) -> None:
                         record_run_completed(run_duration, "completed")
                         await db.commit()
                         return
-                await run_service.update_run_status(db, run_id, "failed")
+                error_msg = str(error.get("message", error) if isinstance(error, dict) else error)
+                await run_service.update_run_status(db, run_id, "failed", error_message=error_msg)
                 await run_service.emit_event(
                     db, run_id, "run_failed", payload={"error": error}
                 )
@@ -561,7 +562,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                     payload={"approval_id": approval.approval_id},
                 )
             elif terminal == "failed":
-                await run_service.update_run_status(db, run_id, "failed")
+                await run_service.update_run_status(db, run_id, "failed", error_message="Execution terminated with failed status")
                 await run_service.emit_event(db, run_id, "run_failed")
                 record_run_completed(run_duration, "failed")
                 asyncio.ensure_future(_fire_alert_webhook(run_id, None))
@@ -611,7 +612,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                             logger.exception("Failed to persist on_failure recovery status")
                         return
             try:
-                await run_service.update_run_status(db, run_id, "failed")
+                await run_service.update_run_status(db, run_id, "failed", error_message=str(exc)[:2000])
                 await run_service.emit_event(
                     db, run_id, "error",
                     payload={"message": str(exc), "type": type(exc).__name__}

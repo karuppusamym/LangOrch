@@ -25,13 +25,27 @@ class MCPClient:
         self.timeout = timeout
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
 
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        run_id: str = "",
+        node_id: str = "",
+        step_id: str = "",
+    ) -> dict[str, Any]:
         """Invoke an MCP tool and return the result dict."""
         url = f"/tools/{tool_name}"
-        logger.info("MCP call: %s %s", url, list(arguments.keys()))
+        logger.info("MCP call: %s %s run=%s", url, list(arguments.keys()), run_id)
+        correlation_headers: dict[str, str] = {}
+        if run_id:
+            correlation_headers["X-Run-ID"] = run_id
+        if node_id:
+            correlation_headers["X-Node-ID"] = node_id
+        if step_id:
+            correlation_headers["X-Step-ID"] = step_id
 
         try:
-            resp = await self._client.post(url, json={"arguments": arguments})
+            resp = await self._client.post(url, json={"arguments": arguments}, headers=correlation_headers)
             resp.raise_for_status()
             data = resp.json()
 

@@ -166,6 +166,26 @@ $env:WEB_AGENT_DRY_RUN="false"
 .\.venv\Scripts\python.exe -m uvicorn demo_agents.web_agent:app --app-dir backend --host 127.0.0.1 --port 9000
 ```
 
+## Real Playwright web automation demo (ready to run)
+
+1) Start backend (`http://127.0.0.1:8000`) and frontend (`http://localhost:3000`).
+
+2) Start the Playwright web agent in real browser mode:
+
+```powershell
+cd backend/demo_agents
+powershell -ExecutionPolicy Bypass -File .\run_playwright_agent.ps1
+```
+
+3) Run the full demo flow:
+
+```powershell
+cd c:/Users/karup/AGProjects/LangOrch
+C:/Users/karup/AGProjects/LangOrch/.venv/Scripts/python.exe demo_procedures/run_playwright_web_demo.py
+```
+
+This will register a dedicated `WEB` agent, import/reuse `demo_procedures/web_playwright_real_demo.ckp.json`, create a run, and wait for terminal status.
+
 ---
 
 ## Important operational notes

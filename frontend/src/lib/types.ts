@@ -24,6 +24,13 @@ export interface Run {
   status: RunStatus;
   thread_id: string;
   input_vars: Record<string, unknown>;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error_message: string | null;
+  parent_run_id: string | null;
+  last_node_id: string | null;
+  last_step_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -54,7 +61,9 @@ export interface RunEvent {
   event_type: string;
   node_id: string | null;
   step_id: string | null;
+  attempt: number | null;
   payload: Record<string, unknown>;
+  /** ISO timestamp (backend field name is `ts`) */
   created_at: string;
 }
 
@@ -63,9 +72,13 @@ export interface Approval {
   run_id: string;
   node_id: string;
   prompt: string;
-  status: "pending" | "approved" | "rejected" | "timed_out";
+  decision_type: string;
+  options: string[] | null;
+  status: "pending" | "approved" | "rejected" | "timed_out" | "timeout";
   decided_by: string | null;
   decided_at: string | null;
+  expires_at: string | null;
+  context_data: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -103,7 +116,9 @@ export interface ResourceLeaseDiagnostic {
 export interface StepIdempotencyDiagnostic {
   step_id: string;
   node_id: string;
+  idempotency_key: string | null;
   status: string;
+  has_cached_result: boolean;
   completed_at: string | null;
 }
 
@@ -122,5 +137,72 @@ export interface RunDiagnostics {
 
 export interface MetricsSummary {
   counters: Record<string, number | Record<string, number>>;
+  histograms?: Record<string, { count: number; sum: number; min: number; max: number; avg: number }>;
   [key: string]: unknown;
+}
+
+/* ── Checkpoints ────────────────────────── */
+
+export interface CheckpointMetadata {
+  checkpoint_id: string | null;
+  thread_id: string;
+  parent_checkpoint_id: string | null;
+  step: number;
+  writes: unknown | null;
+  created_at: string;
+}
+
+export interface CheckpointState {
+  checkpoint_id: string | null;
+  thread_id: string;
+  channel_values: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  pending_writes: unknown[];
+  versions_seen: Record<string, unknown>;
+}
+
+/* ── Explain (static analysis) ─────────── */
+
+export interface ExplainNode {
+  id: string;
+  type: string;
+  agent: string | null;
+  description: string | null;
+  is_checkpoint: boolean;
+  sla: Record<string, unknown> | null;
+  timeout_ms: number | null;
+  has_side_effects: boolean;
+  steps: { step_id: string; action: string; timeout_ms: number | null; retry_on_failure: boolean; output_variable: string | null; binding_kind: string | null }[];
+  error_handlers: { error_type: string; action: string; max_retries: number | null; delay_ms: number | null; fallback_node: string | null }[];
+}
+
+export interface ExplainEdge {
+  from: string;
+  to: string;
+  condition: string | null;
+}
+
+export interface ExplainVariable {
+  name: string;
+  required: boolean;
+  type: string | null;
+  default: unknown;
+  provided: boolean;
+}
+
+export interface ExplainReport {
+  procedure_id: string;
+  version: string;
+  nodes: ExplainNode[];
+  edges: ExplainEdge[];
+  variables: {
+    schema: Record<string, unknown>;
+    required: string[];
+    produced: string[];
+    missing_inputs: string[];
+    provided: string[];
+  };
+  route_trace: Array<{ node_id: string; type: string; next_nodes: string[]; is_terminal: boolean }>;
+  external_calls: { node_id: string; step_id: string | null; action: string; binding_kind: string; binding_ref: string | null; agent_hint: string | null; timeout_ms: number | null }[];
+  policy_summary: Record<string, unknown>;
 }

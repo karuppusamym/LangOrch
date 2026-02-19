@@ -3,6 +3,7 @@ import "./globals.css";
 import Sidebar from "@/components/layout/Sidebar";
 import Header from "@/components/layout/Header";
 import { ToastProvider } from "@/components/Toast";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
   title: "LangOrch — Agentic Automation Platform",
@@ -15,15 +16,17 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
-        <ToastProvider>
-          <Sidebar />
-          <div className="ml-[var(--sidebar-width)] flex min-h-screen flex-col">
-            <Header />
-            <main className="flex-1 p-8">{children}</main>
-          </div>
-        </ToastProvider>
+        <ThemeProvider>
+          <ToastProvider>
+            <Sidebar />
+            <div className="ml-[var(--sidebar-width)] flex min-h-screen flex-col">
+              <Header />
+              <main className="flex-1 p-8">{children}</main>
+            </div>
+          </ToastProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

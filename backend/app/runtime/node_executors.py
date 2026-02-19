@@ -287,6 +287,9 @@ async def execute_sequence(
                             mcp_url=binding.ref,
                             tool_name=step.action,
                             arguments=rendered_params,
+                            run_id=run_id,
+                            node_id=node.node_id,
+                            step_id=step.step_id,
                         )
                         if step.timeout_ms and step.timeout_ms > 0:
                             try:

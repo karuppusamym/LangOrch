@@ -79,7 +79,11 @@ async def explain_procedure_route(
         raise HTTPException(status_code=404, detail="Procedure not found")
     try:
         ckp = json.loads(proc.ckp_json)
-        ir = bind_executors(validate_ir(parse_ckp(ckp)))
+        ir = parse_ckp(ckp)
+        errors = validate_ir(ir)
+        if errors:
+            raise ValueError("; ".join(errors))
+        ir = bind_executors(ir)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"IR compilation failed: {exc}")
     input_vars = (body.input_vars if body else None) or {}

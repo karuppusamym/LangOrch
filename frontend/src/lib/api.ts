@@ -11,6 +11,9 @@ import type {
   AgentInstance,
   RunDiagnostics,
   MetricsSummary,
+  CheckpointMetadata,
+  CheckpointState,
+  ExplainReport,
 } from "./types";
 
 const API_BASE = "/api";
@@ -276,4 +279,33 @@ export async function listLeases(resourceKey?: string): Promise<import("./types"
 
 export async function revokeLease(leaseId: string): Promise<void> {
   await request(`/leases/${leaseId}`, { method: "DELETE" });
+}
+
+/* ── Checkpoints ───────────────────────── */
+
+export async function listRunCheckpoints(runId: string): Promise<CheckpointMetadata[]> {
+  return request(`/runs/${runId}/checkpoints`);
+}
+
+export async function getCheckpointState(
+  runId: string,
+  checkpointId: string
+): Promise<CheckpointState> {
+  return request(`/runs/${runId}/checkpoints/${encodeURIComponent(checkpointId)}`);
+}
+
+/* ── Explain (static analysis) ─────────── */
+
+export async function explainProcedure(
+  procedureId: string,
+  version: string,
+  inputVars?: Record<string, unknown>
+): Promise<ExplainReport> {
+  return request(
+    `/procedures/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}/explain`,
+    {
+      method: "POST",
+      body: JSON.stringify({ input_vars: inputVars ?? {} }),
+    }
+  );
 }

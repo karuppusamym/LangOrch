@@ -1,6 +1,6 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-18 (Batch 16: server-side input_vars validation + step-level dry_run — 344 tests)
+Last updated: 2026-02-18 (Batch 18: GET agent endpoint, doc reconciliation, dark mode, retry-with-inputs, version diff, artifact preview, bulk ops, SSE approvals, configurable redaction — 362 tests)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -13,12 +13,12 @@ This document is the single authoritative source for **what is implemented vs wh
 | CKP compiler (parse → validate → bind) | 100% | 98% | Complete — step retry_config field added |
 | CKP top-level fields (trigger, provenance) | 100% | 70% | trigger not parsed; provenance parsed+stored |
 | All 11 node type executors | 100% | 100% | Complete |
-| Global config enforcement | 100% | 90% | timeout, on_failure, rate_limit, execution_mode, vars_schema all enforced |
+| Global config enforcement | 100% | 95% | timeout, on_failure, rate_limit, execution_mode, vars_schema, checkpoint_strategy all enforced |
 | Policy: retry/backoff (global) | 100% | 100% | Complete |
 | Policy: retry/backoff (per-step) | 100% | 100% | Step-level retry_config overrides global |
 | Policy: retry/backoff (per-node llm_action) | 100% | 100% | payload.retry dict overrides global for LLM nodes |
 | Policy: timeout/SLA (global) | 100% | 100% | asyncio.wait_for wraps full graph stream |
-| Policy: timeout/SLA (step-level) | 100% | 40% | Agent+MCP steps timed; internal steps not |
+| Policy: timeout/SLA (step-level) | 100% | 95% | Agent+MCP+internal steps all wrapped with asyncio.wait_for |
 | Policy: rate limiting | 100% | 80% | max_concurrent_operations + max_requests_per_minute both enforced |
 | Trigger automation | 100% | 0% | Not started |
 | Checkpointing + replay | 100% | 100% | checkpoint_strategy="none" supported; is_checkpoint per-node forcing; checkpoint_saved event emitted |
@@ -28,8 +28,8 @@ This document is the single authoritative source for **what is implemented vs wh
 | Secrets provider (env + Vault) | 100% | 80% | Working; AWS/Azure stubs |
 | Observability (events + SSE) | 100% | 98% | checkpoint_saved event added |
 | Observability (in-memory metrics) | 100% | 100% | Prometheus `/api/metrics` text endpoint added |
-| Observability (telemetry fields) | 100% | 50% | track_duration+track_retries emitted; custom_metrics recorded |
-| Redaction | 100% | 90% | Implemented |
+| Observability (telemetry fields) | 100% | 85% | track_duration+track_retries emitted; custom_metrics recorded; not exported externally |
+| Redaction | 100% | 100% | Configurable via build_patterns() + extra_redacted_fields |
 | Diagnostics API | 100% | 100% | Complete |
 | Checkpoint introspection API | 100% | 100% | Complete |
 | Graph extraction API | 100% | 100% | Complete |
@@ -37,9 +37,15 @@ This document is the single authoritative source for **what is implemented vs wh
 | Projects CRUD | 100% | 100% | Complete — backend + frontend |
 | Agent capabilities + health polling | 100% | 100% | Complete — capabilities in UI, health loop polls /health |
 | Agent management (update/delete) | 100% | 100% | PUT/DELETE endpoints + frontend buttons |
-| Frontend: core CRUD pages (10 routes) | 100% | 100% | Complete |
+| Frontend: core CRUD pages (12 routes) | 100% | 100% | Complete |
 | Frontend: projects page | 100% | 100% | Complete — list/create/edit/delete |
 | Frontend: workflow graph viewer | 100% | 95% | Implemented |
+| Frontend: dark mode | 100% | 100% | ThemeProvider + header toggle + localStorage |
+| Frontend: retry with modified inputs | 100% | 100% | Modal with variables editor on failed runs |
+| Frontend: procedure version diff | 100% | 100% | LCS line-level side-by-side diff viewer |
+| Frontend: artifact preview/download | 100% | 100% | Inline text/JSON preview + download button |
+| Frontend: bulk operations on runs | 100% | 100% | Multi-select + bulk cancel/delete |
+| Frontend: SSE approvals | 100% | 100% | Real-time push via EventSource |
 | Frontend: diagnostics/metrics pages | 100% | 100% | Complete |
 | Frontend: input variables form | 100% | 100% | Complete — constraint validation in UI |
 | Frontend: toast notification system | 100% | 100% | Complete |
@@ -49,7 +55,7 @@ This document is the single authoritative source for **what is implemented vs wh
 | Frontend: project filter in procedures | 100% | 100% | Complete |
 | Frontend: workflow builder/editor | 100% | 0% | Not started |
 | Frontend→Backend API linkage | 100% | 100% | All 35+ call sites verified; 204-body bug fixed |
-| Backend tests (unit) | Target | 98% | **344 tests** — all passing |
+| Backend tests (unit) | Target | 99% | **362 tests** — all passing |
 | Backend tests (integration) | Target | 35% | 18 API tests |
 | Frontend tests | Target | 0% | Not started |
 | AuthN/AuthZ | Target | 0% | Not started (parked) |
@@ -100,7 +106,7 @@ This document is the single authoritative source for **what is implemented vs wh
 ### Database (backend/app/db/) - 9 tables
 projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, agent_instances, resource_leases
 
-### API layer - 26 endpoints confirmed
+### API layer - 38 endpoints confirmed
 
 | Endpoint | Status |
 |----------|--------|
@@ -125,9 +131,11 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | GET /api/runs/{id}/events | Complete |
 | GET /api/runs/{id}/stream (SSE) | Complete |
 | GET/POST /api/approvals | Complete |
+| GET /api/approvals/stream (SSE) | Complete — real-time approval push |
 | GET /api/approvals/{id} | Complete |
 | POST /api/approvals/{id}/decision | Complete |
 | GET/POST /api/agents | Complete |
+| GET /api/agents/{id} | Complete — single agent detail |
 | PUT /api/agents/{id} | Complete — update status/url/capabilities |
 | DELETE /api/agents/{id} | Complete — 204 No Content |
 | GET /api/actions | Complete — static catalog by channel |
@@ -136,41 +144,47 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | GET/PUT/DELETE /api/projects/{id} | Complete |
 | POST /api/triggers | NOT IMPLEMENTED |
 
-### Tests (backend/tests/) - 260 tests, all passing
+### Tests (backend/tests/) - 362 tests, all passing
 
 | File | Tests | Scope |
 |------|-------|-------|
-| test_parser.py | 27 | All node types, step fields, error handlers, edge cases |
-| test_validator.py | 15 | Valid/invalid procedures, all node reference checks |
+| test_parser.py | 26 | All node types, step fields, error handlers, edge cases |
+| test_validator.py | 16 | Valid/invalid procedures, all node reference checks |
 | test_binder.py | 6 | Binding logic across node types |
-| test_redaction.py | 21 | Sensitive field detection, nesting, depth limit |
+| test_redaction.py | 12 | Sensitive field detection, nesting, depth limit, configurable patterns |
 | test_metrics.py | 17 | Counters, histograms, labels, summary, reset |
 | test_secrets.py | 11 | Env provider, manager, singleton, bulk get |
 | test_graph.py | 13 | Graph service: all node types, layout, colors, edges |
 | test_batch7.py | 15 | Global timeout, idempotency templates, error-handler dispatch |
-| test_batch8.py | 12 | Constraint UI validation, token-bucket rate limit, pagination |
+| test_batch8.py | 9+ | Constraint UI validation, token-bucket rate limit, pagination |
 | test_batch9.py | 20 | Run cancellation, LLM system_prompt/json_mode, approval expiry |
 | test_batch10.py | 13 | wait_ms, telemetry tracking, provenance+retrieval_metadata |
 | test_batch11.py | 17 | Status/effective_date enforcement, checkpoint_strategy, tag search, custom_metrics |
-| test_batch12.py | 30 | Agent capabilities parsing, AgentInstanceUpdate, projects CRUD, PUT/DELETE agents |
-| test_batch13.py | 18 | _get_retry_config from global_config, step_timeout events, SLA breach, rate semaphore, alert webhook, OrchestratorState.global_config |
-| test_api.py | 18 | API integration (excluded from unit suite; run separately) |
+| test_batch12.py | 24+ | Agent capabilities parsing, AgentInstanceUpdate, projects CRUD, PUT/DELETE agents |
+| test_batch13.py | 18 | _get_retry_config, step_timeout events, SLA breach, rate semaphore, alert webhook |
+| test_batch14.py | 34 | Explain service, step retry config, LLM retry, is_checkpoint marker, checkpoint events |
+| test_batch15.py | 7 | notify_on_error in IRErrorHandler |
+| test_batch16.py | 25 | Server-side input_vars validation, step-level dry_run guard |
+| test_execution_validation.py | 18 | Variables constraint enforcement (regex, min/max, allowed_values) |
+| test_on_failure_handler.py | 5 | on_failure recovery handler routing |
+| test_api.py | 18 | API integration (run separately) |
 
-### Frontend (frontend/src/) - 9 routes
+### Frontend (frontend/src/) - 12 routes
 
 | Route | Status | Notes |
 |-------|--------|-------|
 | / Dashboard | Working | Counts + recent runs + metrics panel |
 | /procedures | Working | List + search + status/project filter + CKP import (with project assignment) |
 | /procedures/[id] | Working | Overview/graph/CKP/versions tabs + input vars modal + provenance/retrieval_metadata |
-| /procedures/[id]/[version] | Working | Edit CKP, delete version, start run + input vars modal + status/effective_date |
-| /runs | Working | Status filters, date range, bulk cleanup, pagination |
-| /runs/[id] | Working | Timeline + SSE live updates + artifacts + diagnostics + toast + graph link |
-| /approvals | Working | Inbox + inline approve/reject |
+| /procedures/[id]/[version] | Working | Edit CKP, delete version, start run + input vars modal + status/effective_date + version diff |
+| /runs | Working | Status filters, date range, bulk cleanup, pagination, bulk select/cancel/delete |
+| /runs/[id] | Working | Timeline + SSE live updates + artifacts (preview/download) + diagnostics + checkpoints + graph + retry-with-inputs modal |
+| /approvals | Working | Inbox + inline approve/reject + SSE live updates |
 | /approvals/[id] | Working | Full detail + decision form |
 | /agents | Working | Card grid + capabilities checkboxes + Mark Online/Offline + Delete + action catalog |
 | /leases | Working | Active lease table, force-release, expiry warning, auto-refresh |
 | /projects | Working | List + create + inline edit + delete |
+| (layout) | Working | Dark mode toggle, sidebar with pending-approval badge |
 
 ---
 
@@ -185,20 +199,20 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | status | Yes | No | Not enforced at runtime |
 | effective_date | Yes | No | Not used for version selection |
 | trigger | No | No | Not parsed, not implemented |
-| retrieval_metadata | No | No | Not parsed, not stored |
+| retrieval_metadata | **Yes** | No | Parsed + stored in DB; tag search supported |
 | global_config.max_retries | Yes | Yes | Complete |
 | global_config.retry_delay_ms | Yes | Yes | Complete |
 | global_config.timeout_ms | Yes | **Yes** | `_invoke_graph_with_checkpointer` now wraps with `asyncio.wait_for`; raises `TimeoutError` on breach |
 | global_config.on_failure | Yes | **Yes** | `_run_on_failure_handler` re-invokes graph from fallback node; success → run marked completed with `recovered_via` field |
-| global_config.checkpoint_strategy | Yes | No | Parsed, not used |
-| global_config.execution_mode | Yes | No | dry_run/validation not respected |
+| global_config.checkpoint_strategy | Yes | **Yes** | "none" disables checkpointer (Batch 11) |
+| global_config.execution_mode | Yes | **Yes** | dry_run skips external steps; validation_only skips graph |
 | global_config.rate_limiting | Yes | **Yes** | `max_concurrent_operations` → `asyncio.Semaphore` wraps all async node executors in graph_builder |
 | global_config.secrets_config | Yes | Yes | Complete |
 | global_config.audit_config | Yes | Yes | Redaction active |
 | variables_schema | Yes | **Yes** | Defaults extracted; `required` validated before execution; regex/min/max/allowed_values enforced per-var |
 | variables_schema.*.validation.sensitive | Yes | Yes | Redaction active |
 | workflow_graph | Yes | Yes | Complete |
-| provenance | No | No | Not parsed |
+| provenance | **Yes** | No | Parsed + stored in DB (Batch 10) |
 
 ### Node-level fields
 
@@ -207,7 +221,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | type (all 11) | Yes | Yes | Complete |
 | agent | Yes | Yes | Complete |
 | next_node | Yes | Yes | Complete |
-| is_checkpoint | Yes | No | Field stored, not used for selective checkpointing |
+| is_checkpoint | Yes | **Yes** | _checkpoint_node_id marker injected; checkpoint_saved event emitted |
 | sla.max_duration_ms | Yes | **Yes** | Node execution timed; `sla_breached` event emitted when exceeded |
 | sla.on_breach | Yes | **Yes** | `warn` logs, `fail` raises RuntimeError, `escalate` routes to `escalation_handler` node |
 | sla.escalation_handler | Yes | **Yes** | When `on_breach=escalate`, state `next_node_id` set to handler node |
@@ -235,8 +249,8 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 | Gap | Detail | Effort |
 |-----|--------|--------|
-| Step timeout for internal actions | `timeout_ms` not enforced for transform/sequence internal steps (agent and MCP are timed) | Small |
-| `is_checkpoint` selective strategy | `is_checkpoint=true` on nodes should trigger a forced checkpoint; currently ignored | Small |
+| ~~Step timeout for internal actions~~ | ✅ `timeout_ms` now enforced for all step types | Done |
+| ~~`is_checkpoint` selective strategy~~ | ✅ `_checkpoint_node_id` marker + `checkpoint_saved` event (Batch 14) | Done |
 | Trigger automation | `trigger` field not parsed; no scheduler/webhook/event-driven execution | Large |
 | AuthN/AuthZ | No identity enforcement; all endpoints open | Large (parked) |
 
@@ -244,25 +258,24 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 | Item | Detail |
 |------|--------|
-| Duplicate UI components | StatusBadge extracted to `@/components/shared/StatusBadge.tsx`; ProcedureStatusBadge to `@/components/shared/ProcedureStatusBadge.tsx`; ApprovalStatusBadge to `@/components/shared/ApprovalStatusBadge.tsx` — all inline definitions removed |
+| ~~Duplicate UI components~~ | ✅ StatusBadge, ProcedureStatusBadge, ApprovalStatusBadge extracted to `@/components/shared/` |
 | AWS/Azure secrets stubs | Both providers fall back to env vars with a warning log |
 | No server-side data fetching | All pages use `useEffect` + client fetch; no SWR/React Query caching |
-| Metrics export | Prometheus `/api/metrics` text format endpoint added |
+| ~~Metrics export~~ | ✅ Prometheus `/api/metrics` text format endpoint added |
 | Frontend e2e tests | No Playwright/Cypress tests |
 | CI/CD pipeline | No lint/test/build gates |
 | Workflow editor (frontend) | Read-only graph viewer done; editable properties not started |
-| Retrieval metadata search | retrieval_metadata not parsed; no search API | Medium |
+| Retrieval metadata search | retrieval_metadata parsed + stored; no full-text search API | Medium |
 
 ### Priority 4 - Technical debt
 
 | Item | Detail |
 |------|--------|
-| Duplicate UI components | StatusBadge and ApprovalStatusBadge extracted to `src/components/shared/` — inline definitions removed from all 7 files |
-| Dead frontend code | getActionCatalog() in api.ts, ActionCatalog type, Project type - never used |
-| Dead npm dependency | @heroicons/react listed in package.json but never imported |
+| ~~Duplicate UI components~~ | ✅ StatusBadge and ApprovalStatusBadge extracted to `src/components/shared/` |
+| ~~Dead npm dependency~~ | ✅ @heroicons/react removed from package.json (Batch 17) |
 | event_service.py is 6-line re-export | Could be consolidated into run_service.py |
 | AWS/Azure secrets stubs | Providers fall back to env vars with warning |
-| No error toast system | ~~Errors are console.error/alert() - no formal notification UX~~ **DONE** — `Toast.tsx` with `ToastProvider` + `useToast()` hook, 4 types, auto-dismiss |
+| ~~No error toast system~~ | ✅ `Toast.tsx` with `ToastProvider` + `useToast()` hook, 4 types, auto-dismiss |
 | All pages use useEffect only | No server-side data fetching, no caching (SWR/React Query) |
 
 ---
@@ -370,18 +383,39 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 **Total tests after Batch 16: 344 (up from 319)**
 
+### Batch 17 (2026-02-18) — Frontend UX features + SSE approvals + configurable redaction
+62. **Retry with modified inputs UI** — run detail retry button fetches procedure `variables_schema`, pre-fills with original inputs, opens modal with schema-aware form (select/textarea/input), validation, and submit via `createRun()`
+63. **Procedure version diff viewer** — LCS-based `computeLineDiff()` algorithm, side-by-side comparison tool with color-coded diff hunks (red=removed, green=added)
+64. **Artifact download/preview** — inline text/JSON preview via `ArtifactPreview` component + download button; auto-detects previewable files
+65. **Bulk operations on runs list** — checkbox column, `toggleSelect`/`toggleSelectAll`, bulk cancel/delete with `ConfirmDialog`
+66. **SSE for approvals** — `GET /api/approvals/stream` SSE endpoint polls DB every 2s and pushes `approval_update` events; frontend subscribes via `subscribeToApprovalUpdates()`; replaces 10s polling
+67. **Configurable redaction policy** — `build_patterns(extra_fields)` merges default patterns with CKP-specified field patterns; `emit_event(extra_redacted_fields=...)` passes through to redaction
+68. **Dead code cleanup** — removed `@heroicons/react` from `package.json` (verified zero imports)
+69. **Dark mode toggle** — `ThemeProvider` context with `useTheme()` hook, localStorage persistence, system preference detection; header sun/moon toggle; `dark:` classes on Sidebar + Header
+
+### Batch 18 (2026-02-18) — Fixes + doc reconciliation
+70. **GET /api/agents/{agent_id}** — added missing endpoint (router had PUT/DELETE but no GET; `test_agent_not_found` was getting 405 instead of 404)
+71. **Documentation reconciliation** — updated FUTURE_PLAN.md and IMPLEMENTATION_STATUS.md to reflect actual implementation state across all 18 batches
+
+**Total tests after Batch 18: 362 (up from 344)**
+
 ---
 
 ## Suggested next quick wins (from audit)
 
 | # | Item | Effort | Impact | Status |
 |---|------|--------|--------|--------|
-| 25 | Global `timeout_ms` enforcement — wrap entire graph invocation with `asyncio.wait_for` | Small | Medium | ✅ Done (Batch 7) |
-| 26 | Idempotency key template evaluation — evaluate `{{var}}` expressions in step-level `idempotency_key` | Small | Medium | ✅ Done (Batch 7) |
-| 27 | Variables regex validation UI — surface constraint errors in the input vars modal | Small | Medium | ✅ Done (Batch 8) |
-| 28 | `error_handlers` action semantics — `retry`, `escalate`, `ignore`, `fail`, `screenshot_and_fail` fully dispatched | Medium | Medium | ✅ Done (Batch 7) |
-| 29 | Trigger automation — parse trigger field; add scheduler + webhook receiver | Large | High | Pending |
-| 30 | Rate-limit `max_requests_per_minute` — a token-bucket per procedure to throttle step invocations | Medium | Low | ✅ Done (Batch 8) |
+| 25 | Global `timeout_ms` enforcement | Small | Medium | ✅ Done (Batch 7) |
+| 26 | Idempotency key template evaluation | Small | Medium | ✅ Done (Batch 7) |
+| 27 | Variables regex validation UI | Small | Medium | ✅ Done (Batch 8) |
+| 28 | `error_handlers` action semantics | Medium | Medium | ✅ Done (Batch 7) |
+| 29 | Trigger automation | Large | High | Pending |
+| 30 | Rate-limit `max_requests_per_minute` | Medium | Low | ✅ Done (Batch 8) |
+| 31 | Configurable redaction policy | Small | Medium | ✅ Done (Batch 17) |
+| 32 | Dark mode | Small | Medium | ✅ Done (Batch 17) |
+| 33 | SSE for approvals | Medium | High | ✅ Done (Batch 17) |
+| 34 | Artifact preview/download | Small | Medium | ✅ Done (Batch 17) |
+| 35 | Bulk operations on runs | Medium | Medium | ✅ Done (Batch 17) |
 
 ---
 

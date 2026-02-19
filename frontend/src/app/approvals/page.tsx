@@ -1,19 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { listApprovals, submitApprovalDecision } from "@/lib/api";
+import { subscribeToApprovalUpdates } from "@/lib/sse";
 import { ApprovalStatusBadge } from "@/components/shared/ApprovalStatusBadge";
+import { useToast } from "@/components/Toast";
 import type { Approval } from "@/lib/types";
 
 export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "pending">("pending");
-
-  useEffect(() => {
-    loadApprovals();
-  }, []);
+  const { toast } = useToast();
 
   async function loadApprovals() {
     try {
@@ -26,15 +25,33 @@ export default function ApprovalsPage() {
     }
   }
 
+  useEffect(() => {
+    loadApprovals();
+    // SSE subscription for real-time approval updates
+    const cleanup = subscribeToApprovalUpdates(
+      (_update) => {
+        // Re-fetch full list when any approval changes
+        loadApprovals();
+      },
+      () => {
+        // On SSE error, fall back to polling
+        console.warn("Approval SSE disconnected, falling back to polling");
+      }
+    );
+    return cleanup;
+  }, []);
+
   async function handleDecision(
     approvalId: string,
     decision: "approved" | "rejected"
   ) {
     try {
       await submitApprovalDecision(approvalId, decision, "ui_user");
+      toast(`Approval ${decision}`, "success");
       loadApprovals();
     } catch (err) {
       console.error(err);
+      toast("Decision failed", "error");
     }
   }
 
@@ -45,6 +62,17 @@ export default function ApprovalsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Pending pulse indicator */}
+      {pendingCount > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800">
+          <span className="relative flex h-3 w-3">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75" />
+            <span className="relative inline-flex h-3 w-3 rounded-full bg-yellow-500" />
+          </span>
+          {pendingCount} approval{pendingCount > 1 ? "s" : ""} waiting
+        </div>
+      )}
+
       {/* Filter */}
       <div className="flex items-center gap-4">
         <button
@@ -67,6 +95,7 @@ export default function ApprovalsPage() {
         >
           All ({approvals.length})
         </button>
+        <span className="ml-auto text-[10px] text-gray-400">Live (SSE)</span>
       </div>
 
       {/* Approval list */}
@@ -92,6 +121,9 @@ export default function ApprovalsPage() {
                     <span className="text-xs text-gray-400">
                       Node: {approval.node_id}
                     </span>
+                    {approval.expires_at && approval.status === "pending" && (
+                      <CountdownBadge expiresAt={approval.expires_at} />
+                    )}
                   </div>
                   <p className="mt-2 text-sm text-gray-900">{approval.prompt}</p>
                   <p className="mt-1 text-xs text-gray-400">
@@ -137,6 +169,28 @@ export default function ApprovalsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function CountdownBadge({ expiresAt }: { expiresAt: string }) {
+  const [remaining, setRemaining] = useState("");
+  useEffect(() => {
+    function tick() {
+      const diff = new Date(expiresAt).getTime() - Date.now();
+      if (diff <= 0) { setRemaining("expired"); return; }
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      setRemaining(`${m}m ${s}s`);
+    }
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+  const isUrgent = remaining !== "expired" && new Date(expiresAt).getTime() - Date.now() < 120_000;
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${isUrgent ? "bg-red-100 text-red-600 animate-pulse" : "bg-gray-100 text-gray-500"}`}>
+      ⏱ {remaining}
+    </span>
   );
 }
 

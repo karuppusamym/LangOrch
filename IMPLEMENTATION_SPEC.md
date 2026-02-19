@@ -228,25 +228,34 @@ CKP JSON → parser.py → raw dict
 
 | Page | Features |
 |------|----------|
-| Dashboard | Run counts, recent activity, pending approvals |
-| Projects | List/create projects (UI grouping) |
-| Procedures | List, import CKP, view JSON (Monaco), version history |
-| Procedure Detail | CKP JSON viewer, start run button, version list |
-| Runs | List with status filters, search |
-| Run Detail | Live timeline (SSE), node/step progress, artifacts, retry/cancel |
-| Approvals | Pending inbox with context preview |
+| Dashboard | Run counts, recent activity, pending approvals, metrics panel |
+| Projects | List/create/edit/delete projects (UI grouping) |
+| Procedures | List, import CKP, search, status/project filter |
+| Procedure Detail | CKP JSON viewer/editor, start run button, version list, input vars modal, graph viewer |
+| Procedure Version | Edit CKP, version diff viewer, start run with variables |
+| Runs | List with status filters, date range, pagination, bulk select/cancel/delete |
+| Run Detail | Live timeline (SSE), artifacts (preview/download), diagnostics, checkpoints, retry-with-inputs, cancel |
+| Approvals | Pending inbox with SSE live updates, inline approve/reject |
 | Approval Detail | Full context, approve/reject/input actions |
-| Agents | Instance list, status, capacity, active leases |
+| Agents | Instance cards, capabilities, status toggle, delete, action catalog |
+| Leases | Active lease table, force-release, expiry warning, auto-refresh |
+| (Layout) | Dark mode toggle, sidebar with pending-approval badge |
 
 ---
 
 ## What's NOT covered yet (called out)
 
-1. **Workflow Builder UI (React Flow)** — Phase 2; current UI is import/view/monitor only.
+1. **Workflow Builder UI (React Flow editor)** — Read-only graph viewer exists; editable node properties not started.
 2. **Observer/O2A** — Deferred; no screen capture → CKP generation yet.
 3. **Enterprise RBAC** — No multi-tenant auth; single-user for now.
 4. **Scheduled triggers** — CKP supports cron triggers but the scheduler service is not in scope for initial build.
 5. **MCP server hosting** — We build MCP *client* connectors; MCP servers are external.
 6. **Agent worker processes** — We define the protocol; actual agent workers (Playwright, WinAppDriver, etc.) need separate implementation.
+7. **AWS/Azure Secrets** — Provider stubs exist with env fallback; full adapters deferred.
+8. **Frontend e2e tests / CI pipeline** — Not started.
+
+These are explicitly deferred, not forgotten.
+7. **AWS/Azure Secrets** — Provider stubs exist with env fallback; full adapters deferred.
+8. **Frontend e2e tests / CI pipeline** — Not started.
 
 These are explicitly deferred, not forgotten.

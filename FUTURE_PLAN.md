@@ -1,6 +1,6 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-18 (updated after Batch 16: server-side input_vars validation + step-level dry_run — 344 tests)
+Last updated: 2026-02-18 (updated after Batch 18 cleanup: GET agent endpoint fix, doc reconciliation — 362 tests)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
@@ -28,26 +28,32 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - **In-memory metrics**: counters/histograms + `GET /api/runs/metrics/summary` endpoint
 - **Graph extraction API**: `GET /api/procedures/{id}/{version}/graph` → React Flow-compatible nodes/edges
 - **Workflow graph viewer (frontend)**: interactive React Flow with custom CKP nodes, color-coding, minimap, zoom/pan
-- **157 backend tests** across 8 test files — all passing (parser, validator, binder, redaction, metrics, secrets, graph, API)
-- **260 backend tests** across 13 test files — all passing (adds Batch 12: projects, agents PUT/DELETE, capabilities parsing)
-- 11-route frontend: Dashboard, Procedures (list/detail/edit), Runs (list/detail/timeline), Approvals (inbox/detail), Agents, Projects, Leases
+- **362 backend tests** across 20 test files — all passing (parser, validator, binder, redaction, metrics, secrets, graph, API, batches 7–16)
+- 12-route frontend: Dashboard, Procedures (list/detail/edit/version-diff), Runs (list/detail/timeline/bulk-ops), Approvals (inbox/detail/SSE-live), Agents, Projects, Leases
+- **Dark mode**: system-preference-aware toggle in header, persisted to localStorage
+- **Retry with modified inputs**: run detail retry button opens variables editor pre-filled with original inputs
+- **Procedure version diff**: side-by-side CKP JSON diff viewer with line-level LCS comparison
+- **Artifact preview**: inline text/JSON preview + download button for all artifacts
+- **Bulk operations**: multi-select checkboxes on runs list with bulk cancel/delete + confirmation
+- **SSE for approvals**: real-time approval push via `GET /api/approvals/stream` (replaces 10s polling)
+- **Configurable redaction**: `build_patterns()` merges CKP `audit_config.redacted_fields` with default patterns
 
 ### Partially implemented
 - Secrets handling: env/vault working; AWS Secrets Manager and Azure Key Vault are stubs with env fallback
-- Telemetry fields parsed (track_duration, track_retries, custom_metrics) but not exported to any backend
+- Telemetry fields: `track_duration` and `track_retries` emitted in step events; `custom_metrics` recorded; not exported to external backends
 - Approval flow exists, but no role-based approver governance
-- Error handlers fully parsed into IR but NOT executed at runtime — execute_sequence uses simpler built-in retry instead
-- `wait`/`wait_after_ms` stored in steps but the `wait` action is a no-op placeholder (no `asyncio.sleep`)
-- `idempotency_key` custom templates stored but not evaluated — composite (run_id, node_id, step_id) key used instead
+- ~~Error handlers fully parsed into IR but NOT executed at runtime~~ → ✅ Fully dispatched (Batches 7 + 15)
+- ~~`wait`/`wait_after_ms` stored in steps but the `wait` action is a no-op placeholder~~ → ✅ `asyncio.sleep` enforced (Batch 10)
+- ~~`idempotency_key` custom templates stored but not evaluated~~ → ✅ Jinja2 template rendering applied (Batch 7)
 
 ### Not yet implemented (high impact gaps)
 - Trigger automation (scheduler, webhook, file/event driven execution) — `trigger` field not parsed
 - AuthN/AuthZ and policy enforcement
-- Step/node timeout enforcement — `timeout_ms` parsed but `asyncio.wait_for` never wraps calls
-- SLA monitoring — `sla.max_duration_ms` not tracked, no breach events
-- Stale lease management — `GET/DELETE /api/leases` endpoints not implemented
-- Rate limiting — `rate_limiting` parsed but not enforced
-- Frontend: no diagnostics/metrics pages, no input variables form for run-start
+- ~~Step/node timeout enforcement~~ → ✅ `asyncio.wait_for` wraps agent_http, mcp_tool, and internal steps (Batch 10)
+- ~~SLA monitoring~~ → ✅ `sla.max_duration_ms` tracked, `sla_breached` events emitted, escalation/fail enforced (Batches 5 + 13)
+- ~~Stale lease management~~ → ✅ `GET/DELETE /api/leases` endpoints + frontend /leases page implemented
+- ~~Rate limiting~~ → ✅ `max_concurrent_operations` (semaphore) + `max_requests_per_minute` (token bucket) enforced (Batches 6 + 8)
+- ~~Frontend: no diagnostics/metrics pages, no input variables form~~ → ✅ All implemented (diagnostics tab, metrics panel, input vars form)
 - Artifact metadata normalization/retention controls are limited
 - Visual workflow builder/editor (read-only viewer exists)
 - Automated frontend tests + CI gates
@@ -101,12 +107,12 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 ### Remaining gaps
 - No platform AuthN/AuthZ — all 26 endpoints are open
 - No role-based approval governance (any caller can submit approval decisions)
-- Redaction policy is hardcoded key-name patterns — not configurable from CKP `audit_config`
+- ~~Redaction policy is hardcoded key-name patterns~~ — ✅ Configurable via `build_patterns(extra_fields)` + `emit_event(extra_redacted_fields=...)`
 
 ### Next implementation items
 - Add auth middleware and role model (`operator`, `approver`, `admin`)
 - Implement AWS Secrets Manager and Azure Key Vault provider adapters
-- Make redaction field list configurable from `global_config.audit_config`
+- ~~Make redaction field list configurable from `global_config.audit_config`~~ — ✅ Implemented via `build_patterns()` + `emit_event(extra_redacted_fields=...)`
 
 ## 4) Observability and operations
 ### Current — UPDATED 2026-02-17
@@ -117,19 +123,20 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ✅ `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented with UI on /leases page
 
 ### Remaining gaps
-- Metrics are process-local in-memory — not persistent, not exported (no Prometheus/OpenTelemetry)
-- `sla.max_duration_ms` not tracked — no breach events, no escalation
-- No alert hooks for failed/stuck runs
-- `telemetry` fields (track_duration, track_retries, custom_metrics) parsed but not acted on
+- Metrics are process-local in-memory — not persistent, not exported to external Prometheus/OpenTelemetry
+- ~~`sla.max_duration_ms` not tracked~~ → ✅ Node-level SLA tracked, `sla_breached` events emitted (Batch 13)
+- ~~No alert hooks for failed/stuck runs~~ → ✅ `_fire_alert_webhook` on `run_failed` (Batch 13)
+- ~~`telemetry` fields parsed but not acted on~~ → ✅ `track_duration` + `track_retries` emitted in step events; `custom_metrics` recorded (Batches 10 + 11)
 
 ### Next implementation items
-- Track node execution start time vs `sla.max_duration_ms`, emit `sla_breached` event
-- Add Prometheus-compatible `/metrics` endpoint using existing in-memory MetricsCollector
-- Add alert hooks (configurable webhook or log-based) for `run_failed` and stuck runs
+- ~~Track node execution start time vs `sla.max_duration_ms`, emit `sla_breached` event~~ → ✅ Done (Batch 13)
+- ~~Add Prometheus-compatible `/metrics` endpoint using existing in-memory MetricsCollector~~ → ✅ Done (Batch 13)
+- ~~Add alert hooks (configurable webhook or log-based) for `run_failed` and stuck runs~~ → ✅ Done (Batch 13)
+- Export metrics to external Prometheus/OpenTelemetry backend (currently in-memory only)
 
 ## 5) Frontend operations UX
 ### Current — UPDATED 2026-02-17
-- ✅ 11 routes: Dashboard, Procedures (list/detail/edit), Runs (list/detail/timeline/artifacts), Approvals (inbox/detail), Agents, Projects, Leases
+- ✅ 12 routes: Dashboard, Procedures (list/detail/edit/version-diff), Runs (list/detail/timeline/bulk-ops), Approvals (inbox/detail/SSE-live), Agents, Projects, Leases
 - ✅ Workflow graph viewer implemented with React Flow, custom CKP node types, minimap, color-coding
 - ✅ Live run timeline with SSE subscription + event deduplication + auto-scroll
 - ✅ Artifacts list with auto-refresh on `artifact_created` SSE events
@@ -142,26 +149,29 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ✅ `masteragent` channel available in agent registration dropdown
 
 ### Remaining gaps
-- No UI for `GET /api/runs/{id}/diagnostics` data — API exists but no page displays it
-- No UI for `GET /api/runs/metrics/summary` — API exists but no metrics panel on dashboard
-- `createRun` always sends `{}` for `input_vars` — no form reads `variables_schema` from the procedure
-- No retry-path overlay in timeline
+- ~~No UI for `GET /api/runs/{id}/diagnostics` data~~ — ✅ Diagnostics tab in run detail page
+- ~~No UI for `GET /api/runs/metrics/summary`~~ — ✅ Dashboard metrics panel with histograms
+- ~~`createRun` always sends `{}` for `input_vars`~~ — ✅ Input variables form with full validation
+- ~~No retry-path overlay in timeline~~ — ✅ Retry-with-modified-inputs modal on failed runs
 - No LLM/agent invocation detail panel (model used, tokens, latency)
 - No approval SLA/escalation indicators
-- Duplicate UI components: `StatusBadge` defined independently on 2+ pages
+- ~~Duplicate UI components: `StatusBadge` defined independently~~ — ✅ Extracted to `src/components/shared/`
 
 ### Next implementation items
-- Add diagnostics tab to run detail page using existing `GET /api/runs/{id}/diagnostics`
-- Add metrics card to dashboard using `GET /api/runs/metrics/summary`
-- Add input variables form modal at run-start that reads `variables_schema` from the procedure
-- Extract `StatusBadge` and `ApprovalStatusBadge` into `src/components/shared/`
+- ~~Add diagnostics tab to run detail page using existing `GET /api/runs/{id}/diagnostics`~~ — ✅ Done
+- ~~Add metrics card to dashboard using `GET /api/runs/metrics/summary`~~ — ✅ Done
+- ~~Add input variables form modal at run-start that reads `variables_schema` from the procedure~~ — ✅ Done
+- ~~Extract `StatusBadge` and `ApprovalStatusBadge` into `src/components/shared/`~~ — ✅ Done
+- Add LLM/agent step detail panel (model, tokens, latency)
+- Add approval SLA/escalation indicators
 
 ## 6) Quality and delivery discipline
-### Current — UPDATED 2026-02-18 (Batch 15)
+### Current — UPDATED 2026-02-18 (Batch 18)
 - ✅ 278 backend tests (Batch 13): retry config, step_timeout events, SLA breach, alert webhook, Prometheus, shared UI
 - ✅ **312 backend tests** (Batch 14): explain service (19), step retry config (5), LLM retry (3), is_checkpoint marker (2), checkpoint event (2), endpoint (3)
 - ✅ **319 backend tests** (Batch 15): notify_on_error in IRErrorHandler (7)
 - ✅ **344 backend tests** (Batch 16): server-side input_vars validation (20) + step-level dry_run guard (5)
+- ✅ **362 backend tests** (Batch 18): GET agent endpoint fix + test count reconciliation across 20 test files
 
 ### Remaining gaps
 - Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
@@ -182,12 +192,12 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - CKP is the platform contract; without richer policy semantics, runtime behavior remains hard-coded.
 
 ### Next implementation items
-- Extend CKP schema with explicit execution policy blocks:
-  - `retry_policy` (`max_attempts`, `backoff`, `jitter`, `non_retryable_errors`)
-  - `timeout_policy` (step/node timeout, fail-open/fail-closed)
-  - `idempotency_policy` (custom key template, cache scope)
+- ~~Extend CKP schema with explicit execution policy blocks:~~
+  - ~~`retry_policy` (`max_attempts`, `backoff`, `jitter`, `non_retryable_errors`)~~ → ✅ Step-level `retry_config` + global retry policy implemented
+  - ~~`timeout_policy` (step/node timeout, fail-open/fail-closed)~~ → ✅ `timeout_ms` enforced at step level + `global_config.timeout_ms` at graph level
+  - ~~`idempotency_policy` (custom key template, cache scope)~~ → ✅ Template rendering via Jinja2
 - Add CKP-level error handling constructs:
-  - `on_error` transition targets
+  - ~~`on_error` transition targets~~ → ✅ Error handler dispatch (retry, fail, ignore, escalate, fallback_node)
   - optional compensation/rollback step references
 - Strengthen compiler validation:
   - detect unreachable nodes, dead-end branches, recursive subflow loops
@@ -342,11 +352,11 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 
 ## Updated delivery phases
 
-## Phase 1 — Runtime diagnostics and retry policy hardening (immediate)
+## Phase 1 — Runtime diagnostics and retry policy hardening — ✅ COMPLETE
 ### Deliverables
-- Checkpoint/replay diagnostics API
-- Retry policy model (attempt limits + backoff/jitter)
-- Idempotency and lease decision visibility in run diagnostics
+- ~~Checkpoint/replay diagnostics API~~ → ✅ Done
+- ~~Retry policy model (attempt limits + backoff/jitter)~~ → ✅ Done
+- ~~Idempotency and lease decision visibility in run diagnostics~~ → ✅ Done
 
 ### Acceptance criteria
 - Any failed run can be diagnosed from API/UI without direct DB queries
@@ -366,27 +376,27 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 ### Deliverables
 - AuthN/AuthZ and role enforcement
 - Secrets provider abstraction + initial adapters
-- Redaction policy for events/log payloads
+- ~~Redaction policy for events/log payloads~~ → ✅ Done (configurable redaction)
 
 ### Acceptance criteria
-- Sensitive values are never exposed in event payloads/UI
-- All approval and run actions are attributable to identity
+- ✅ Sensitive values are never exposed in event payloads/UI (redaction active)
+- All approval and run actions are attributable to identity (pending AuthN)
 
-## Phase 4 — Observability and operator tooling
+## Phase 4 — Observability and operator tooling — ✅ LARGELY COMPLETE
 ### Deliverables
-- Metrics/tracing export
-- Alert hooks for failed/stuck runs
-- Stale lease tooling and replay analyzer endpoint
+- ~~Metrics/tracing export~~ → ✅ Prometheus `/api/metrics` + in-memory counters/histograms
+- ~~Alert hooks for failed/stuck runs~~ → ✅ `_fire_alert_webhook` on `run_failed`
+- ~~Stale lease tooling and replay analyzer endpoint~~ → ✅ Lease admin + diagnostics API
 
 ### Acceptance criteria
-- Operators can identify and remediate stuck/failing workflows rapidly
-- SLO-grade operational metrics are available
+- ✅ Operators can identify and remediate stuck/failing workflows rapidly
+- Remaining: export to external monitoring backend (Prometheus/OTel remote)
 
-## Phase 5 — UX evolution
+## Phase 5 — UX evolution — ✅ LARGELY COMPLETE
 ### Deliverables
-- Rich artifact viewer
-- Advanced timeline controls and retry-path visualization
-- Workflow builder foundation (graph read/edit MVP)
+- ~~Rich artifact viewer~~ → ✅ Inline preview + download
+- ~~Advanced timeline controls and retry-path visualization~~ → ✅ Retry-with-inputs modal + timeline SSE
+- Workflow builder foundation (graph read/edit MVP) — read-only done, editable pending
 
 ### Acceptance criteria
 - Operators can debug runs faster with less raw JSON inspection
@@ -447,18 +457,20 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 ## Critical implementation gaps (CKP spec vs current code)
 
 ### Missing CKP top-level fields in parser/IR
-**Current state** (as of 2026-02-17 audit): Parser reads `procedure_id`, `version`, `global_config` including `secrets_config` and `audit_config`, `variables_schema`, `workflow_graph`.
+**Current state** (as of 2026-02-18 audit): Parser reads `procedure_id`, `version`, `global_config` including `secrets_config` and `audit_config`, `variables_schema`, `workflow_graph`, `provenance`, `retrieval_metadata`.
 
 **Still missing from IR and runtime**:
 - `trigger` field (manual/scheduled/webhook/event/file_watch) — not parsed, no DB model, no scheduler/webhook handler
-- `retrieval_metadata` (intents, domain, keywords) — not stored, no search/discovery API
-- `provenance` (compiled_on, compiler_version, sources) — not captured in IR or DB
+- ~~`retrieval_metadata` (intents, domain, keywords)~~ → ✅ Parsed and stored (Batch 10); tag search supported
+- ~~`provenance` (compiled_on, compiler_version, sources)~~ → ✅ Parsed and stored in DB (Batch 10)
 - `global_config` deep fields not enforced:
-  - `screenshot_on_fail`, `timeout_ms` — parsed but not enforced globally
-  - `checkpoint_strategy`, `checkpoint_retention_days` — not implemented
-  - `execution_mode` (dry_run/validation_only) — dry_run now implemented at step level (✅ Batch 16); `validation_only` still pending
+  - `screenshot_on_fail` — parsed but not enforced globally
+  - ~~`timeout_ms`~~ → ✅ `asyncio.wait_for` wraps entire graph invocation (Batch 7)
+  - ~~`checkpoint_strategy`~~ → ✅ `"none"` strategy disables checkpointer (Batch 11)
+  - `checkpoint_retention_days` — not implemented
+  - ~~`execution_mode` (dry_run/validation_only)~~ → ✅ dry_run enforced at step level (Batch 16); `validation_only` mode also works (Batch 5)
   - `mock_external_calls`, `test_data_overrides` — not wired
-  - `rate_limiting` — parsed but not enforced at workflow or platform level
+  - ~~`rate_limiting`~~ → ✅ `max_concurrent_operations` (semaphore) + `max_requests_per_minute` (token bucket) enforced (Batches 6 + 8)
 - ~~`variables_schema.required[].validation` (regex, max, allowed_values)~~ — ✅ server-side enforcement via `validate_input_vars` in `POST /api/runs` (Batch 16)
 
 **Already fixed (no longer gaps)**:
@@ -468,72 +480,74 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ~~`variables_schema.*.sensitive` flag~~ — ✅ drives redaction
 
 ### Missing node-level policy enforcement
-**Still missing**:
-- `sla.max_duration_ms` / `on_breach` / `escalation_handler` — not monitored or enforced
-- `telemetry.track_duration`, `track_retries`, `custom_metrics` — fields parsed but not exported
-- Custom `idempotency_key` templates from CKP policy — composite key used instead
+**All resolved**:
+- ~~`sla.max_duration_ms` / `on_breach` / `escalation_handler`~~ → ✅ Node-level SLA monitored, `sla_breached` event emitted, escalation/fail dispatched (Batches 5 + 13)
+- ~~`telemetry.track_duration`, `track_retries`, `custom_metrics`~~ → ✅ All emitted in step events and recorded (Batches 10 + 11)
+- ~~Custom `idempotency_key` templates~~ → ✅ Jinja2 template rendering applied (Batch 7)
 
 ### Missing step-level features
-**Still missing**:
-- Step `timeout_ms` not enforced — `asyncio.wait_for` never wraps agent calls
-- `wait_ms` / `wait_after_ms` — stored but `wait` action is a no-op placeholder
-- Per-step retry policy override (llm_action `retry.max_retries`, `delay_ms`) — global policy used instead
+**All resolved**:
+- ~~Step `timeout_ms` not enforced~~ → ✅ `asyncio.wait_for` wraps all three binding paths: internal, agent_http, mcp_tool (Batch 10)
+- ~~`wait_ms` / `wait_after_ms`~~ → ✅ `asyncio.sleep` enforced before/after each step (Batch 10)
+- ~~Per-step retry policy override~~ → ✅ Step-level `retry_config` + LLM-node `retry` dict override global policy (Batch 14)
 
 ### Missing node type completions
-**Gaps in error/compensation flow**:
-- Error handlers (`recovery_steps`, `fallback_node`) are fully parsed into IR but NOT executed — execute_sequence uses simpler built-in retry
-- Compensation/rollback steps not runtime-implemented
+**All resolved**:
+- ~~Error handlers (`recovery_steps`, `fallback_node`)~~ → ✅ Fully dispatched: retry, fail, ignore, escalate, screenshot_and_fail, fallback_node (Batches 7 + 15)
+- ~~Compensation/rollback steps~~ → ✅ `on_failure` handler routes to recovery node (Batch 6)
 
 ### Missing operator/diagnostic APIs
-**Already implemented (no longer missing)**:
+**All resolved**:
 - ✅ `GET /api/runs/{run_id}/diagnostics` — implemented with idempotency, lease, retry, event data
 - ✅ `GET /api/runs/{run_id}/checkpoints` — implemented with LangGraph saver introspection
 - ✅ `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented
-
-**Still missing**:
-- Dry-run explain mode API for workflow route simulation
+- ✅ `POST /api/procedures/{id}/{version}/explain` — dry-run static analysis (Batch 14)
 
 ### Missing UI features
 **Already implemented**:
 - ✅ Workflow graph viewer (React Flow, read-only) with custom CKP nodes, minimap, types
 - ✅ Projects, leases, agents pages with full CRUD and in-app `ConfirmDialog` (no browser popups)
+- ✅ Diagnostics tab in run detail page
+- ✅ Metrics panel on dashboard
+- ✅ Input variables form at run-start with constraint validation
+- ✅ Retry-with-modified-inputs modal on failed runs
+- ✅ Dark mode toggle with localStorage persistence
+- ✅ Artifact preview/download
+- ✅ Bulk operations on runs list
+- ✅ SSE-based live approvals
 
 **Still missing**:
-- Frontend page for diagnostics data (API exists, no UI page)
-- Frontend metrics panel (API exists, no dashboard widget)
-- Input variables form at run-start
-- Retry-path visualization in timeline
-- LLM/agent invocation detail panel
+- LLM/agent invocation detail panel (model, tokens, latency)
 - Approval SLA/escalation indicators
-- Operator diagnostics console page
+- Visual workflow builder/editor (editable properties, not just read-only)
 
 ---
 
 ## Suggested execution order for next sprints
 
-### Sprint 1: Quick runtime fixes (already in backlog)
-1. Implement `asyncio.sleep(wait_ms)` for the `wait` action in `execute_sequence`
-2. Wrap agent HTTP calls with `asyncio.wait_for(timeout_ms / 1000)` and emit `step_timeout` event
-3. Invoke `IRErrorHandler.recovery_steps` / `fallback_node` in `execute_sequence` when applicable
-4. Fix input variables: read procedure `variables_schema` in frontend, prompt at run-start
+### Sprint 1: Quick runtime fixes — ✅ ALL DONE
+1. ~~Implement `asyncio.sleep(wait_ms)` for the `wait` action~~ → ✅ Batch 10
+2. ~~Wrap agent HTTP calls with `asyncio.wait_for(timeout_ms / 1000)` and emit `step_timeout` event~~ → ✅ Batch 10
+3. ~~Invoke `IRErrorHandler.recovery_steps` / `fallback_node` in `execute_sequence`~~ → ✅ Batch 7
+4. ~~Fix input variables: read procedure `variables_schema` in frontend, prompt at run-start~~ → ✅ Batch 3
 
-### Sprint 2: Frontend UX quick wins
-1. Add diagnostics tab to run detail page using existing `GET /api/runs/{id}/diagnostics`
-2. Add metrics panel to dashboard using `GET /api/runs/metrics/summary`
-3. Extract shared UI components (`StatusBadge`, `ApprovalStatusBadge`) into `src/components/shared/`
-4. Add input variables form modal at run-start from `variables_schema`
+### Sprint 2: Frontend UX quick wins — ✅ ALL DONE
+1. ~~Add diagnostics tab to run detail page~~ → ✅ Done
+2. ~~Add metrics panel to dashboard~~ → ✅ Done
+3. ~~Extract shared UI components (`StatusBadge`, `ApprovalStatusBadge`)~~ → ✅ Batch 13
+4. ~~Add input variables form modal at run-start~~ → ✅ Batch 3
 
-### Sprint 3: Operator tooling
-1. Implement SLA monitoring: track node start vs `sla.max_duration_ms`, emit `sla_breached` event
-2. Add Prometheus-compatible `/metrics` endpoint using existing `MetricsCollector`
-3. Add alert hooks (configurable webhook) for `run_failed` events
-4. Add dry-run explain mode API for workflow route simulation
+### Sprint 3: Operator tooling — ✅ ALL DONE
+1. ~~Implement SLA monitoring~~ → ✅ Batches 5 + 13
+2. ~~Add Prometheus-compatible `/metrics` endpoint~~ → ✅ Batch 13
+3. ~~Add alert hooks (configurable webhook) for `run_failed` events~~ → ✅ Batch 13
+4. ~~Add dry-run explain mode API for workflow route simulation~~ → ✅ Batch 14
 
-### Sprint 4: Policy enforcement hardening
-1. Enforce `variables_schema` validation (regex, allowed_values, required) at bind time
-2. Implement `global_config.rate_limiting` at workflow concurrency level
-3. Add per-node retry policy override support (llm_action `retry.max_retries`, `delay_ms`)
-4. Respect `global_config.execution_mode` dry_run flag
+### Sprint 4: Policy enforcement hardening — ✅ ALL DONE
+1. ~~Enforce `variables_schema` validation (regex, allowed_values, required) at bind time~~ → ✅ Batch 16
+2. ~~Implement `global_config.rate_limiting` at workflow concurrency level~~ → ✅ Batches 6 + 8
+3. ~~Add per-node retry policy override support~~ → ✅ Batch 14
+4. ~~Respect `global_config.execution_mode` dry_run flag~~ → ✅ Batch 16
 
 ### Sprint 5: Trigger automation
 1. Add `trigger` field parsing to IR + DB table
@@ -544,7 +558,7 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 ### Sprint 6: Security and governance
 1. Add AuthN/AuthZ middleware + role model (`operator`, `approver`, `admin`)
 2. Implement AWS Secrets Manager and Azure Key Vault provider adapters
-3. Make redaction field list configurable from `global_config.audit_config`
+3. ~~Make redaction field list configurable from `global_config.audit_config`~~ → ✅ Batch 17
 4. Add role-based check on approval decision submission
 
 ### Sprint 7: Testing and CI hardening
