@@ -1,6 +1,6 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-18 (updated after Batch 18 cleanup: GET agent endpoint fix, doc reconciliation — 362 tests)
+Last updated: 2026-02-19 (updated after Batch 18 cleanup + Enterprise Readiness & Futuristic Roadmap analysis added)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
@@ -566,3 +566,256 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 2. Add frontend e2e tests with Playwright for primary operator paths
 3. Add GitHub Actions CI pipeline: ruff + pyright + pytest + next build
 4. Add backend performance/concurrency tests for lease management
+
+---
+
+## Enterprise Readiness & Futuristic Roadmap
+
+> Added 2026-02-19. This section captures what is needed to move from a strong prototype to a production-grade enterprise platform, plus longer-horizon thinking. Items here supplement the sprint plan above.
+
+---
+
+### Enterprise Gap Assessment
+
+| Domain | Current State | Gap Level |
+|---|---|---|
+| Identity & Governance (AuthN/AuthZ) | 0% — all endpoints open | CRITICAL |
+| Trigger Automation (cron/webhook/event) | 0% — manual only | CRITICAL |
+| Multi-tenancy | 0% — single tenant DB | HIGH |
+| LLM Cost Visibility | 0% — no token tracking | HIGH |
+| Agent Pool / Circuit Breaker | single-agent only | HIGH |
+| Procedure Environment Promotion | no dev→staging→prod path | HIGH |
+| CI/CD Pipeline | 0% — no gates | HIGH |
+| Frontend E2E Tests | 0% | HIGH |
+| AWS/Azure Secrets Adapters | stub only | MEDIUM |
+| PII Masking before external LLM calls | not present | MEDIUM |
+| Data Residency / Compliance Labels | not present | MEDIUM |
+| Approval RBAC governance | any caller can approve | MEDIUM |
+| Secret Rotation Detection | reads once, no invalidation | MEDIUM |
+| Workflow Canary / Blue-Green | not present | MEDIUM |
+
+---
+
+## G) Identity, Governance & Security (Sprint 6 expansion)
+
+### Why this matters
+The first question any enterprise buyer asks: "who can do what, and can you prove it?"
+
+### Implementation items
+- **JWT/OIDC middleware** on all 35+ endpoints — verify bearer token, decode claims, store principal in request state
+- **Role model**: `admin` (full), `operator` (start/cancel runs, read all), `approver` (submit approval decisions only), `viewer` (read-only)
+- **Per-project scoping**: roles are granted at project level — `operator` on Project A cannot touch Project B
+- **Approval RBAC**: `POST /api/approvals/{id}/decision` must verify caller has `approver` role for that procedure's project
+- **API Key management**: service accounts for agents to authenticate back to the orchestrator — not just open HTTP
+- **Secret rotation detection**: vault integration should watch for TTL expiry and re-fetch; invalidate cached secret mid-run with `secret_rotated` event
+- **Full audit attribution**: every run, approval, deletion, and agent registration records the principal identity — not just timestamp
+- **AWS Secrets Manager adapter**: implement `AWSSecretsProvider` (boto3 `get_secret_value`), replace env fallback
+- **Azure Key Vault adapter**: implement `AzureKeyVaultProvider` (azure-keyvault-secrets), replace env fallback
+
+### Acceptance criteria
+- No endpoint is accessible without a valid identity token
+- Approval decisions are attributable to a named identity with role proof
+- Secret values never appear in any event, log, or API response
+
+---
+
+## H) Trigger Automation — Full Model (Sprint 5 expansion)
+
+### Why this matters
+Manual-only execution blocks real automation. CKP already defines the trigger contract — the runtime just doesn't honour it.
+
+### Implementation items
+- **`trigger` field IR model**: parse `manual | scheduled | webhook | event | file_watch` into `IRTrigger` dataclass
+- **DB table `trigger_registrations`**: stores active trigger configs per procedure version
+- **Cron scheduler worker**: background `asyncio` task evaluating APScheduler jobs; emits `trigger_fired` event; creates run with `triggered_by: schedule`
+- **Webhook trigger endpoint**: `POST /api/triggers/webhook/{procedure_id}` — HMAC-SHA256 signature verification, configurable dedupe window (reject duplicate payload hash within N seconds), creates run with `triggered_by: webhook`
+- **Event bus trigger**: subscribe to Kafka/SQS topic; on matching message schema create a run — connector pluggable via `trigger.event.source`
+- **File watch trigger**: poll S3/blob path for object creation/modification; configurable polling interval
+- **Trigger cascade**: emit `run_completed` with output vars; downstream procedures with `trigger.type: event` and matching `event.source: run_completed` auto-fire
+- **Trigger audit trail**: every run records `trigger_type`, `trigger_id`, `triggered_by`, `trigger_payload_hash`
+- **Trigger dedupe window**: configurable `dedupe_window_seconds` — second webhook with same payload hash within window returns 409 + existing `run_id`
+- **Trigger concurrency policy**: `max_concurrent_triggered_runs` per procedure — queue or drop on overflow
+
+### Acceptance criteria
+- A procedure with a valid cron expression fires automatically without any manual API call
+- Duplicate webhook delivery does not create a duplicate run
+- Every triggered run's origin is visible in the run timeline
+
+---
+
+## I) Multi-tenancy
+
+### Why this matters
+Required for any SaaS model or internal platform team serving multiple business units.
+
+### Implementation items
+- **Tenant model**: `tenant_id` column on `procedures`, `runs`, `agent_instances`, `projects`, `approvals`, `run_events`, `artifacts`
+- **Tenant middleware**: extract `tenant_id` from JWT claims; inject into all DB queries as implicit filter
+- **Per-tenant resource limits**: `max_concurrent_runs`, `max_procedures`, `max_agents` — stored in `tenant_config` table
+- **Cross-tenant subflow**: explicit trust grant model — Tenant A can invoke Tenant B's procedure only with a signed cross-tenant token
+- **Tenant-scoped secrets**: vault path prefix is `/{tenant_id}/` — tenants cannot read each other's secrets
+- **Tenant usage reporting**: `GET /api/admin/tenants/{id}/usage` — runs, tokens, agent-hours per billing period
+
+---
+
+## J) LLM Cost Visibility & Budget Controls
+
+### Why this matters
+LLM costs scale non-linearly. Without token tracking, a runaway loop node can generate a surprise bill within hours.
+
+### Implementation items
+- **Token counter per step**: `llm_action` node executor captures `usage.prompt_tokens`, `usage.completion_tokens` from model response; emits `llm_usage` event
+- **Run-level cost accumulation**: `runs` table adds `total_prompt_tokens`, `total_completion_tokens`, `estimated_cost_usd` columns; updated at each `llm_usage` event
+- **Project-level cost rollup**: `GET /api/projects/{id}/cost-summary` — daily/weekly/monthly breakdown
+- **Budget guardrail in CKP**: `global_config.llm_budget.max_tokens_per_run` — abort run and emit `budget_exceeded` event before limit is reached (warn at 80%, abort at 100%)
+- **Model cost config**: central `models.json` stores cost-per-1k-tokens per model; used for `estimated_cost_usd` calculation
+- **Model routing by cost tier**: CKP `llm_action.fallback_model` — on retry, use cheaper model; on first attempt, use full model
+- **Cost dashboard widget**: add to frontend dashboard — top 5 most expensive runs this week, cost by project
+
+### Acceptance criteria
+- Every LLM-using run has a token count and estimated cost in its detail page
+- A procedure with `max_tokens_per_run: 10000` stops execution and surfaces a clear error when that limit is hit
+
+---
+
+## K) Agent Pool, Circuit Breaker & Capacity Model
+
+### Why this matters
+A single offline agent silently stalls all runs dispatching to that channel. Production needs resilience.
+
+### Implementation items
+- **Agent pool model**: multiple agents can share a `channel` + `pool_id`; dispatcher round-robins across healthy pool members
+- **Circuit breaker per agent**: after N consecutive 5xx responses, mark agent status `circuit_open`; stop dispatching; emit `circuit_opened` event; auto-retry after `reset_timeout_seconds`
+- **Health check depth**: beyond `GET /health` — orchestrator sends a no-op probe action and validates response schema
+- **Warm/cold states**: `warm` (agent pre-running, ready), `cold` (needs boot); orchestrator can signal `warm_up` before a scheduled trigger fires
+- **Agent capability versioning**: agent reports `capabilities_version: "2.1"`; CKP step can pin `required_capability_version: ">=2.0"`; compile-time binding enforces this
+- **Pool capacity autoscale hint**: when all pool members are at `max_concurrent_leases`, emit `pool_saturated` event; external autoscaler can react
+- **Agent self-healing**: orchestrator sends `restart` signal to agent if it supports `/restart` endpoint; records `agent_restarted` event
+
+---
+
+## L) Procedure Environment Promotion & Safe Delivery
+
+### Why this matters
+Right now there is no safe path from a new procedure version in dev to production. One bad import can go live immediately.
+
+### Implementation items
+- **Environment labels**: procedures have `environment: dev | staging | production`; runs in `production` env require status `active`
+- **Promotion workflow**: `POST /api/procedures/{id}/{version}/promote` — moves from dev→staging or staging→production; requires `admin` role; triggers static analysis (explain) as pre-check
+- **Approval gate between stages**: configurable `require_approval_for_promotion: true` in project settings — creates an approval record that blocks promotion until signed off
+- **Canary rollout**: `POST /api/procedures/{id}/canary` — `{canary_version, canary_percentage: 10}` — dispatcher sends 10% of triggered runs to new version; metrics compared before full cutover
+- **Blue/green swap**: atomic version swap with instant rollback: `POST /api/procedures/{id}/swap-active` with rollback via `POST /api/procedures/{id}/rollback`
+- **Impact analysis before promotion**: resolve all subflow references from the new version; find all procedures that `import` this procedure; surface list with version constraints
+
+---
+
+## M) Data Compliance & PII Controls
+
+### Why this matters
+For healthcare, finance, legal — sending raw user data to an external LLM is a compliance violation.
+
+### Implementation items
+- **PII detection layer**: before any `llm_action` step, run a configurable PII scanner (regex + NER model) on input variables marked `sensitivity: high`
+- **PII tokenization**: replace detected PII with reversible tokens (`<PII_EMAIL_1>`) before sending to LLM; detokenize on response
+- **Data classification on artifacts**: `artifact.classification: confidential | restricted | internal | public`; download endpoint enforces classification-based access control
+- **GDPR deletion**: `DELETE /api/runs/{id}/personal-data` — scrubs event payloads, artifact content, and input_vars for a run without deleting the audit shell
+- **Compliance policy-as-code**: top-level CKP field `compliance.frameworks: ["SOC2", "HIPAA"]` — compiler checks node actions against a policy registry and rejects prohibited combinations at import time
+- **Audit export**: `GET /api/audit/export?from=&to=&format=CEF` — structured compliance log export for SIEM ingestion
+
+---
+
+## N) Futuristic Capabilities (2–3 Year Horizon)
+
+### N1. Self-Authoring / Observer-to-Automation (O2A)
+The biggest paradigm shift deferred but highest long-term value:
+- Screen-level observation (desktop/web) → infer step types, actions, selectors
+- Generate CKP skeleton from observed trace → validate at compile time → human review and annotation
+- Dry-run the generated procedure → diff produced trace vs expected → auto-fix discrepancies
+- Makes LangOrch a **recorder + replayer**, not just an executor
+- Unlocks non-developer authors — business analysts can automate by demonstration
+
+### N2. AI Planner Node (Bounded Agentic Loop)
+A `planner` node type where the CKP declares a **goal + guardrails**, not pre-written steps:
+```json
+{
+  "type": "planner",
+  "objective": "Enrich the product listing with missing attributes",
+  "tools_allowed": ["web_search", "extract_text", "database_query"],
+  "max_iterations": 10,
+  "policy": { "tool_call_audit": true, "budget_tokens": 4000 }
+}
+```
+- Orchestrator runs a bounded ReAct/Plan-and-Execute loop inside the node
+- Every tool call is still a step event — fully auditable, fully replayable
+- `max_iterations` + `budget_tokens` keep it bounded and cost-predictable
+
+### N3. Procedure Marketplace / Registry
+- Procedures as versioned, publishable artifacts — like npm for workflows
+- `@acme/invoice-processing@1.2.0` published and importable by other teams
+- Dependency graph: procedure A `requires` procedure B (subflow) at `>=1.1.0`
+- Signing + provenance verification before import (publisher identity, attestation chain)
+- Public/private registry modes; enterprise-gated marketplace
+
+### N4. Temporal Reasoning in Workflows
+- **Time-conditional branches**: `if today is last_business_day_of_month → go to reconciliation_node`
+- **Business-hours-aware SLA clock**: SLA timeout counts only during configured business hours for a given timezone/calendar
+- **Deadline propagation**: parent approval `due_in: 4h` → child escalation fires at `3h45m` automatically
+- **Scheduled continuations**: run pauses mid-execution; resumes at a declared future time without holding a thread
+
+### N5. Collaborative Live Workflow Editing
+- Multiple authors editing the same CKP simultaneously — cursor presence, last-write-wins merge or conflict detection
+- `diff before save` with impact analysis: "your change removes node X which is referenced by 2 other procedures"
+- Structural changes to `active` procedures require `approver` sign-off before deployment (edit gate)
+- Field-level comments and review threads — GitHub PR review model applied to workflow authoring
+
+### N6. Execution Intelligence & Anomaly Detection
+- Orchestrator learns "normal" for a procedure over N runs:
+  - Step X typically takes 800ms — today it took 12s → auto-alert
+  - Agent Y returns empty results >20% of the time → flag for review
+- **Auto-remediation suggestions**: "this node failed the same way 8 times in 7 days — consider adding a retry or fault handler"
+- **Predicted completion time**: based on historical duration distribution, surfaces ETA with confidence interval on run detail page
+- **Cost anomaly detection**: this run is on track to spend 3× the average cost — warn operator mid-run
+
+### N7. Declarative Compliance Policies (Policy-as-Code)
+For regulated industries — enforce at compile time, not audit time:
+```json
+{
+  "compliance": {
+    "frameworks": ["SOC2", "HIPAA"],
+    "prohibitions": ["export_pii_to_external_llm", "store_unencrypted_phi"],
+    "required_approvers": { "data_classification": "restricted", "min_approvers": 2 },
+    "audit_exports": { "destination": "s3://compliance-bucket", "format": "CEF" }
+  }
+}
+```
+- Compiler checks CKP against policy registry at import time
+- Rejects procedures that violate declared compliance constraints before they can ever run
+- Policy violations surfaced as compile errors with actionable fix hints
+
+### N8. Federated Multi-Orchestrator Mesh
+- Multiple LangOrch instances (per region, per business unit) forming a mesh
+- A run started in Region A can dispatch subflows to Region B while respecting data residency constraints
+- Central control plane (policy + identity) with distributed execution planes
+- Cross-orchestrator event correlation and unified audit trail
+
+---
+
+## Prioritised Next-Sprint Picks (post-Batch 18)
+
+Ordered by enterprise value vs implementation cost:
+
+| Priority | Item | Estimated Effort | Unblocks |
+|---|---|---|---|
+| P0 | Trigger automation (cron + webhook) | 2 sprints | Real automation |
+| P0 | AuthN/AuthZ + role model | 2 sprints | Multi-user deployment |
+| P1 | CI/CD pipeline (GitHub Actions) | 0.5 sprint | Enterprise buyer checklist |
+| P1 | Frontend e2e tests (Playwright) | 1 sprint | Enterprise buyer checklist |
+| P1 | LLM token tracking + cost dashboard | 1 sprint | Production cost safety |
+| P2 | Agent circuit breaker + pool model | 1 sprint | Production resilience |
+| P2 | Procedure environment promotion | 1 sprint | Safe delivery pipeline |
+| P2 | AWS/Azure secrets adapters | 0.5 sprint | Secrets audit compliance |
+| P3 | Multi-tenancy scoping | 3 sprints | SaaS / platform model |
+| P3 | PII detection + tokenization before LLM | 1.5 sprints | HIPAA / GDPR compliance |
+| P4 | Visual workflow builder (edit mode) | 3 sprints | Non-developer authoring |
+| P4 | AI Planner node type | 2 sprints | Advanced agentic capability |
+| P5 | O2A self-authoring (record + replay) | 4+ sprints | Platform differentiation |
