@@ -133,17 +133,90 @@ export default function ProcedureVersionDetailPage() {
 
   const schema = (procedure?.ckp_json as any)?.variables_schema ?? {};
   const schemaEntries = Object.entries(schema) as [string, any][];
+  // Required fields with no default — user MUST provide input
+  const mustFillEntries = schemaEntries.filter(([, meta]) => !!(meta as any)?.required && (meta as any)?.default === undefined);
+  // Fields that have a default, or are optional — user CAN override
+  const overrideEntries = schemaEntries.filter(([, meta]) => !(meta as any)?.required || (meta as any)?.default !== undefined);
+
+  function fieldRow(key: string, meta: Record<string, any>, showDefault = false) {
+    const validation = (meta?.validation ?? {}) as Record<string, any>;
+    const allowed = validation.allowed_values as string[] | undefined;
+    const isRequired = !!meta?.required;
+    const hasDefault = meta?.default !== undefined;
+    const currentVal = varsForm[key] ?? "";
+    const isUsingDefault = hasDefault && currentVal === String(meta.default);
+    const fieldErr = varsErrors[key];
+    const borderCls = fieldErr
+      ? "border-red-400 focus:border-red-500"
+      : showDefault && isUsingDefault
+      ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
+      : "border-gray-300 focus:border-primary-500";
+    return (
+      <div key={key}>
+        <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
+          <label className="text-xs font-semibold text-gray-700">
+            {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
+          </label>
+          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
+          {showDefault && hasDefault && (
+            <span className="ml-auto text-[10px] text-gray-400">
+              default: <code className="font-mono">{String(meta.default)}</code>
+              {!isUsingDefault && (
+                <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-primary-600 hover:underline">restore</button>
+              )}
+            </span>
+          )}
+        </div>
+        {meta?.description && <p className="mb-1.5 text-xs text-gray-400">{meta.description as string}</p>}
+        {allowed ? (
+          <select aria-label={key} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}>
+            <option value="">— select —</option>
+            {allowed.map((v: string) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        ) : meta?.type === "array" || meta?.type === "object" ? (
+          <textarea value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} placeholder={meta?.type === "array" ? '["item1","item2"]' : '{"key":"value"}'} rows={3} className={`w-full rounded-lg border p-2 font-mono text-sm focus:outline-none ${borderCls}`} />
+        ) : (
+          <input type={meta?.type === "number" ? "number" : "text"} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} placeholder={hasDefault ? String(meta.default) : ""} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`} />
+        )}
+        {fieldErr ? (
+          <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
+        ) : (
+          <span className="mt-1 inline-flex gap-3">
+            {validation.regex && <span className="text-xs text-gray-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
+            {validation.min !== undefined && <span className="text-xs text-gray-400">Min: {validation.min as number}</span>}
+            {validation.max !== undefined && <span className="text-xs text-gray-400">Max: {validation.max as number}</span>}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   function openStartRun() {
     if (!procedure) return;
-    if (schemaEntries.length > 0) {
-      const defaults: Record<string, string> = {};
-      schemaEntries.forEach(([k, v]) => {
-        defaults[k] = v?.default !== undefined ? String(v.default) : "";
-      });
+    // Pre-fill all fields with their defaults
+    const defaults: Record<string, string> = {};
+    schemaEntries.forEach(([k, v]) => {
+      defaults[k] = v?.default !== undefined ? String(v.default) : "";
+    });
+    // Only show the modal if at least one required field has no default value
+    if (mustFillEntries.length > 0) {
       setVarsForm(defaults);
       setVarsErrors({});
       setShowVarsModal(true);
+    } else if (schemaEntries.length > 0) {
+      // All required fields covered by defaults — run immediately without asking
+      const varsPayload: Record<string, unknown> = {};
+      schemaEntries.forEach(([k, meta]) => {
+        const raw = defaults[k];
+        if (raw === "") return;
+        if (meta?.type === "number") varsPayload[k] = Number(raw);
+        else if (meta?.type === "array" || meta?.type === "object") {
+          try { varsPayload[k] = JSON.parse(raw); } catch { varsPayload[k] = raw; }
+        } else {
+          varsPayload[k] = raw;
+        }
+      });
+      void doCreateRun(varsPayload);
     } else {
       void doCreateRun({});
     }
@@ -692,74 +765,31 @@ export default function ProcedureVersionDetailPage() {
       {showVarsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">Set Input Variables</h3>
+            <h3 className="mb-1 text-base font-semibold text-gray-900">
+              {mustFillEntries.length > 0
+                ? `${mustFillEntries.length} required field${mustFillEntries.length !== 1 ? "s" : ""} need input`
+                : "Review Run Variables"}
+            </h3>
+            <p className="mb-4 text-xs text-gray-400">
+              {mustFillEntries.length > 0
+                ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
+                : "All fields have default values. Override any before starting."}
+            </p>
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
-              {schemaEntries.map(([key, meta]) => {
-                const validation = (meta?.validation ?? {}) as Record<string, any>;
-                const allowed = validation.allowed_values as string[] | undefined;
-                const isRequired = !!meta?.required;
-                const fieldErr = varsErrors[key];
-                const borderCls = fieldErr
-                  ? "border-red-400 focus:border-red-500"
-                  : "border-gray-300 focus:border-primary-500";
-                return (
-                  <div key={key}>
-                    <label className="mb-1 block text-xs font-medium text-gray-600">
-                      {key}
-                      {meta?.type && <span className="ml-1 text-gray-400">({meta.type})</span>}
-                      {isRequired && <span className="ml-1 text-red-500">*</span>}
-                    </label>
-                    {meta?.description && (
-                      <p className="mb-1 text-xs text-gray-400">{meta.description}</p>
-                    )}
-                    {allowed ? (
-                      <select
-                        value={varsForm[key] ?? ""}
-                        onChange={(e) => handleVarChange(key, e.target.value, meta)}
-                        className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
-                      >
-                        <option value="">— select —</option>
-                        {allowed.map((v: string) => (
-                          <option key={v} value={v}>{v}</option>
-                        ))}
-                      </select>
-                    ) : meta?.type === "array" || meta?.type === "object" ? (
-                      <textarea
-                        value={varsForm[key] ?? ""}
-                        onChange={(e) => handleVarChange(key, e.target.value, meta)}
-                        placeholder={meta?.type === "array" ? '["item1","item2"]' : '{"key":"value"}'}
-                        rows={3}
-                        className={`w-full rounded-lg border p-2 text-sm focus:outline-none font-mono ${borderCls}`}
-                      />
-                    ) : (
-                      <input
-                        type={meta?.type === "number" ? "number" : "text"}
-                        value={varsForm[key] ?? ""}
-                        onChange={(e) => handleVarChange(key, e.target.value, meta)}
-                        placeholder={meta?.default !== undefined ? String(meta.default) : ""}
-                        className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
-                      />
-                    )}
-                    {fieldErr ? (
-                      <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
-                    ) : (
-                      <span className="mt-1 inline-flex gap-3">
-                        {validation.regex && (
-                          <span className="text-xs text-gray-400">
-                            Pattern: <code className="font-mono">{validation.regex as string}</code>
-                          </span>
-                        )}
-                        {validation.min !== undefined && (
-                          <span className="text-xs text-gray-400">Min: {validation.min as number}</span>
-                        )}
-                        {validation.max !== undefined && (
-                          <span className="text-xs text-gray-400">Max: {validation.max as number}</span>
-                        )}
-                      </span>
-                    )}
+              {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
+              {overrideEntries.length > 0 && (
+                <details {...(mustFillEntries.length === 0 ? { open: true } : {})} className="group">
+                  {mustFillEntries.length > 0 && (
+                    <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
+                      <span className="inline-block transition-transform group-open:rotate-90">▶</span>
+                      {`${overrideEntries.length} field${overrideEntries.length !== 1 ? "s" : ""} have defaults — expand to override`}
+                    </summary>
+                  )}
+                  <div className={`space-y-4${mustFillEntries.length > 0 ? " mt-3" : ""}`}>
+                    {overrideEntries.map(([key, meta]) => fieldRow(key, meta, true))}
                   </div>
-                );
-              })}
+                </details>
+              )}
             </div>
             <div className="mt-5 flex gap-2">
               <button
