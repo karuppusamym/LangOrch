@@ -20,8 +20,10 @@ Modes:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,11 +31,17 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger("web_agent")
+
 
 @dataclass
 class AgentSettings:
     dry_run: bool = True
     headless: bool = True
+    # Self-registration: set ORCHESTRATOR_URL to enable auto-registration
+    orchestrator_url: str = "http://127.0.0.1:8000"
+    agent_id: str = "playwright-web-agent"
+    agent_port: int = 9000
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -45,7 +53,52 @@ def _as_bool(value: str | None, default: bool) -> bool:
 SETTINGS = AgentSettings(
     dry_run=_as_bool(os.getenv("WEB_AGENT_DRY_RUN"), True),
     headless=_as_bool(os.getenv("WEB_AGENT_HEADLESS"), True),
+    orchestrator_url=os.getenv("ORCHESTRATOR_URL", "http://127.0.0.1:8000"),
+    agent_id=os.getenv("WEB_AGENT_ID", "playwright-web-agent"),
+    agent_port=int(os.getenv("WEB_AGENT_PORT", "9000")),
 )
+
+
+# All actions this agent can handle (drives /capabilities and self-registration)
+CAPABILITIES: list[str] = [
+    "navigate",
+    "click",
+    "type",
+    "wait_for_element",
+    "extract_text",
+    "extract_table_data",
+    "screenshot",
+    "close",
+]
+
+
+async def _set_agent_status(status: str) -> None:
+    """Notify the orchestrator of this agent's online/offline status (and capabilities on startup)."""
+    url = f"{SETTINGS.orchestrator_url}/api/agents/{SETTINGS.agent_id}"
+    payload: dict[str, Any] = {"status": status}
+    if status == "online":
+        payload["capabilities"] = CAPABILITIES
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.put(url, json=payload)
+            resp.raise_for_status()
+            logger.info(
+                "Agent '%s' marked %s (capabilities: %s).",
+                SETTINGS.agent_id, status, ", ".join(CAPABILITIES) if status == "online" else "-",
+            )
+    except Exception as exc:
+        logger.warning(
+            "Could not update agent status in orchestrator (%s): %s", url, exc
+        )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ANN001
+    await _set_agent_status("online")
+    try:
+        yield
+    finally:
+        await _set_agent_status("offline")
 
 
 class ExecuteRequest(BaseModel):
@@ -56,12 +109,24 @@ class ExecuteRequest(BaseModel):
     step_id: str
 
 
-app = FastAPI(title="LangOrch Demo Web Agent", version="0.1.0")
+app = FastAPI(title="LangOrch Demo Web Agent", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "mode": "dry_run" if SETTINGS.dry_run else "playwright"}
+
+
+@app.get("/capabilities")
+async def capabilities() -> dict[str, Any]:
+    """Describe the tools/actions this agent exposes."""
+    return {
+        "agent_id": SETTINGS.agent_id,
+        "channel": "web",
+        "capabilities": CAPABILITIES,
+        "mode": "dry_run" if SETTINGS.dry_run else "playwright",
+        "description": "Playwright-based web automation agent",
+    }
 
 
 @app.post("/execute")

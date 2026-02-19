@@ -232,6 +232,14 @@ export async function deleteAgent(agentId: string): Promise<void> {
   await request(`/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
 }
 
+export async function syncAgentCapabilities(agentId: string): Promise<AgentInstance> {
+  return request(`/agents/${encodeURIComponent(agentId)}/sync-capabilities`, { method: "POST" });
+}
+
+export async function probeAgentCapabilities(baseUrl: string): Promise<string[]> {
+  return request(`/agents/probe-capabilities?base_url=${encodeURIComponent(baseUrl)}`);
+}
+
 export async function getActionCatalog(): Promise<Record<string, string[]>> {
   return request("/actions");
 }

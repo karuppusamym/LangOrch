@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { listAgents, registerAgent, updateAgent, deleteAgent, getActionCatalog } from "@/lib/api";
+import { listAgents, registerAgent, updateAgent, deleteAgent, getActionCatalog, syncAgentCapabilities, probeAgentCapabilities } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { AgentInstance } from "@/lib/types";
@@ -29,6 +29,8 @@ export default function AgentsPage() {
     capabilities: [] as string[],
   });
   const [error, setError] = useState("");
+  const [probingCaps, setProbingCaps] = useState(false);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<AgentInstance | null>(null);
   const { toast } = useToast();
 
@@ -92,6 +94,34 @@ export default function AgentsPage() {
   }
 
   const channelActions = catalog[form.channel] ?? [];
+
+  async function handleFetchCapabilities() {
+    if (!form.base_url) { setError("Enter a Base URL first"); return; }
+    setProbingCaps(true);
+    setError("");
+    try {
+      const caps = await probeAgentCapabilities(form.base_url);
+      setForm((prev) => ({ ...prev, capabilities: caps }));
+      toast(`Fetched ${caps.length} capabilities from agent`, "success");
+    } catch {
+      setError("Could not reach agent — is it running?");
+    } finally {
+      setProbingCaps(false);
+    }
+  }
+
+  async function handleSyncCapabilities(agent: AgentInstance) {
+    setSyncingId(agent.agent_id);
+    try {
+      await syncAgentCapabilities(agent.agent_id);
+      toast("Capabilities synced from agent", "success");
+      void loadAgents();
+    } catch {
+      toast("Failed to sync capabilities — is the agent reachable?", "error");
+    } finally {
+      setSyncingId(null);
+    }
+  }
 
   async function handleStatusToggle(agent: AgentInstance) {
     try {
@@ -179,14 +209,24 @@ export default function AgentsPage() {
             </div>
             <div>
               <label htmlFor="base_url" className="mb-1 block text-xs text-gray-500">Base URL</label>
-              <input
-                id="base_url"
-                title="Base URL"
-                value={form.base_url}
-                onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-                className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
-                placeholder="http://localhost:9000"
-              />
+              <div className="flex gap-2">
+                <input
+                  id="base_url"
+                  title="Base URL"
+                  value={form.base_url}
+                  onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                  className="flex-1 rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
+                  placeholder="http://localhost:9000"
+                />
+                <button
+                  type="button"
+                  onClick={handleFetchCapabilities}
+                  disabled={probingCaps}
+                  className="whitespace-nowrap rounded-lg border border-primary-300 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-50"
+                >
+                  {probingCaps ? "Fetching…" : "Fetch Capabilities"}
+                </button>
+              </div>
             </div>
             <div>
               <label htmlFor="resource_key" className="mb-1 block text-xs text-gray-500">Resource Key</label>
@@ -312,7 +352,7 @@ export default function AgentsPage() {
                   </div>
                 </div>
               )}
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   onClick={() => handleStatusToggle(agent)}
                   className={`flex-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -322,6 +362,14 @@ export default function AgentsPage() {
                   }`}
                 >
                   Mark {agent.status === "online" ? "Offline" : "Online"}
+                </button>
+                <button
+                  onClick={() => handleSyncCapabilities(agent)}
+                  disabled={syncingId === agent.agent_id}
+                  title="Pull latest capabilities from the live agent"
+                  className="rounded-lg border border-primary-200 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-50 disabled:opacity-50"
+                >
+                  {syncingId === agent.agent_id ? "Syncing…" : "Sync Capabilities"}
                 </button>
                 <button
                   onClick={() => handleDelete(agent)}
