@@ -6,7 +6,8 @@ import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { AgentInstance } from "@/lib/types";
 
-const CHANNELS = ["web", "desktop", "email", "api", "database", "llm", "masteragent"];
+// Suggested channels — user can type anything; these are just hints shown via datalist
+const SUGGESTED_CHANNELS = ["web", "desktop", "email", "api", "database", "llm", "masteragent", "crm", "erp", "iot", "voice", "chat"];
 
 const STATUS_COLORS: Record<string, string> = {
   online:  "bg-green-500",
@@ -28,7 +29,10 @@ export default function AgentsPage() {
     concurrency_limit: 1,
     capabilities: [] as string[],
   });
+  // Track existing channels from registered agents for the datalist
+  const [registeredChannels, setRegisteredChannels] = useState<string[]>([]);
   const [error, setError] = useState("");
+  const [capInput, setCapInput] = useState("");
   const [probingCaps, setProbingCaps] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<AgentInstance | null>(null);
@@ -42,6 +46,9 @@ export default function AgentsPage() {
     try {
       const data = await listAgents();
       setAgents(data);
+      // Collect unique channels already in use
+      const unique = [...new Set(data.map((a) => a.channel))];
+      setRegisteredChannels(unique);
     } catch (err) {
       console.error(err);
     } finally {
@@ -53,19 +60,10 @@ export default function AgentsPage() {
     try { setCatalog(await getActionCatalog()); } catch (_) { /* non-critical */ }
   }
 
-  function toggleCapability(action: string) {
-    setForm((prev) => ({
-      ...prev,
-      capabilities: prev.capabilities.includes(action)
-        ? prev.capabilities.filter((c) => c !== action)
-        : [...prev.capabilities, action],
-    }));
-  }
-
   async function handleRegister() {
     setError("");
     if (!form.name || !form.base_url) {
-      setError("Name and base URL are required");
+      setError("Name and Base URL are required");
       return;
     }
     try {
@@ -84,6 +82,7 @@ export default function AgentsPage() {
         concurrency_limit: 1,
         capabilities: [],
       });
+      setCapInput("");
       toast("Agent registered successfully", "success");
       void loadAgents();
     } catch (err) {
@@ -93,7 +92,25 @@ export default function AgentsPage() {
     }
   }
 
+  // Merge catalog channels with suggested + registered channels for the datalist
+  const allChannelSuggestions = [...new Set([
+    ...SUGGESTED_CHANNELS,
+    ...registeredChannels,
+    ...Object.keys(catalog),
+  ])].sort();
+
   const channelActions = catalog[form.channel] ?? [];
+
+  function addCapability(value?: string) {
+    const cap = (value ?? capInput).trim().toLowerCase().replace(/\s+/g, "_");
+    if (!cap || form.capabilities.includes(cap)) { setCapInput(""); return; }
+    setForm((prev) => ({ ...prev, capabilities: [...prev.capabilities, cap] }));
+    setCapInput("");
+  }
+
+  function removeCapability(cap: string) {
+    setForm((prev) => ({ ...prev, capabilities: prev.capabilities.filter((c) => c !== cap) }));
+  }
 
   async function handleFetchCapabilities() {
     if (!form.base_url) { setError("Enter a Base URL first"); return; }
@@ -192,20 +209,25 @@ export default function AgentsPage() {
               />
             </div>
             <div>
-              <label htmlFor="channel" className="mb-1 block text-xs text-gray-500">Channel</label>
-              <select
+              <label htmlFor="channel" className="mb-1 block text-xs text-gray-500">
+                Channel
+                <span className="ml-1 text-gray-400">(type any name or pick from suggestions)</span>
+              </label>
+              <input
                 id="channel"
+                list="channel-suggestions"
                 title="Channel"
                 value={form.channel}
-                onChange={(e) => setForm({ ...form, channel: e.target.value })}
+                onChange={(e) => setForm({ ...form, channel: e.target.value.toLowerCase().replace(/\s+/g, "_") })}
                 className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
-              >
-                {CHANNELS.map((ch) => (
-                  <option key={ch} value={ch}>
-                    {ch}
-                  </option>
+                placeholder="e.g. web, desktop, crm, slack..."
+                autoComplete="off"
+              />
+              <datalist id="channel-suggestions">
+                {allChannelSuggestions.map((ch) => (
+                  <option key={ch} value={ch} />
                 ))}
-              </select>
+              </datalist>
             </div>
             <div>
               <label htmlFor="base_url" className="mb-1 block text-xs text-gray-500">Base URL</label>
@@ -255,46 +277,75 @@ export default function AgentsPage() {
               />
             </div>
           </div>
-          {/* Capabilities */}
-          {channelActions.length > 0 && (
-            <div className="col-span-2 mt-2">
-              <div className="mb-2 flex items-center justify-between">
-                <label className="text-xs text-gray-500">
-                  Capabilities{" "}
-                  <span className="text-gray-400">(leave empty = accepts all actions for channel)</span>
-                </label>
-                <div className="flex gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, capabilities: channelActions })}
-                    className="text-primary-600 hover:underline"
-                  >
-                    Select all
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, capabilities: [] })}
-                    className="text-gray-400 hover:underline"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {channelActions.map((action) => (
-                  <label key={action} className="flex cursor-pointer items-center gap-1 rounded-full border border-gray-200 px-3 py-1 text-xs hover:bg-gray-50">
-                    <input
-                      type="checkbox"
-                      className="h-3 w-3"
-                      checked={form.capabilities.includes(action)}
-                      onChange={() => toggleCapability(action)}
-                    />
-                    {action}
-                  </label>
-                ))}
-              </div>
+          {/* Capabilities — chips-based, always visible, fully free-form */}
+          <div className="col-span-2 mt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <label className="text-xs font-medium text-gray-600">
+                Capabilities
+                <span className="ml-1.5 font-normal text-gray-400">(leave empty = accepts all actions for this channel)</span>
+              </label>
+              {form.capabilities.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, capabilities: [] })}
+                  className="text-xs text-gray-400 hover:text-red-500 hover:underline"
+                >
+                  Clear all
+                </button>
+              )}
             </div>
-          )}
+            {/* Current capability chips */}
+            <div className="mb-2 flex min-h-[40px] flex-wrap gap-1.5 rounded-lg border border-gray-200 bg-gray-50 p-2">
+              {form.capabilities.length === 0 ? (
+                <span className="self-center text-xs italic text-gray-400">No capabilities set — will accept all actions for this channel</span>
+              ) : (
+                form.capabilities.map((cap) => (
+                  <span
+                    key={cap}
+                    className="flex items-center gap-1 rounded-full bg-primary-100 px-2.5 py-0.5 text-xs font-medium text-primary-800"
+                  >
+                    {cap}
+                    <button
+                      type="button"
+                      onClick={() => removeCapability(cap)}
+                      className="ml-0.5 leading-none text-primary-500 hover:text-red-500"
+                      title={`Remove ${cap}`}
+                    >
+                      &times;
+                    </button>
+                  </span>
+                ))
+              )}
+            </div>
+            {/* Manual add row */}
+            <div className="flex gap-2">
+              <input
+                id="cap_input"
+                list="cap-suggestions"
+                value={capInput}
+                onChange={(e) => setCapInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); addCapability(); }
+                }}
+                placeholder="Type a capability name and press Enter or click Add"
+                className="flex-1 rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
+                autoComplete="off"
+              />
+              <datalist id="cap-suggestions">
+                {channelActions
+                  .filter((a) => !form.capabilities.includes(a))
+                  .map((a) => <option key={a} value={a} />)}
+              </datalist>
+              <button
+                type="button"
+                onClick={() => addCapability()}
+                disabled={!capInput.trim()}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+              >
+                Add
+              </button>
+            </div>
+          </div>
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
         <div className="mt-4 flex gap-2">
           <button

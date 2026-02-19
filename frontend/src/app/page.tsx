@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { listProcedures, listRuns, listApprovals, listAgents, getMetricsSummary } from "@/lib/api";
+import { listProcedures, listRuns, listApprovals, listAgents, listProjects, getMetricsSummary } from "@/lib/api";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import type { Procedure, Run, Approval, AgentInstance, MetricsSummary } from "@/lib/types";
 
@@ -11,6 +11,7 @@ interface Stats {
   runs: number;
   pendingApprovals: number;
   onlineAgents: number;
+  projects: number;
   recentRuns: Run[];
   runsByStatus: Record<string, number>;
 }
@@ -23,11 +24,12 @@ export default function DashboardPage() {
 
   const load = async () => {
     try {
-      const [procs, runs, approvals, agents] = await Promise.all([
+      const [procs, runs, approvals, agents, projects] = await Promise.all([
         listProcedures(),
         listRuns(),
         listApprovals(),
         listAgents(),
+        listProjects(),
       ]);
       // Count runs by status
       const runsByStatus: Record<string, number> = {};
@@ -39,6 +41,7 @@ export default function DashboardPage() {
         runs: runs.length,
         pendingApprovals: approvals.filter((a) => a.status === "pending").length,
         onlineAgents: agents.filter((a) => a.status === "online").length,
+        projects: projects.length,
         recentRuns: runs.slice(0, 8),
         runsByStatus,
       });
@@ -60,6 +63,7 @@ export default function DashboardPage() {
   if (!stats) return <div className="text-red-500">Failed to load dashboard</div>;
 
   const cards = [
+    { label: "Projects", value: stats.projects, href: "/projects", color: "text-orange-600" },
     { label: "Procedures", value: stats.procedures, href: "/procedures", color: "text-primary-600" },
     { label: "Total Runs", value: stats.runs, href: "/runs", color: "text-green-600" },
     { label: "Pending Approvals", value: stats.pendingApprovals, href: "/approvals", color: "text-yellow-600" },
@@ -69,7 +73,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-8">
       {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-5">
         {cards.map((card) => (
           <Link
             key={card.label}

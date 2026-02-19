@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { listProjects, createProject, updateProject, deleteProject } from "@/lib/api";
+import Link from "next/link";
+import { listProjects, createProject, updateProject, deleteProject, listProcedures } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { Project } from "@/lib/types";
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [procedureCounts, setProcedureCounts] = useState<Record<string, number>>({});
   const [loading, setLoading]   = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [editId, setEditId]     = useState<string | null>(null);
@@ -22,7 +24,15 @@ export default function ProjectsPage() {
   async function load() {
     setLoading(true);
     try {
-      setProjects(await listProjects());
+      const [projs, procs] = await Promise.all([listProjects(), listProcedures()]);
+      setProjects(projs);
+      const counts: Record<string, number> = {};
+      for (const proc of procs) {
+        if (proc.project_id) {
+          counts[proc.project_id] = (counts[proc.project_id] ?? 0) + 1;
+        }
+      }
+      setProcedureCounts(counts);
     } catch {
       toast("Failed to load projects", "error");
     } finally {
@@ -184,28 +194,43 @@ export default function ProjectsPage() {
               ) : (
                 /* Normal row */
                 <>
-                  <div className="flex-1">
-                    <p className="font-medium text-gray-900">{p.name}</p>
-                    {p.description && (
-                      <p className="text-xs text-gray-500">{p.description}</p>
-                    )}
-                    <p className="mt-0.5 text-xs text-gray-400">
-                      Created {new Date(p.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => startEdit(p)}
-                      className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => void handleDelete(p)}
-                      className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
-                    >
-                      Delete
-                    </button>
+                  {/* Accent stripe */}
+                  <div className="w-1 flex-shrink-0 self-stretch rounded-l-xl bg-primary-400" />
+                  <div className="flex flex-1 flex-wrap items-center gap-3 px-4 py-4">
+                    <div className="flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold text-gray-900">{p.name}</p>
+                        <span className="rounded-full bg-primary-50 border border-primary-200 px-2 py-0.5 text-xs text-primary-700">
+                          {procedureCounts[p.project_id] ?? 0} procedure{(procedureCounts[p.project_id] ?? 0) !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      {p.description && (
+                        <p className="mt-0.5 text-xs text-gray-500">{p.description}</p>
+                      )}
+                      <p className="mt-0.5 text-xs text-gray-400">
+                        Created {new Date(p.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        href={`/procedures?project_id=${p.project_id}`}
+                        className="rounded-lg border border-primary-300 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 whitespace-nowrap"
+                      >
+                        View Procedures →
+                      </Link>
+                      <button
+                        onClick={() => startEdit(p)}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => void handleDelete(p)}
+                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </>
               )}

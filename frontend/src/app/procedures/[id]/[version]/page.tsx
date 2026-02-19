@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure } from "@/lib/api";
@@ -60,13 +60,19 @@ const WorkflowGraph = dynamic(
 export default function ProcedureVersionDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const procedureId = params.id as string;
   const version = params.version as string;
 
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain">(
+    () => {
+      const t = searchParams.get("tab");
+      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain") ? t : "overview";
+    }
+  );
   const [editMode, setEditMode] = useState(false);
   const [explainResult, setExplainResult] = useState<ExplainReport | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
@@ -103,6 +109,27 @@ export default function ProcedureVersionDetailPage() {
     }
     load();
   }, [procedureId, version]);
+
+  // Auto-load graph/explain data when landing directly via ?tab=graph or ?tab=explain
+  useEffect(() => {
+    if (!procedure) return;
+    if (activeTab === "graph" && !graphData && !graphLoading) {
+      setGraphLoading(true);
+      getGraph(procedure.procedure_id, procedure.version)
+        .then((data) => setGraphData(data as any))
+        .catch((err) => console.error("Failed to load graph:", err))
+        .finally(() => setGraphLoading(false));
+    }
+    if (activeTab === "explain" && !explainResult && !explainLoading) {
+      setExplainLoading(true);
+      setExplainError(null);
+      explainProcedure(procedure.procedure_id, procedure.version)
+        .then(setExplainResult)
+        .catch((err) => setExplainError(err instanceof Error ? err.message : "Explain failed"))
+        .finally(() => setExplainLoading(false));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [procedure, activeTab]);
 
   const schema = (procedure?.ckp_json as any)?.variables_schema ?? {};
   const schemaEntries = Object.entries(schema) as [string, any][];
