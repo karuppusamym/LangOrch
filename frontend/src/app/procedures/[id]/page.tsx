@@ -49,7 +49,21 @@ export default function ProcedureDetailPage() {
     load();
   }, [procedureId]);
 
-  const schema = (procedure?.ckp_json as any)?.variables_schema ?? {};
+  // Flatten the nested { required: { varName: meta }, optional: { varName: meta } } CKP schema format
+  function flattenSchema(raw: Record<string, any>): Record<string, any> {
+    const keys = Object.keys(raw);
+    const isNested = keys.length > 0 && keys.every(k => k === "required" || k === "optional");
+    if (!isNested) return raw;
+    const flat: Record<string, any> = {};
+    for (const [varName, meta] of Object.entries((raw.required ?? {}) as Record<string, any>)) {
+      flat[varName] = { required: true, ...(meta as Record<string, any>) };
+    }
+    for (const [varName, meta] of Object.entries((raw.optional ?? {}) as Record<string, any>)) {
+      flat[varName] = { required: false, ...(meta as Record<string, any>) };
+    }
+    return flat;
+  }
+  const schema = flattenSchema((procedure?.ckp_json as any)?.variables_schema ?? {});
   const schemaEntries = Object.entries(schema) as [string, any][];
   // Required fields with no default — user MUST provide input
   const mustFillEntries = schemaEntries.filter(([, meta]) => !!(meta as any)?.required && (meta as any)?.default === undefined);
@@ -61,6 +75,7 @@ export default function ProcedureDetailPage() {
     const allowed = validation.allowed_values as string[] | undefined;
     const isRequired = !!meta?.required;
     const hasDefault = meta?.default !== undefined;
+    const isSensitive = !!(meta?.sensitive) || meta?.type === "password";
     const currentVal = varsForm[key] ?? "";
     const isUsingDefault = hasDefault && currentVal === String(meta.default);
     const fieldErr = varsErrors[key];
@@ -76,7 +91,8 @@ export default function ProcedureDetailPage() {
             {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
           </label>
           {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
-          {showDefault && hasDefault && (
+          {isSensitive && <span className="text-[10px] text-yellow-600 font-medium">🔒 sensitive</span>}
+          {showDefault && hasDefault && !isSensitive && (
             <span className="ml-auto text-[10px] text-gray-400">
               default: <code className="font-mono">{String(meta.default)}</code>
               {!isUsingDefault && (
@@ -94,7 +110,14 @@ export default function ProcedureDetailPage() {
         ) : meta?.type === "array" || meta?.type === "object" ? (
           <textarea value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} placeholder={meta?.type === "array" ? '["item1","item2"]' : '{"key":"value"}'} rows={3} className={`w-full rounded-lg border p-2 font-mono text-sm focus:outline-none ${borderCls}`} />
         ) : (
-          <input type={meta?.type === "number" ? "number" : "text"} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} placeholder={hasDefault ? String(meta.default) : ""} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`} />
+          <input
+            type={isSensitive ? "password" : meta?.type === "number" ? "number" : "text"}
+            value={currentVal}
+            onChange={(e) => handleVarChange(key, e.target.value, meta)}
+            placeholder={hasDefault && !isSensitive ? String(meta.default) : ""}
+            autoComplete="off"
+            className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
+          />
         )}
         {fieldErr ? (
           <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
@@ -111,30 +134,20 @@ export default function ProcedureDetailPage() {
 
   function openStartRun() {
     if (!procedure) return;
+    if (procedure.status === "draft") {
+      toast("Warning: this procedure is in DRAFT status. It may be incomplete.", "info");
+    }
     // Pre-fill all fields with their defaults
     const defaults: Record<string, string> = {};
     schemaEntries.forEach(([k, v]) => {
       defaults[k] = v?.default !== undefined ? String(v.default) : "";
     });
-    // Only show the modal if at least one required field has no default value
-    if (mustFillEntries.length > 0) {
+    // Always show the modal when the schema has any variables so the user can
+    // review / override values (even if all have defaults).
+    if (schemaEntries.length > 0) {
       setVarsForm(defaults);
       setVarsErrors({});
       setShowVarsModal(true);
-    } else if (schemaEntries.length > 0) {
-      // All required fields covered by defaults — run immediately without asking
-      const varsPayload: Record<string, unknown> = {};
-      schemaEntries.forEach(([k, meta]) => {
-        const raw = defaults[k];
-        if (raw === "") return;
-        if (meta?.type === "number") varsPayload[k] = Number(raw);
-        else if (meta?.type === "array" || meta?.type === "object") {
-          try { varsPayload[k] = JSON.parse(raw); } catch { varsPayload[k] = raw; }
-        } else {
-          varsPayload[k] = raw;
-        }
-      });
-      void doCreateRun(varsPayload);
     } else {
       void doCreateRun({});
     }
@@ -229,9 +242,14 @@ export default function ProcedureDetailPage() {
         <button
           onClick={openStartRun}
           disabled={runCreating}
-          className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+          title={procedure.status === "draft" ? "This procedure is in DRAFT status" : undefined}
+          className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+            procedure.status === "draft"
+              ? "bg-green-600 hover:bg-green-700 ring-2 ring-amber-400 ring-offset-1"
+              : "bg-green-600 hover:bg-green-700"
+          }`}
         >
-          {runCreating ? "Starting…" : "Start Run"}
+          {runCreating ? "Starting\u2026" : procedure.status === "draft" ? "Start Run (draft)" : "Start Run"}
         </button>
       </div>
 
@@ -354,17 +372,21 @@ export default function ProcedureDetailPage() {
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (
-                <details {...(mustFillEntries.length === 0 ? { open: true } : {})} className="group">
-                  {mustFillEntries.length > 0 && (
+                mustFillEntries.length > 0 ? (
+                  <details className="group">
                     <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
                       <span className="inline-block transition-transform group-open:rotate-90">▶</span>
                       {`${overrideEntries.length} field${overrideEntries.length !== 1 ? "s" : ""} have defaults — expand to override`}
                     </summary>
-                  )}
-                  <div className={`space-y-4${mustFillEntries.length > 0 ? " mt-3" : ""}`}>
+                    <div className="space-y-4 mt-3">
+                      {overrideEntries.map(([key, meta]) => fieldRow(key, meta, true))}
+                    </div>
+                  </details>
+                ) : (
+                  <div className="space-y-4">
                     {overrideEntries.map(([key, meta]) => fieldRow(key, meta, true))}
                   </div>
-                </details>
+                )
               )}
             </div>
             <div className="mt-5 flex gap-2">
@@ -384,8 +406,9 @@ export default function ProcedureDetailPage() {
                   schemaEntries.forEach(([k, meta]) => {
                     const raw = varsForm[k];
                     if (meta?.type === "array" || meta?.type === "object") {
-                      try { parsed[k] = JSON.parse(raw ?? "null"); } catch {
-                        toast(`Invalid JSON for "${k}"`, "error");
+                      if (!raw) return; // blank optional field — omit
+                      try { parsed[k] = JSON.parse(raw); } catch {
+                        toast(`Invalid JSON for "${k}" — expected ${meta.type === "array" ? "[...]" : "{...}"}`, "error");
                         parseError = true;
                       }
                     } else {

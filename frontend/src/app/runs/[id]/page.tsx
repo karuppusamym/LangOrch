@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import { getRun, listRunEvents, listRunArtifacts, cancelRun, retryRun, createRun, getRunDiagnostics, getGraph, listRunCheckpoints, getCheckpointState, getProcedure } from "@/lib/api";
 import { subscribeToRunEvents } from "@/lib/sse";
 import { useToast } from "@/components/Toast";
+import { redactInputVars, isFieldSensitive, REDACTION_PLACEHOLDER, flattenVariablesSchema } from "@/lib/redact";
 import type { Run, RunEvent, Artifact, RunDiagnostics, CheckpointMetadata, CheckpointState, ProcedureDetail } from "@/lib/types";
 
 const WorkflowGraph = dynamic(
@@ -15,6 +16,48 @@ const WorkflowGraph = dynamic(
 );
 
 /* ── helpers ─────────────────────────────────────────────────── */
+
+/** Human-readable label for event types */
+const EVENT_LABELS: Record<string, string> = {
+  run_created: "Run Created",
+  run_completed: "Run Completed",
+  run_failed: "Run Failed",
+  run_canceled: "Run Canceled",
+  run_cancelled: "Run Cancelled",
+  run_retry_requested: "Retry Requested",
+  execution_started: "Execution Started",
+  node_started: "Node Started",
+  node_completed: "Node Completed",
+  node_error: "Node Error",
+  step_started: "Step Started",
+  step_completed: "Step Completed",
+  step_error_notification: "Step Error",
+  step_timeout: "Step Timeout",
+  dry_run_step_skipped: "Step Skipped (Dry Run)",
+  approval_requested: "Approval Requested",
+  approval_decided: "Approval Decided",
+  approval_expired: "Approval Expired",
+  artifact_created: "Artifact Created",
+  checkpoint_saved: "Checkpoint Saved",
+  sla_breached: "SLA Breached",
+  error: "Error",
+};
+
+function eventLabel(type: string): string {
+  return EVENT_LABELS[type] ?? type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Extract a short human-readable message from an event payload */
+function extractErrorMessage(payload: Record<string, unknown> | null | undefined): string | null {
+  if (!payload) return null;
+  const msg =
+    (payload.message as string | undefined) ??
+    (payload.error as string | undefined) ??
+    (payload.detail as string | undefined) ??
+    (payload.reason as string | undefined) ??
+    (payload.exception as string | undefined);
+  return msg ?? null;
+}
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
@@ -88,6 +131,8 @@ export default function RunDetailPage() {
         getRunDiagnostics(runId).then(setDiagnostics).catch(() => null);
         getGraph(r.procedure_id, r.procedure_version).then((d) => setGraphData(d as { nodes: unknown[]; edges: unknown[] })).catch(() => null);
         listRunCheckpoints(runId).then(setCheckpoints).catch(() => null);
+        // Load procedure detail for schema-based sensitive-field detection
+        getProcedure(r.procedure_id, r.procedure_version).then(setProcedureDetail).catch(() => null);
       } catch (err) {
         console.error(err);
       } finally {
@@ -144,7 +189,7 @@ export default function RunDetailPage() {
     try {
       const proc = await getProcedure(run.procedure_id, run.procedure_version);
       setProcedureDetail(proc);
-      const schema = (proc.ckp_json as any)?.variables_schema ?? {};
+      const schema = flattenVariablesSchema((proc.ckp_json as any)?.variables_schema ?? {});
       const schemaEntries = Object.entries(schema) as [string, any][];
       const defaults: Record<string, string> = {};
       // Pre-fill with original run input_vars, falling back to schema defaults
@@ -300,8 +345,20 @@ export default function RunDetailPage() {
       {/* Input variables */}
       {run.input_vars && Object.keys(run.input_vars).length > 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-3 text-sm font-semibold text-gray-900">Input Variables</h3>
-          <pre className="rounded-lg bg-gray-50 p-3 font-mono text-xs">{JSON.stringify(run.input_vars, null, 2)}</pre>
+          <div className="mb-3 flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-gray-900">Input Variables</h3>
+            <span className="text-[10px] text-gray-400">(sensitive fields redacted)</span>
+          </div>
+          <pre className="rounded-lg bg-gray-50 p-3 font-mono text-xs">
+            {JSON.stringify(
+              redactInputVars(
+                run.input_vars,
+                flattenVariablesSchema((procedureDetail?.ckp_json as any)?.variables_schema ?? {})
+              ),
+              null,
+              2
+            )}
+          </pre>
         </div>
       )}
 
@@ -340,21 +397,88 @@ export default function RunDetailPage() {
                 ) : (
                   filteredEvents.map((event) => {
                     const hasPayload = event.payload && Object.keys(event.payload).length > 0;
-                    const expanded = expandedEvents.has(String(event.event_id));
                     const errStyle = isError(event.event_type);
+                    // Error events auto-expand; others expand on demand
+                    const expanded = errStyle || expandedEvents.has(String(event.event_id));
+                    const inlineErr = errStyle ? extractErrorMessage(event.payload) : null;
+                    const isStepEvent = event.event_type.startsWith("step_");
+                    const isNodeEvent = event.event_type.startsWith("node_");
+                    const isRunEvent = event.event_type.startsWith("run_") || event.event_type === "execution_started";
                     return (
-                      <div key={event.event_id} className={`rounded-lg border p-3 ${errStyle ? "border-red-200 bg-red-50" : "border-gray-100"}`}>
+                      <div
+                        key={event.event_id}
+                        className={`rounded-lg border p-3 ${
+                          errStyle
+                            ? "border-red-200 bg-red-50"
+                            : isRunEvent
+                            ? "border-blue-100 bg-blue-50/40"
+                            : isNodeEvent
+                            ? "border-purple-100 bg-purple-50/30"
+                            : "border-gray-100 bg-white"
+                        } ${isStepEvent ? "ml-4" : ""}`}
+                      >
                         <div className="flex items-center gap-2">
                           <EventDot type={event.event_type} />
-                          <span className={`text-xs font-semibold ${errStyle ? "text-red-700" : "text-gray-900"}`}>{event.event_type}</span>
-                          {event.node_id && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{event.node_id}</span>}
-                          {event.step_id && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-500">{event.step_id}</span>}
-                          {event.attempt != null && event.attempt > 0 && <span className="rounded bg-yellow-50 px-1.5 py-0.5 text-[10px] text-yellow-600">attempt {event.attempt}</span>}
-                          <span className="ml-auto text-[10px] text-gray-300">{new Date(event.created_at).toLocaleTimeString()}</span>
-                          {hasPayload && <button onClick={() => setExpandedEvents((prev) => { const n = new Set(prev); n.has(String(event.event_id)) ? n.delete(String(event.event_id)) : n.add(String(event.event_id)); return n; })} className="text-[10px] text-gray-400 hover:text-gray-700">{expanded ? "▲" : "▼"}</button>}
+                          <span className={`text-xs font-semibold ${errStyle ? "text-red-700" : isRunEvent ? "text-blue-800" : isNodeEvent ? "text-purple-700" : "text-gray-800"}`}>
+                            {eventLabel(event.event_type)}
+                          </span>
+                          {/* raw type as a subtle hint */}
+                          <span className="text-[9px] text-gray-300 font-mono hidden sm:inline">{event.event_type}</span>
+                          {event.node_id && (
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                              {event.node_id}
+                            </span>
+                          )}
+                          {event.step_id && (
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-500">
+                              {event.step_id}
+                            </span>
+                          )}
+                          {event.attempt != null && event.attempt > 0 && (
+                            <span className="rounded bg-yellow-50 px-1.5 py-0.5 text-[10px] text-yellow-600">
+                              retry #{event.attempt}
+                            </span>
+                          )}
+                          <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
+                            {new Date(event.created_at).toLocaleTimeString()}
+                          </span>
+                          {hasPayload && !errStyle && (
+                            <button
+                              onClick={() =>
+                                setExpandedEvents((prev) => {
+                                  const n = new Set(prev);
+                                  n.has(String(event.event_id))
+                                    ? n.delete(String(event.event_id))
+                                    : n.add(String(event.event_id));
+                                  return n;
+                                })
+                              }
+                              className="text-[10px] text-gray-400 hover:text-gray-700 flex-shrink-0"
+                            >
+                              {expandedEvents.has(String(event.event_id)) ? "▲" : "▼"}
+                            </button>
+                          )}
                         </div>
-                        {hasPayload && expanded && (
-                          <pre className="mt-2 max-h-48 overflow-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-600">{JSON.stringify(event.payload, null, 2)}</pre>
+                        {/* Inline error message — always shown for error events */}
+                        {inlineErr && (
+                          <p className="mt-1.5 text-xs text-red-600 font-medium break-words">{inlineErr}</p>
+                        )}
+                        {/* Payload detail */}
+                        {hasPayload && expanded && !inlineErr && (
+                          <pre className="mt-2 max-h-48 overflow-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-600">
+                            {JSON.stringify(event.payload, null, 2)}
+                          </pre>
+                        )}
+                        {/* Full payload toggle for errors (below inline message) */}
+                        {hasPayload && errStyle && (
+                          <details className="mt-1">
+                            <summary className="cursor-pointer text-[10px] text-red-400 hover:text-red-600">
+                              {expandedEvents.has(String(event.event_id)) ? "▲ hide payload" : "▼ full payload"}
+                            </summary>
+                            <pre className="mt-1 max-h-48 overflow-auto rounded bg-red-50 p-2 font-mono text-xs text-red-700">
+                              {JSON.stringify(event.payload, null, 2)}
+                            </pre>
+                          </details>
                         )}
                       </div>
                     );
@@ -557,7 +681,7 @@ export default function RunDetailPage() {
 
       {/* Retry with modified inputs modal */}
       {showRetryModal && run && (() => {
-        const schema = (procedureDetail?.ckp_json as any)?.variables_schema ?? {};
+        const schema = flattenVariablesSchema((procedureDetail?.ckp_json as any)?.variables_schema ?? {});
         const schemaEntries = Object.entries(schema) as [string, any][];
         // Include extra vars from original run not in schema
         const extraKeys = Object.keys(retryVarsForm).filter((k) => !schema[k]);
@@ -571,6 +695,7 @@ export default function RunDetailPage() {
                   const validation = (meta?.validation ?? {}) as Record<string, any>;
                   const allowed = validation.allowed_values as string[] | undefined;
                   const isRequired = !!meta?.required;
+                  const isSensitive = isFieldSensitive(meta as Record<string, unknown>);
                   const fieldErr = retryVarsErrors[key];
                   const borderCls = fieldErr ? "border-red-400 focus:border-red-500" : "border-gray-300 focus:border-primary-500";
                   return (
@@ -579,12 +704,14 @@ export default function RunDetailPage() {
                         {key}
                         {meta?.type && <span className="ml-1 text-gray-400">({meta.type})</span>}
                         {isRequired && <span className="ml-1 text-red-500">*</span>}
+                        {isSensitive && <span className="ml-1 text-yellow-600">🔒</span>}
                       </label>
                       {meta?.description && <p className="mb-1 text-xs text-gray-400">{meta.description}</p>}
                       {allowed ? (
                         <select
                           value={retryVarsForm[key] ?? ""}
                           onChange={(e) => handleRetryVarChange(key, e.target.value, meta)}
+                          aria-label={key}
                           className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
                         >
                           <option value="">— select —</option>
@@ -600,10 +727,12 @@ export default function RunDetailPage() {
                         />
                       ) : (
                         <input
-                          type={meta?.type === "number" ? "number" : "text"}
+                          type={isSensitive ? "password" : meta?.type === "number" ? "number" : "text"}
                           value={retryVarsForm[key] ?? ""}
                           onChange={(e) => handleRetryVarChange(key, e.target.value, meta)}
-                          placeholder={meta?.default !== undefined ? String(meta.default) : ""}
+                          placeholder={meta?.default !== undefined && !isSensitive ? String(meta.default) : ""}
+                          autoComplete="off"
+                          aria-label={key}
                           className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
                         />
                       )}
@@ -619,6 +748,8 @@ export default function RunDetailPage() {
                       type="text"
                       value={retryVarsForm[key] ?? ""}
                       onChange={(e) => setRetryVarsForm((prev) => ({ ...prev, [key]: e.target.value }))}
+                      aria-label={key}
+                      placeholder={key}
                       className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
                     />
                   </div>
@@ -646,8 +777,9 @@ export default function RunDetailPage() {
                     schemaEntries.forEach(([k, meta]) => {
                       const raw = retryVarsForm[k];
                       if (meta?.type === "array" || meta?.type === "object") {
-                        try { parsed[k] = JSON.parse(raw ?? "null"); } catch {
-                          toast(`Invalid JSON for "${k}"`, "error");
+                        if (!raw) return; // blank optional field — omit
+                        try { parsed[k] = JSON.parse(raw); } catch {
+                          toast(`Invalid JSON for "${k}" — expected ${meta.type === "array" ? "[...]" : "{...}"}`, "error");
                           parseError = true;
                         }
                       } else {

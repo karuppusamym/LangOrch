@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pydantic_settings import BaseSettings
 
 
@@ -42,7 +43,18 @@ class Settings(BaseSettings):
     # Default max concurrent runs per procedure (0 = unlimited)
     RATE_LIMIT_MAX_CONCURRENT: int = 0
 
+    # ── Artifacts ───────────────────────────────────────────────
+    # Local directory where the orchestrator stores artifact files.
+    # Agents may write files here and return a relative URI like
+    #   /api/artifacts/<run_id>/<filename>
+    # The backend mounts this directory at /api/artifacts (StaticFiles).
+    # Override with an absolute path or a cloud bucket mount point.
+    ARTIFACTS_DIR: str = "./artifacts"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()
+
+# Ensure the artifacts directory exists at import time so StaticFiles can mount it
+os.makedirs(settings.ARTIFACTS_DIR, exist_ok=True)

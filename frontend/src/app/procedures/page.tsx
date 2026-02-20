@@ -3,10 +3,11 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { listProcedures, importProcedure, listProjects, createRun } from "@/lib/api";
+import { listProcedures, importProcedure, listProjects, createRun, getProcedure } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
-import type { Procedure, Project } from "@/lib/types";
+import { flattenVariablesSchema, isFieldSensitive } from "@/lib/redact";
+import type { Procedure, Project, ProcedureDetail } from "@/lib/types";
 
 export default function ProceduresPage() {
   const { toast } = useToast();
@@ -24,6 +25,13 @@ export default function ProceduresPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState(searchParams.get("project_id") ?? "");
   const [runningId, setRunningId]   = useState<string | null>(null);
+
+  // ── Quick-run modal state ──────────────────────────────────────
+  const [quickRunProc, setQuickRunProc]         = useState<ProcedureDetail | null>(null);
+  const [showVarsModal, setShowVarsModal]       = useState(false);
+  const [varsForm, setVarsForm]                 = useState<Record<string, string>>({});
+  const [varsErrors, setVarsErrors]             = useState<Record<string, string>>({});
+  const [runCreating, setRunCreating]           = useState(false);
 
   useEffect(() => {
     const pid = searchParams.get("project_id") ?? "";
@@ -62,14 +70,85 @@ export default function ProceduresPage() {
     const key = `${proc.procedure_id}:${proc.version}`;
     setRunningId(key);
     try {
-      const run = await createRun(proc.procedure_id, proc.version);
-      toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
-      router.push("/runs");
+      // Fetch full CKP to check for required variables
+      const detail = await getProcedure(proc.procedure_id, proc.version);
+      const schema = flattenVariablesSchema(
+        (detail.ckp_json as any)?.variables_schema ?? {}
+      );
+      const entries = Object.entries(schema) as [string, any][];
+      if (entries.length > 0) {
+        // Pre-fill defaults, then show modal
+        const defaults: Record<string, string> = {};
+        entries.forEach(([k, v]) => {
+          defaults[k] = v?.default !== undefined ? String(v.default) : "";
+        });
+        if (proc.status === "draft") {
+          toast("Warning: this procedure is in DRAFT status.", "info");
+        }
+        setQuickRunProc(detail);
+        setVarsForm(defaults);
+        setVarsErrors({});
+        setShowVarsModal(true);
+      } else {
+        // No variables — run immediately
+        const run = await createRun(proc.procedure_id, proc.version);
+        toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
+        router.push("/runs");
+      }
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to start run", "error");
     } finally {
       setRunningId(null);
     }
+  }
+
+  async function doQuickCreateRun(vars: Record<string, unknown>) {
+    if (!quickRunProc) return;
+    setRunCreating(true);
+    try {
+      const run = await createRun(quickRunProc.procedure_id, quickRunProc.version, vars);
+      toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
+      setShowVarsModal(false);
+      router.push("/runs");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to start run", "error");
+    } finally {
+      setRunCreating(false);
+    }
+  }
+
+  function handleVarChange(key: string, value: string, meta: Record<string, any>) {
+    setVarsForm((prev) => ({ ...prev, [key]: value }));
+    const err = validateVarField(key, value, meta);
+    setVarsErrors((prev) => {
+      const next = { ...prev };
+      if (err) next[key] = err;
+      else delete next[key];
+      return next;
+    });
+  }
+
+  function validateVarField(key: string, raw: string, meta: Record<string, any>): string {
+    if (meta?.required && !raw.trim()) return "This field is required";
+    if (!raw) return "";
+    const validation = (meta?.validation ?? {}) as Record<string, any>;
+    if (validation.regex) {
+      try {
+        if (!new RegExp(`^(?:${validation.regex as string})$`).test(raw))
+          return `Must match pattern: ${validation.regex as string}`;
+      } catch { /* skip */ }
+    }
+    const vtype = (meta?.type ?? "string") as string;
+    if (vtype === "number") {
+      const num = Number(raw);
+      if (validation.min !== undefined && num < (validation.min as number))
+        return `Min: ${validation.min as number}`;
+      if (validation.max !== undefined && num > (validation.max as number))
+        return `Max: ${validation.max as number}`;
+    }
+    const allowed = validation.allowed_values as string[] | undefined;
+    if (allowed && !allowed.includes(raw)) return `Must be one of: ${allowed.join(", ")}`;
+    return "";
   }
 
   async function handleImport() {
@@ -251,7 +330,7 @@ export default function ProceduresPage() {
                   <button
                     onClick={(e) => void handleQuickRun(proc, e)}
                     disabled={isRunning || proc.status === "archived" || proc.status === "deprecated"}
-                    title={isRunning ? "Starting…" : "Run with default inputs"}
+                    title={isRunning ? "Starting…" : "Run this procedure"}
                     className="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                   >
                     {isRunning ? "Starting…" : "▶ Run"}
@@ -279,6 +358,148 @@ export default function ProceduresPage() {
           })}
         </div>
       )}
+
+      {/* ── Quick-run variables modal ──────────────────────────── */}
+      {showVarsModal && quickRunProc && (() => {
+        const schema = flattenVariablesSchema(
+          (quickRunProc.ckp_json as any)?.variables_schema ?? {}
+        );
+        const schemaEntries = Object.entries(schema) as [string, any][];
+        const mustFillEntries = schemaEntries.filter(
+          ([, meta]) => !!(meta as any)?.required && (meta as any)?.default === undefined
+        );
+        const overrideEntries = schemaEntries.filter(
+          ([, meta]) => !(meta as any)?.required || (meta as any)?.default !== undefined
+        );
+
+        function fieldRow(key: string, meta: Record<string, any>, showDefault = false) {
+          const validation = (meta?.validation ?? {}) as Record<string, any>;
+          const allowed = validation.allowed_values as string[] | undefined;
+          const isRequired = !!meta?.required;
+          const hasDefault = meta?.default !== undefined;
+          const isSensitive = isFieldSensitive(meta as Record<string, unknown>);
+          const currentVal = varsForm[key] ?? "";
+          const isUsingDefault = hasDefault && currentVal === String(meta.default);
+          const fieldErr = varsErrors[key];
+          const borderCls = fieldErr
+            ? "border-red-400 focus:border-red-500"
+            : showDefault && isUsingDefault
+            ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
+            : "border-gray-300 focus:border-primary-500";
+          return (
+            <div key={key}>
+              <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
+                <label className="text-xs font-semibold text-gray-700">
+                  {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
+                </label>
+                {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
+                {isSensitive && <span className="text-[10px] text-yellow-600 font-medium">🔒 sensitive</span>}
+                {showDefault && hasDefault && !isSensitive && (
+                  <span className="ml-auto text-[10px] text-gray-400">
+                    default: <code className="font-mono">{String(meta.default)}</code>
+                    {!isUsingDefault && (
+                      <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-primary-600 hover:underline">restore</button>
+                    )}
+                  </span>
+                )}
+              </div>
+              {meta?.description && <p className="mb-1.5 text-xs text-gray-400">{meta.description as string}</p>}
+              {allowed ? (
+                <select aria-label={key} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}>
+                  <option value="">— select —</option>
+                  {allowed.map((v: string) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              ) : meta?.type === "array" || meta?.type === "object" ? (
+                <textarea value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} placeholder={meta?.type === "array" ? '["item1","item2"]' : '{"key":"value"}'} rows={3} className={`w-full rounded-lg border p-2 font-mono text-sm focus:outline-none ${borderCls}`} />
+              ) : (
+                <input
+                  type={isSensitive ? "password" : meta?.type === "number" ? "number" : "text"}
+                  value={currentVal}
+                  onChange={(e) => handleVarChange(key, e.target.value, meta)}
+                  placeholder={hasDefault && !isSensitive ? String(meta.default) : ""}
+                  autoComplete="off"
+                  className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
+                />
+              )}
+              {fieldErr && <p className="mt-1 text-xs text-red-500">{fieldErr}</p>}
+            </div>
+          );
+        }
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+              <h3 className="mb-0.5 text-base font-semibold text-gray-900">
+                {mustFillEntries.length > 0
+                  ? `${mustFillEntries.length} required field${mustFillEntries.length !== 1 ? "s" : ""} need input`
+                  : "Review Run Variables"}
+              </h3>
+              <p className="mb-1 text-xs text-gray-500 font-medium">{quickRunProc.name}</p>
+              <p className="mb-4 text-xs text-gray-400">
+                {mustFillEntries.length > 0
+                  ? "Fill in the required fields before starting."
+                  : "All fields have default values. Override any before starting."}
+              </p>
+              <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
+                {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
+                {overrideEntries.length > 0 && (
+                  mustFillEntries.length > 0 ? (
+                    <details className="group">
+                      <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
+                        <span className="inline-block transition-transform group-open:rotate-90">▶</span>
+                        {`${overrideEntries.length} field${overrideEntries.length !== 1 ? "s" : ""} have defaults — expand to override`}
+                      </summary>
+                      <div className="space-y-4 mt-3">
+                        {overrideEntries.map(([key, meta]) => fieldRow(key, meta, true))}
+                      </div>
+                    </details>
+                  ) : (
+                    <div className="space-y-4">
+                      {overrideEntries.map(([key, meta]) => fieldRow(key, meta, true))}
+                    </div>
+                  )
+                )}
+              </div>
+              <div className="mt-5 flex gap-2">
+                <button
+                  onClick={() => {
+                    const allErrors: Record<string, string> = {};
+                    schemaEntries.forEach(([k, meta]) => {
+                      const e = validateVarField(k, varsForm[k] ?? "", meta);
+                      if (e) allErrors[k] = e;
+                    });
+                    if (Object.keys(allErrors).length > 0) { setVarsErrors(allErrors); return; }
+                    const parsed: Record<string, unknown> = {};
+                    let parseError = false;
+                    schemaEntries.forEach(([k, meta]) => {
+                      const raw = varsForm[k];
+                      if (meta?.type === "array" || meta?.type === "object") {
+                        if (!raw) return; // blank optional field — omit
+                        try { parsed[k] = JSON.parse(raw); }
+                        catch { toast(`Invalid JSON for "${k}" — expected ${meta.type === "array" ? "[...]" : "{...}"}`, "error"); parseError = true; }
+                      } else {
+                        parsed[k] = meta?.type === "number" ? Number(raw) : raw;
+                      }
+                    });
+                    if (parseError) return;
+                    void doQuickCreateRun(parsed);
+                  }}
+                  disabled={runCreating || Object.keys(varsErrors).length > 0}
+                  className="flex-1 rounded-lg bg-green-600 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  {runCreating ? "Starting…" : "Start Run"}
+                </button>
+                <button
+                  onClick={() => setShowVarsModal(false)}
+                  className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

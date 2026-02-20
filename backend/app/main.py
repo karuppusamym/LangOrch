@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db.engine import engine, async_session
@@ -131,6 +132,18 @@ app.include_router(agents_router, prefix="/api/agents", tags=["agents"])
 app.include_router(catalog_router, prefix="/api", tags=["catalog"])
 app.include_router(leases_router, prefix="/api/leases", tags=["leases"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
+
+# ── Serve local artifacts as static files ──────────────────────────────────
+# Agents write artifacts to ARTIFACTS_DIR and return URIs like
+#   /api/artifacts/<run_id>/<filename>
+# This mount makes those URIs resolvable directly from the browser / frontend.
+import os as _os
+_os.makedirs(settings.ARTIFACTS_DIR, exist_ok=True)
+app.mount(
+    "/api/artifacts",
+    StaticFiles(directory=settings.ARTIFACTS_DIR, html=False),
+    name="artifacts",
+)
 
 
 @app.get("/api/health")

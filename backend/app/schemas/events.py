@@ -12,7 +12,8 @@ from pydantic import BaseModel, model_validator, Field
 class RunEventOut(BaseModel):
     event_id: int
     run_id: str
-    created_at: datetime = Field(alias="ts")
+    # validation_alias reads the ORM "ts" column but serialises as "created_at"
+    created_at: datetime = Field(validation_alias="ts")
     event_type: str
     node_id: str | None = None
     step_id: str | None = None

@@ -156,12 +156,40 @@ async def create_artifact(
     node_id: str | None = None,
     step_id: str | None = None,
 ) -> Artifact:
+    """Persist an artifact record.
+
+    If ``uri`` is a local file path inside ``ARTIFACTS_DIR`` it is converted to
+    a ``/api/artifacts/<rel_path>`` URL so browsers can fetch it directly
+    (the backend mounts ARTIFACTS_DIR as a StaticFiles handler at that path).
+    External http(s) URIs and paths already starting with ``/api/`` are kept
+    as-is.
+    """
+    import os as _os
+    from app.config import settings as _settings
+
+    def _normalize(raw_uri: str) -> str:
+        if (
+            raw_uri.startswith("http://")
+            or raw_uri.startswith("https://")
+            or raw_uri.startswith("/api/")
+        ):
+            return raw_uri
+        try:
+            artifacts_abs = _os.path.abspath(_settings.ARTIFACTS_DIR)
+            uri_abs = _os.path.abspath(raw_uri)
+            if uri_abs.startswith(artifacts_abs):
+                rel = _os.path.relpath(uri_abs, artifacts_abs)
+                return "/api/artifacts/" + rel.replace(_os.sep, "/")
+        except Exception:
+            pass
+        return raw_uri
+
     artifact = Artifact(
         run_id=run_id,
         node_id=node_id,
         step_id=step_id,
         kind=kind,
-        uri=uri,
+        uri=_normalize(uri),
     )
     db.add(artifact)
     await db.flush()
