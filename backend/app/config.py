@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # Override with an absolute path or a cloud bucket mount point.
     ARTIFACTS_DIR: str = "./artifacts"
 
+    # ── Retention ───────────────────────────────────────────────
+    # Run events / artifacts older than this many days will be pruned by the
+    # background retention loop (0 = disabled).
+    CHECKPOINT_RETENTION_DAYS: int = 30
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

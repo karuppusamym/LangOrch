@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from typing import Any
+
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Project
+from app.db.models import Project, Run
 
 
 async def list_projects(db: AsyncSession) -> list[Project]:
@@ -53,3 +55,38 @@ async def delete_project(db: AsyncSession, project_id: str) -> bool:
     await db.delete(proj)
     await db.flush()
     return True
+
+
+async def get_project_cost_summary(
+    db: AsyncSession,
+    project_id: str,
+    period_days: int = 30,
+) -> dict[str, Any]:
+    """Return token + cost totals for all runs belonging to a project.
+
+    Aggregates *prompt_tokens*, *completion_tokens*, and *estimated_cost_usd*
+    over the most recent *period_days* of completed/failed/canceled runs.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
+    stmt = (
+        select(
+            func.count(Run.run_id).label("run_count"),
+            func.sum(Run.total_prompt_tokens).label("total_prompt_tokens"),
+            func.sum(Run.total_completion_tokens).label("total_completion_tokens"),
+            func.sum(Run.estimated_cost_usd).label("estimated_cost_usd"),
+        )
+        .where(Run.project_id == project_id)
+        .where(Run.created_at >= cutoff)
+    )
+    result = await db.execute(stmt)
+    row = result.one()
+    return {
+        "project_id": project_id,
+        "period_days": period_days,
+        "run_count": int(row.run_count or 0),
+        "total_prompt_tokens": int(row.total_prompt_tokens or 0),
+        "total_completion_tokens": int(row.total_completion_tokens or 0),
+        "estimated_cost_usd": round(float(row.estimated_cost_usd or 0.0), 6),
+    }

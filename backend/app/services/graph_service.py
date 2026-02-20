@@ -123,9 +123,9 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
     for idx, nid in enumerate(bfs_order):
         node = raw_nodes[nid]
         ntype = node.get("type", "sequence")
-        # Use node-ID as the card title, description field as the subtitle
-        label = nid.replace("_", " ").title()
+        # Prefer description as the card title; fall back to a humanised node-ID
         description = node.get("description") or None
+        label = description or nid.replace("_", " ").title()
         agent = node.get("agent")
         step_count = len(node.get("steps", []))
 

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -82,10 +83,13 @@ class Run(Base):
     output_vars_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_node_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_step_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     parent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # set for sub-procedure child runs
+    trigger_type: Mapped[str | None] = mapped_column(String(32), nullable=True)   # manual | scheduled | webhook | event
+    triggered_by: Mapped[str | None] = mapped_column(String(256), nullable=True)  # identity / scheduler job id
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
     )
@@ -197,3 +201,39 @@ class ResourceLease(Base):
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ── Trigger registrations ───────────────────────────────────────
+
+
+class TriggerRegistration(Base):
+    """Active trigger config per procedure version."""
+    __tablename__ = "trigger_registrations"
+    __table_args__ = (UniqueConstraint("procedure_id", "version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    procedure_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_type: Mapped[str] = mapped_column(String(32), nullable=False)  # scheduled | webhook | event | file_watch
+    schedule: Mapped[str | None] = mapped_column(String(256), nullable=True)   # cron expression
+    webhook_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)  # env var name holding HMAC secret
+    event_source: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    dedupe_window_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    max_concurrent_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+# ── Webhook dedupe records ──────────────────────────────────────
+
+
+class TriggerDedupeRecord(Base):
+    """Deduplicate webhook payloads within a configurable window."""
+    __tablename__ = "trigger_dedupe_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    procedure_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

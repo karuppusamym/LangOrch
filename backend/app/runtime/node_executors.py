@@ -37,6 +37,19 @@ from app.utils.metrics import record_step_execution, record_step_timeout, record
 
 logger = logging.getLogger("langorch.runtime")
 
+# Cost-per-1k-tokens for common LLM models (USD)
+# Source: public pricing pages as of 2026-02. Adjust as needed.
+_MODEL_COST_PER_1K: dict[str, dict[str, float]] = {
+    "gpt-4": {"prompt": 0.03, "completion": 0.06},
+    "gpt-4-turbo": {"prompt": 0.01, "completion": 0.03},
+    "gpt-4o": {"prompt": 0.005, "completion": 0.015},
+    "gpt-3.5-turbo": {"prompt": 0.0005, "completion": 0.0015},
+    "claude-3-opus": {"prompt": 0.015, "completion": 0.075},
+    "claude-3-sonnet": {"prompt": 0.003, "completion": 0.015},
+    "claude-3-haiku": {"prompt": 0.00025, "completion": 0.00125},
+    "claude-3-5-sonnet": {"prompt": 0.003, "completion": 0.015},
+}
+
 
 def _get_retry_config(state: OrchestratorState) -> dict[str, Any]:
     """Extract retry configuration from state's global_config (set by execution_service).
@@ -215,6 +228,9 @@ async def execute_sequence(
 
                     # dry_run: skip external agent/MCP dispatch; emit a dry_run_step_skipped event
                     _exec_mode = state.get("execution_mode", "production")
+                    _global_cfg_rt = state.get("global_config") or {}
+                    _mock_external = _global_cfg_rt.get("mock_external_calls", False)
+                    _test_overrides = _global_cfg_rt.get("test_data_overrides") or {}
                     if _exec_mode == "dry_run" and binding.kind in ("agent_http", "mcp_tool"):
                         logger.info(
                             "dry_run: skipping %s dispatch for step %s/%s (binding=%s)",
@@ -233,8 +249,58 @@ async def execute_sequence(
                                     },
                                 )
                                 await db.commit()
+                    elif step.step_id in _test_overrides:
+                        # test_data_overrides: return configured test result for this step
+                        result = _test_overrides[step.step_id]
+                        logger.info(
+                            "test_data_overrides: returning override for step %s/%s",
+                            node.node_id, step.step_id,
+                        )
+                        if db_factory is not None and run_id:
+                            async with db_factory() as db:
+                                await run_service.emit_event(
+                                    db, run_id, "step_test_override_applied",
+                                    node_id=node.node_id, step_id=step.step_id,
+                                    payload={"step_id": step.step_id, "override": result},
+                                )
+                                await db.commit()
+                    elif _mock_external and binding.kind in ("agent_http", "mcp_tool"):
+                        # mock_external_calls: return stub result without calling real agent/MCP
+                        logger.info(
+                            "mock_external_calls: returning stub for step %s/%s (binding=%s)",
+                            node.node_id, step.step_id, binding.kind,
+                        )
+                        result = {"mocked": True, "action": step.action, "binding": binding.kind}
+                        if db_factory is not None and run_id:
+                            async with db_factory() as db:
+                                await run_service.emit_event(
+                                    db, run_id, "step_mock_applied",
+                                    node_id=node.node_id, step_id=step.step_id,
+                                    payload={"action": step.action, "binding": binding.kind, "ref": binding.ref},
+                                )
+                                await db.commit()
                     elif binding.kind == "internal":
-                        result = await _execute_step_action(step.action, rendered_params, vs)
+                        _dyn_internal_coro = _execute_step_action(step.action, rendered_params, vs)
+                        if step.timeout_ms and step.timeout_ms > 0:
+                            try:
+                                result = await asyncio.wait_for(
+                                    _dyn_internal_coro, timeout=step.timeout_ms / 1000.0
+                                )
+                            except asyncio.TimeoutError:
+                                record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
+                                if db_factory is not None and run_id:
+                                    async with db_factory() as db:
+                                        await run_service.emit_event(
+                                            db, run_id, "step_timeout",
+                                            node_id=node.node_id, step_id=step.step_id,
+                                            payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "internal"},
+                                        )
+                                        await db.commit()
+                                raise TimeoutError(
+                                    f"Step {step.step_id} timed out after {step.timeout_ms}ms"
+                                )
+                        else:
+                            result = await _dyn_internal_coro
                     elif binding.kind == "agent_http":
                         lease_id: str | None = None
                         if run_id and binding.ref:
@@ -352,6 +418,19 @@ async def execute_sequence(
                     async with db_factory() as db:
                         await _mark_step_failed(db, run_id, node.node_id, step.step_id)
                         await db.commit()
+                # screenshot_on_fail: emit screenshot_requested event if global_config flag is set
+                _screenshot_flag = (state.get("global_config") or {}).get("screenshot_on_fail", False)
+                if _screenshot_flag and db_factory is not None and run_id:
+                    try:
+                        async with db_factory() as _sdb:
+                            await run_service.emit_event(
+                                _sdb, run_id, "screenshot_requested",
+                                node_id=node.node_id, step_id=step.step_id,
+                                payload={"reason": "screenshot_on_fail", "error": str(exc)},
+                            )
+                            await _sdb.commit()
+                    except Exception:
+                        logger.warning("Failed to emit screenshot_requested event", exc_info=True)
                 # Check error_handlers for a matching handler
                 _eh_matched = False
                 _eh_retry_step = False
@@ -833,7 +912,16 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
                 if _run:
                     _run.total_prompt_tokens = (_run.total_prompt_tokens or 0) + prompt_tokens
                     _run.total_completion_tokens = (_run.total_completion_tokens or 0) + completion_tokens
+                    # Estimate cost based on per-model rates
+                    _model_key = (usage.get("model") or payload.model or "").lower().split("/")[-1]
+                    _rates = _MODEL_COST_PER_1K.get(_model_key) or _MODEL_COST_PER_1K.get("gpt-4")
+                    _cost = (
+                        prompt_tokens * _rates["prompt"]
+                        + completion_tokens * _rates["completion"]
+                    ) / 1000.0
+                    _run.estimated_cost_usd = (_run.estimated_cost_usd or 0.0) + _cost
                     await _db.commit()
+                from app.services import run_service
                 await run_service.emit_event(
                     _db, run_id, "llm_usage",
                     node_id=node.node_id,

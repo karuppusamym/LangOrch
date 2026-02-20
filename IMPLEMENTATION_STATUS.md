@@ -1,6 +1,6 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-18 (Batch 19: LLM token tracking, IRTrigger parsing, unreachable-node detection, agent circuit breaker — frontend token display + circuit breaker UI)
+Last updated: 2026-02-20 (Batch 25: estimated_cost_usd on run detail UI; agent round-robin shuffle in executor_dispatch; confirmed mock_external_calls/test_data_overrides/dry_run/screenshot_on_fail/checkpoint_retention_loop all fully wired; 34 new tests)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -11,21 +11,21 @@ This document is the single authoritative source for **what is implemented vs wh
 | Domain | Spec Coverage | Implementation | Status |
 |--------|---------------|----------------|---------|
 | CKP compiler (parse → validate → bind) | 100% | 98% | Complete — step retry_config field added |
-| CKP top-level fields (trigger, provenance) | 100% | 90% | trigger parsed into IRTrigger + stored as trigger_config_json; provenance parsed+stored |
+| CKP top-level fields (trigger, provenance) | 100% | 100% | trigger: parsed → stored → TriggerRegistration DB → scheduler/webhook wired; provenance parsed+stored |
 | All 11 node type executors | 100% | 100% | Complete |
 | Global config enforcement | 100% | 95% | timeout, on_failure, rate_limit, execution_mode, vars_schema, checkpoint_strategy all enforced |
 | Policy: retry/backoff (global) | 100% | 100% | Complete |
 | Policy: retry/backoff (per-step) | 100% | 100% | Step-level retry_config overrides global |
 | Policy: retry/backoff (per-node llm_action) | 100% | 100% | payload.retry dict overrides global for LLM nodes |
 | Policy: timeout/SLA (global) | 100% | 100% | asyncio.wait_for wraps full graph stream |
-| Policy: timeout/SLA (step-level) | 100% | 95% | Agent+MCP+internal steps all wrapped with asyncio.wait_for |
+| Policy: timeout/SLA (step-level) | 100% | 100% | Agent+MCP+internal steps (both fast-path and dynamic-resolve) wrapped with asyncio.wait_for (Batch 22) |
 | Policy: rate limiting | 100% | 80% | max_concurrent_operations + max_requests_per_minute both enforced |
-| Trigger automation | 100% | 15% | IRTrigger dataclass + parser + stored; executor dispatch not yet wired |
+| Trigger automation | 100% | 100% | TriggerRegistration DB + service + APScheduler cron worker + webhook endpoint (HMAC, dedupe, concurrency guard) + frontend Trigger tab; file_watch background poll loop wired (Batch 22) |
 | Checkpointing + replay | 100% | 100% | checkpoint_strategy="none" supported; is_checkpoint per-node forcing; checkpoint_saved event emitted |
 | Step idempotency | 100% | 95% | Template key evaluation implemented |
 | Multi-agent concurrency (leases) | 100% | 95% | Near-complete |
 | Human-in-the-loop | 100% | 100% | Approval expiry auto-timeout implemented |
-| Secrets provider (env + Vault) | 100% | 80% | Working; AWS/Azure stubs |
+| Secrets provider (env + Vault + AWS + Azure) | 100% | 100% | All 4 providers complete: env, HashiCorp Vault (AppRole/KV v1/v2), AWS Secrets Manager (boto3), Azure Key Vault (DefaultAzureCredential); CachingSecretsProvider + provider_from_config factory |
 | Observability (events + SSE) | 100% | 98% | checkpoint_saved event added |
 | Observability (in-memory metrics) | 100% | 100% | Prometheus `/api/metrics` text endpoint added |
 | Observability (telemetry fields) | 100% | 85% | track_duration+track_retries emitted; custom_metrics recorded; not exported externally |
@@ -55,11 +55,11 @@ This document is the single authoritative source for **what is implemented vs wh
 | Frontend: project filter in procedures | 100% | 100% | Complete |
 | Frontend: workflow builder/editor | 100% | 0% | Not started |
 | Frontend→Backend API linkage | 100% | 100% | All 35+ call sites verified; 204-body bug fixed |
-| Backend tests (unit) | Target | 99% | **362 tests** — all passing |
+| Backend tests (unit) | Target | 99% | **549 tests** — all passing (Batch 25 adds 34 new tests) |
 | Backend tests (integration) | Target | 35% | 18 API tests |
 | Frontend tests | Target | 0% | Not started |
 | AuthN/AuthZ | Target | 0% | Not started (parked) |
-| CI/CD pipeline | Target | 0% | Not started |
+| CI/CD pipeline | Target | 100% | GitHub Actions CI: backend ruff + pytest; frontend tsc + build (Batch 22) |
 
 ---
 
@@ -88,7 +88,7 @@ This document is the single authoritative source for **what is implemented vs wh
 
 ### Services (backend/app/services/) - 9 services
 - execution_service.py: full pipeline: compile, validate, bind, load secrets, build graph, checkpoint-invoke, persist artifacts, update metrics
-- secrets_service.py: EnvironmentSecretsProvider (working), VaultSecretsProvider (working with hvac), AWS/Azure stubs
+- secrets_service.py: EnvironmentSecretsProvider, VaultSecretsProvider (token + AppRole, KV v1/v2, namespace), AWSSecretsManagerProvider (boto3, JSON field extraction, LocalStack endpoint, paginated list), AzureKeyVaultProvider (DefaultAzureCredential, underscore→hyphen normalisation), CachingSecretsProvider (TTL decorator), provider_from_config factory
 - checkpoint_service.py: introspection via LangGraph SQLite saver - list checkpoints, get checkpoint state
 - graph_service.py: BFS traversal to React Flow nodes + edges, layout, color coding, node labels
 - lease_service.py: try_acquire, release, list_active, concurrency enforcement
@@ -142,9 +142,15 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | GET/DELETE /api/leases | Complete |
 | GET/POST /api/projects | Complete |
 | GET/PUT/DELETE /api/projects/{id} | Complete |
-| POST /api/triggers | NOT IMPLEMENTED |
+| POST /api/triggers/{id}/{ver} | Complete — upsert TriggerRegistration, wires cron scheduler |
+| DELETE /api/triggers/{id}/{ver} | Complete — disable registration |
+| GET /api/triggers | Complete — list all registrations |
+| GET /api/triggers/{id}/{ver} | Complete — single registration |
+| POST /api/triggers/{id}/{ver}/fire | Complete — manual fire with concurrency guard |
+| POST /api/triggers/webhook/{id} | Complete — HMAC verify + dedupe + async run creation |
+| POST /api/triggers/sync | Complete — scan procedures and auto-register triggers |
 
-### Tests (backend/tests/) - 362 tests, all passing
+### Tests (backend/tests/) - 549 tests, all passing
 
 | File | Tests | Scope |
 |------|-------|-------|
@@ -167,6 +173,12 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | test_batch16.py | 25 | Server-side input_vars validation, step-level dry_run guard |
 | test_execution_validation.py | 18 | Variables constraint enforcement (regex, min/max, allowed_values) |
 | test_on_failure_handler.py | 5 | on_failure recovery handler routing |
+| test_batch20.py | 26 | Trigger parsing, HMAC verification, payload hash, cron parsing, DB models, schemas, RunOut trigger fields |
+| test_batch21.py | 47 | AWS Secrets Manager (string/binary/JSON/not-found/paginated), Azure Key Vault (key normalisation, not-found), HashiCorp Vault (KV v1/v2, AppRole, multi-field), CachingSecretsProvider (TTL hit/miss, invalidate), provider_from_config factory |
+| test_batch22.py | 25 | Dynamic internal step timeout, screenshot_on_fail events, mock_external_calls/test_data_overrides, procedure search, checkpoint retention loop, file_watch trigger loop, GitHub Actions CI |
+| test_batch23.py | 28 | Compiler: recursive subflow self-reference, template variable enforcement, action/channel compatibility; executor_dispatch: circuit-breaker skip; LLM estimated_cost_usd; projects: cost-summary endpoint |
+| test_batch24.py | 27 | Parallel branch IR, checkpoint resume IR, approval decision flow service, subflow IR, LLM usage event structure; bugfix: execute_llm_action run_service scope |
+| test_batch25.py | 34 | estimated_cost_usd schema/model, agent round-robin shuffle, screenshot_on_fail, mock_external_calls, test_data_overrides, dry_run mode, retention loop structural checks |
 | test_api.py | 18 | API integration (run separately) |
 
 ### Frontend (frontend/src/) - 12 routes
@@ -176,7 +188,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | / Dashboard | Working | Counts + recent runs + metrics panel |
 | /procedures | Working | List + search + status/project filter + CKP import (with project assignment) |
 | /procedures/[id] | Working | Overview/graph/CKP/versions tabs + input vars modal + provenance/retrieval_metadata |
-| /procedures/[id]/[version] | Working | Edit CKP, delete version, start run + input vars modal + status/effective_date + version diff |
+| /procedures/[id]/[version] | Working | Edit CKP, delete version, start run + input vars modal + status/effective_date + version diff + **Trigger tab** (type selector, schedule/webhook/event config, HMAC secret, dedupe/concurrency controls, fire button) |
 | /runs | Working | Status filters, date range, bulk cleanup, pagination, bulk select/cancel/delete |
 | /runs/[id] | Working | Timeline + SSE live updates + artifacts (preview/download) + diagnostics + checkpoints + graph + retry-with-inputs modal |
 | /approvals | Working | Inbox + inline approve/reject + SSE live updates |
@@ -237,7 +249,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 |-------|--------|-----------------|-----|
 | action | Yes | Yes | Complete |
 | params (with templating) | Yes | Yes | Complete |
-| timeout_ms | Yes | **Partial** | Agent + MCP steps wrapped with asyncio.wait_for; internal/transform steps not timed |
+| timeout_ms | Yes | **Yes** | `asyncio.wait_for` wraps internal, agent_http, and mcp_tool dispatch paths |
 | wait_ms / wait_after_ms | Yes | **Yes** | asyncio.sleep enforced before/after each step |
 | retry_on_failure | Yes | Yes | Complete (global policy) |
 | output_variable | Yes | Yes | Complete |
@@ -251,7 +263,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 |-----|--------|--------|
 | ~~Step timeout for internal actions~~ | ✅ `timeout_ms` now enforced for all step types | Done |
 | ~~`is_checkpoint` selective strategy~~ | ✅ `_checkpoint_node_id` marker + `checkpoint_saved` event (Batch 14) | Done |
-| Trigger automation | `trigger` field not parsed; no scheduler/webhook/event-driven execution | Large |
+| ~~Trigger automation~~ | ✅ Scheduler + webhook + trigger registry + dedupe/concurrency controls (Batch 20) | Done |
 | AuthN/AuthZ | No identity enforcement; all endpoints open | Large (parked) |
 
 ### Priority 2 — Technical debt / polish
@@ -259,11 +271,11 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | Item | Detail |
 |------|--------|
 | ~~Duplicate UI components~~ | ✅ StatusBadge, ProcedureStatusBadge, ApprovalStatusBadge extracted to `@/components/shared/` |
-| AWS/Azure secrets stubs | Both providers fall back to env vars with a warning log |
+| ~~AWS/Azure secrets stubs~~ | ✅ AWS Secrets Manager + Azure Key Vault providers implemented (Batch 21) |
 | No server-side data fetching | All pages use `useEffect` + client fetch; no SWR/React Query caching |
 | ~~Metrics export~~ | ✅ Prometheus `/api/metrics` text format endpoint added |
 | Frontend e2e tests | No Playwright/Cypress tests |
-| CI/CD pipeline | No lint/test/build gates |
+| ~~CI/CD pipeline~~ | ✅ GitHub Actions CI: backend ruff+pytest; frontend tsc+build (Batch 22) |
 | Workflow editor (frontend) | Read-only graph viewer done; editable properties not started |
 | Retrieval metadata search | retrieval_metadata parsed + stored; no full-text search API | Medium |
 
@@ -274,7 +286,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | ~~Duplicate UI components~~ | ✅ StatusBadge and ApprovalStatusBadge extracted to `src/components/shared/` |
 | ~~Dead npm dependency~~ | ✅ @heroicons/react removed from package.json (Batch 17) |
 | event_service.py is 6-line re-export | Could be consolidated into run_service.py |
-| AWS/Azure secrets stubs | Providers fall back to env vars with warning |
+| ~~AWS/Azure secrets stubs~~ | ✅ AWS Secrets Manager + Azure Key Vault providers implemented (Batch 21) |
 | ~~No error toast system~~ | ✅ `Toast.tsx` with `ToastProvider` + `useToast()` hook, 4 types, auto-dismiss |
 | All pages use useEffect only | No server-side data fetching, no caching (SWR/React Query) |
 
@@ -409,7 +421,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | 26 | Idempotency key template evaluation | Small | Medium | ✅ Done (Batch 7) |
 | 27 | Variables regex validation UI | Small | Medium | ✅ Done (Batch 8) |
 | 28 | `error_handlers` action semantics | Medium | Medium | ✅ Done (Batch 7) |
-| 29 | Trigger automation | Large | High | Pending |
+| 29 | Trigger automation | Large | High | ✅ Done (Batch 20) |
 | 30 | Rate-limit `max_requests_per_minute` | Medium | Low | ✅ Done (Batch 8) |
 | 31 | Configurable redaction policy | Small | Medium | ✅ Done (Batch 17) |
 | 32 | Dark mode | Small | Medium | ✅ Done (Batch 17) |

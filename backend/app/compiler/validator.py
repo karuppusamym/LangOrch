@@ -2,18 +2,39 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections import deque
 
 from app.compiler.ir import (
     IRHumanApprovalPayload,
+    IRLlmActionPayload,
     IRLogicPayload,
     IRLoopPayload,
     IRParallelPayload,
     IRProcedure,
+    IRSequencePayload,
     IRSubflowPayload,
 )
 
 _VALID_TRIGGER_TYPES = frozenset({"manual", "scheduled", "webhook", "event", "file_watch"})
+
+# Regex to extract Jinja2 template variable names from CKP text fields
+_JINJA_VAR_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+
+# Actions handled internally by the orchestrator (no agent required)
+_STATIC_INTERNAL_ACTIONS: frozenset[str] = frozenset({
+    "log", "wait", "set_variable", "calculate", "format_data",
+    "parse_json", "parse_csv", "generate_id", "get_timestamp",
+    "set_checkpoint", "restore_checkpoint", "screenshot",
+})
+
+# Variables always available at runtime even without explicit schema declaration
+_IMPLICIT_RUNTIME_VARS: frozenset[str] = frozenset({
+    "run_id", "procedure_id", "trigger_type", "triggered_by",
+    "node_id", "step_id", "loop_index", "loop_item", "parallel_results",
+    "llm_output",
+})
 
 
 class ValidationError(Exception):
@@ -72,6 +93,12 @@ def validate_ir(ir: IRProcedure) -> list[str]:
         elif isinstance(payload, IRSubflowPayload):
             if payload.next_node_id and payload.next_node_id not in all_node_ids:
                 errors.append(f"Node '{nid}': subflow next_node '{payload.next_node_id}' not found.")
+            # Detect direct self-recursion (this procedure calling itself)
+            if payload.procedure_id and payload.procedure_id == ir.procedure_id:
+                errors.append(
+                    f"Node '{nid}': subflow references its own procedure '{ir.procedure_id}' "
+                    f"(direct self-recursion — creates an infinite loop)."
+                )
 
     # ── Trigger validation ──────────────────────────────────────
     if ir.trigger and ir.trigger.type not in _VALID_TRIGGER_TYPES:
@@ -127,5 +154,58 @@ def validate_ir(ir: IRProcedure) -> list[str]:
         unreachable = all_node_ids - reachable
         for nid in sorted(unreachable):
             errors.append(f"Node '{nid}' is unreachable from start_node '{ir.start_node_id}'.")
+
+    # ── Template variable enforcement ──────────────────────────────
+    # Collect all variable names that are "known" by the time any step runs.
+    _all_known_vars: set[str] = set(ir.variables_schema or {})
+    _all_known_vars |= _IMPLICIT_RUNTIME_VARS
+    for _n in ir.nodes.values():
+        _p = _n.payload
+        if isinstance(_p, IRSequencePayload):
+            for _s in _p.steps:
+                if _s.output_variable:
+                    _all_known_vars.add(_s.output_variable)
+        elif isinstance(_p, IRLlmActionPayload):
+            _all_known_vars.update(_p.outputs.keys())
+        elif isinstance(_p, IRLoopPayload):
+            for _v in (_p.iterator_variable, _p.index_variable, _p.collect_variable):
+                if _v:
+                    _all_known_vars.add(_v)
+    # Only enforce when the procedure declares a non-empty variables_schema
+    if ir.variables_schema:
+        for nid, node in ir.nodes.items():
+            payload = node.payload
+            if isinstance(payload, IRSequencePayload):
+                for step in payload.steps:
+                    _params_text = json.dumps(step.params) if step.params else ""
+                    _idem_text = step.idempotency_key or ""
+                    for _var in _JINJA_VAR_RE.findall(_params_text + " " + _idem_text):
+                        if _var not in _all_known_vars:
+                            errors.append(
+                                f"Node '{nid}', step '{step.step_id}': template references "
+                                f"undeclared variable '{{{{{_var}}}}}'."
+                            )
+            elif isinstance(payload, IRLlmActionPayload):
+                _llm_text = (payload.prompt or "") + " " + (payload.system_prompt or "")
+                for _var in _JINJA_VAR_RE.findall(_llm_text):
+                    if _var not in _all_known_vars:
+                        errors.append(
+                            f"Node '{nid}' (llm_action): prompt references undeclared variable "
+                            f"'{{{{{_var}}}}}'."
+                        )
+
+    # ── Action / channel compatibility ─────────────────────────────
+    # Sequence steps with non-internal actions must be attached to a node that
+    # declares an 'agent' (channel), otherwise the step will be unresolvable at runtime.
+    for nid, node in ir.nodes.items():
+        payload = node.payload
+        if isinstance(payload, IRSequencePayload) and not node.agent:
+            for step in payload.steps:
+                if step.action not in _STATIC_INTERNAL_ACTIONS:
+                    errors.append(
+                        f"Node '{nid}', step '{step.step_id}': action '{step.action}' is not a "
+                        f"built-in internal action, but node '{nid}' has no 'agent' field set. "
+                        f"The step may be unresolvable at runtime."
+                    )
 
     return errors

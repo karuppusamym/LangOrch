@@ -19,6 +19,8 @@ async def create_run(
     procedure_version: str,
     input_vars: dict[str, Any] | None = None,
     project_id: str | None = None,
+    trigger_type: str | None = None,
+    triggered_by: str | None = None,
 ) -> Run:
     run = Run(
         procedure_id=procedure_id,
@@ -26,6 +28,8 @@ async def create_run(
         thread_id="",  # will be set to run_id after flush
         input_vars_json=json.dumps(input_vars) if input_vars else None,
         project_id=project_id,
+        trigger_type=trigger_type,
+        triggered_by=triggered_by,
         status="created",
     )
     db.add(run)

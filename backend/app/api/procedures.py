@@ -40,10 +40,11 @@ async def list_procedures(
     project_id: str | None = None,
     status: str | None = None,
     tags: str | None = None,
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    return await procedure_service.list_procedures(db, project_id, status=status, tags=tag_list)
+    return await procedure_service.list_procedures(db, project_id, status=status, tags=tag_list, search=search)
 
 
 @router.get("/{procedure_id}/versions", response_model=list[ProcedureOut])

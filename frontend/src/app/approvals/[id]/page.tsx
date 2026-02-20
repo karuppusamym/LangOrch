@@ -58,18 +58,30 @@ export default function ApprovalDetailPage() {
   if (loading) return <p className="text-gray-500">Loading approval...</p>;
   if (!approval) return <p className="text-red-500">Approval not found</p>;
 
+  const overdue =
+    approval.status === "pending" &&
+    !!approval.expires_at &&
+    new Date(approval.expires_at) < new Date();
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <Link href="/approvals" className="text-sm text-primary-600 hover:underline">
         ← Approvals
       </Link>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+      <div className={`rounded-xl border p-8 shadow-sm ${
+        overdue ? "border-red-300 bg-red-50" : "border-gray-200 bg-white"
+      }`}>
         <div className="mb-6 flex items-center gap-3">
           <ApprovalStatusBadge status={approval.status} />
           <span className="text-xs text-gray-400">ID: {approval.approval_id.slice(0, 12)}…</span>
           {approval.expires_at && approval.status === "pending" && (
             <CountdownBadge expiresAt={approval.expires_at} />
+          )}
+          {overdue && (
+            <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-600 animate-pulse">
+              ⚠ OVERDUE
+            </span>
           )}
         </div>
 

@@ -128,10 +128,19 @@ export default function ApprovalsPage() {
         </div>
       ) : (
         <div className="space-y-4">
-          {filtered.map((approval) => (
+          {filtered.map((approval) => {
+            const overdue =
+              approval.status === "pending" &&
+              !!approval.expires_at &&
+              new Date(approval.expires_at) < new Date();
+            return (
             <div
               key={approval.approval_id}
-              className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm"
+              className={`rounded-xl border p-6 shadow-sm ${
+                overdue
+                  ? "border-red-300 bg-red-50"
+                  : "border-gray-200 bg-white"
+              }`}
             >
               <div className="flex items-start justify-between">
                 <div>
@@ -142,6 +151,11 @@ export default function ApprovalsPage() {
                     </span>
                     {approval.expires_at && approval.status === "pending" && (
                       <CountdownBadge expiresAt={approval.expires_at} />
+                    )}
+                    {overdue && (
+                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-600 animate-pulse">
+                        ⚠ OVERDUE
+                      </span>
                     )}
                   </div>
                   <p className="mt-2 text-sm text-gray-900">{approval.prompt}</p>
@@ -184,7 +198,8 @@ export default function ApprovalsPage() {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

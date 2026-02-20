@@ -1,10 +1,23 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-19 (updated after Batch 18 cleanup + Enterprise Readiness & Futuristic Roadmap analysis added)
+Last updated: 2026-02-20 (Batch 25: estimated_cost_usd run detail UI, agent selection now shuffled across eligible agents; docs reconciled for CI/triggers/secrets and remaining scale/security gaps)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
 ---
+
+## Definition of Done (Production)
+
+LangOrch is considered **production-ready** when all items below are true:
+
+- **Security**: AuthN/AuthZ enabled; role-based approvals enforced; every action attributable to an identity
+- **Reliability/HA**: scheduler/trigger firing is HA-safe under multiple replicas (no double-fire); run execution is idempotent under concurrency
+- **Scalability**: durable worker model exists (API separate from workers); horizontal scaling does not duplicate work
+- **Data**: production database + migrations + backups are in place; hot-path indexes exist
+- **Observability**: metrics/traces/logs exported to an external backend; on-call can debug a run end-to-end
+- **Quality gates**: CI blocks regressions (lint, type-check, tests, build) and core UI flows have e2e coverage
+
+See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 
 ## Current implementation baseline (what is already done)
 
@@ -23,12 +36,12 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - **Leases API**: `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented
 - **Diagnostics API**: `GET /api/runs/{id}/diagnostics` — idempotency entries, active leases, event counts, retry markers
 - **Checkpoint introspection API**: `GET /api/runs/{id}/checkpoints` + `GET /api/runs/{id}/checkpoints/{cpid}`
-- **Secrets provider abstraction**: `EnvironmentSecretsProvider` (working) + `VaultSecretsProvider` (working), AWS/Azure stubs
+- **Secrets provider abstraction**: all 4 providers complete — `EnvironmentSecretsProvider`, `VaultSecretsProvider` (AppRole, KV v1/v2, namespace), `AWSSecretsManagerProvider` (boto3, JSON field extraction, LocalStack), `AzureKeyVaultProvider` (DefaultAzureCredential, key normalisation) + `CachingSecretsProvider` TTL decorator + `provider_from_config` factory
 - **Event redaction**: recursive sensitive field sanitization (password, token, api_key, secret, etc.)
 - **In-memory metrics**: counters/histograms + `GET /api/runs/metrics/summary` endpoint
 - **Graph extraction API**: `GET /api/procedures/{id}/{version}/graph` → React Flow-compatible nodes/edges
 - **Workflow graph viewer (frontend)**: interactive React Flow with custom CKP nodes, color-coding, minimap, zoom/pan
-- **362 backend tests** across 20 test files — all passing (parser, validator, binder, redaction, metrics, secrets, graph, API, batches 7–16)
+- **549 backend tests** — all passing (current baseline)
 - 12-route frontend: Dashboard, Procedures (list/detail/edit/version-diff), Runs (list/detail/timeline/bulk-ops), Approvals (inbox/detail/SSE-live), Agents, Projects, Leases
 - **Dark mode**: system-preference-aware toggle in header, persisted to localStorage
 - **Retry with modified inputs**: run detail retry button opens variables editor pre-filled with original inputs
@@ -39,7 +52,7 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - **Configurable redaction**: `build_patterns()` merges CKP `audit_config.redacted_fields` with default patterns
 
 ### Partially implemented
-- Secrets handling: env/vault working; AWS Secrets Manager and Azure Key Vault are stubs with env fallback
+- ~~Secrets handling: env/vault working; AWS Secrets Manager and Azure Key Vault are stubs with env fallback~~ → ✅ All 4 providers fully implemented (Batch 21)
 - Telemetry fields: `track_duration` and `track_retries` emitted in step events; `custom_metrics` recorded; not exported to external backends
 - Approval flow exists, but no role-based approver governance
 - ~~Error handlers fully parsed into IR but NOT executed at runtime~~ → ✅ Fully dispatched (Batches 7 + 15)
@@ -47,8 +60,8 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ~~`idempotency_key` custom templates stored but not evaluated~~ → ✅ Jinja2 template rendering applied (Batch 7)
 
 ### Not yet implemented (high impact gaps)
-- Trigger automation (scheduler, webhook, file/event driven execution) — `trigger` field not parsed
 - AuthN/AuthZ and policy enforcement
+- HA-safe scheduling/trigger semantics for multi-replica deployments (leader election or external scheduler; no double-fire)
 - ~~Step/node timeout enforcement~~ → ✅ `asyncio.wait_for` wraps agent_http, mcp_tool, and internal steps (Batch 10)
 - ~~SLA monitoring~~ → ✅ `sla.max_duration_ms` tracked, `sla_breached` events emitted, escalation/fail enforced (Batches 5 + 13)
 - ~~Stale lease management~~ → ✅ `GET/DELETE /api/leases` endpoints + frontend /leases page implemented
@@ -56,7 +69,7 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ~~Frontend: no diagnostics/metrics pages, no input variables form~~ → ✅ All implemented (diagnostics tab, metrics panel, input vars form)
 - Artifact metadata normalization/retention controls are limited
 - Visual workflow builder/editor (read-only viewer exists)
-- Automated frontend tests + CI gates
+- Automated frontend tests (Playwright e2e and/or unit tests)
 
 ---
 
@@ -87,22 +100,27 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ✅ **[Batch 10]** `asyncio.sleep(wait_ms)` / `asyncio.sleep(wait_after_ms)` enforced per step
 
 ## 2) Automation and orchestration triggers
-### Current
-- Runs are manually started through API/UI.
+### Current — UPDATED 2026-02-20 (Batch 20 + Batch 22)
+- ✅ Trigger registry model + APIs
+- ✅ Cron scheduler worker (APScheduler) for scheduled triggers
+- ✅ Webhook trigger API with HMAC verification + dedupe window + max_concurrent_runs
+- ✅ File-watch trigger loop
+- ✅ Trigger provenance on runs (`trigger_type`, `triggered_by`) visible in UI
 
-### Gaps
-- No scheduler, webhook trigger endpoint, signature verification, or dedupe window.
+### Remaining gaps
+- Distributed scheduler semantics (avoid double-fire when running multiple orchestrator replicas)
+- Event-driven triggers beyond webhook/file-watch (if adopting external event bus)
+- Trigger operational tooling: pause/resume per trigger, per-trigger backoff/retry visibility, dead-lettering
 
-### Implementation next
-- Add trigger registry + run policy controls
-- Add cron scheduler worker and signed webhook entrypoint
-- Emit explicit trigger-origin events (`triggered_by`, `trigger_type`, `trigger_id`)
+### Next implementation items
+- Make scheduler HA-safe (leader election or external scheduler)
+- Add event trigger adapter (e.g., queue/topic consumer) with the same dedupe/concurrency controls
+- Add trigger-run audit dashboard + export
 
 ## 3) Security and governance
-### Current — UPDATED 2026-02-17
-- ✅ Secrets provider abstraction: `EnvironmentSecretsProvider` (prefix-based, working) + `VaultSecretsProvider` (hvac, KV v1/v2, working)
+### Current — UPDATED 2026-02-19 (Batch 21)
+- ✅ Secrets provider abstraction: `EnvironmentSecretsProvider`, `VaultSecretsProvider` (AppRole + KV v1/v2 + namespace), `AWSSecretsManagerProvider` (boto3, JSON field extraction, LocalStack endpoint), `AzureKeyVaultProvider` (DefaultAzureCredential, underscore→hyphen normalisation); `CachingSecretsProvider` TTL decorator; `provider_from_config` factory
 - ✅ Event redaction: recursive sensitive field sanitization active in all event emission paths
-- AWS Secrets Manager and Azure Key Vault are provider stubs (fall back to env with warning)
 
 ### Remaining gaps
 - No platform AuthN/AuthZ — all 26 endpoints are open
@@ -111,7 +129,7 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 
 ### Next implementation items
 - Add auth middleware and role model (`operator`, `approver`, `admin`)
-- Implement AWS Secrets Manager and Azure Key Vault provider adapters
+- ~~Implement AWS Secrets Manager and Azure Key Vault provider adapters~~ → ✅ Done (Batch 21)
 - ~~Make redaction field list configurable from `global_config.audit_config`~~ — ✅ Implemented via `build_patterns()` + `emit_event(extra_redacted_fields=...)`
 
 ## 4) Observability and operations
@@ -153,8 +171,8 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ~~No UI for `GET /api/runs/metrics/summary`~~ — ✅ Dashboard metrics panel with histograms
 - ~~`createRun` always sends `{}` for `input_vars`~~ — ✅ Input variables form with full validation
 - ~~No retry-path overlay in timeline~~ — ✅ Retry-with-modified-inputs modal on failed runs
-- No LLM/agent invocation detail panel (model used, tokens, latency)
-- No approval SLA/escalation indicators
+- ~~No LLM/agent invocation detail panel (model used, tokens, latency)~~ → ✅ `llm_usage` event structured display (model chip, prompt/completion token pills, duration_ms; Batch 24)
+- ~~No approval SLA/escalation indicators~~ → ✅ Overdue red highlight + ⚠ OVERDUE badge on both approvals list and detail pages (Batch 24)
 - ~~Duplicate UI components: `StatusBadge` defined independently~~ — ✅ Extracted to `src/components/shared/`
 
 ### Next implementation items
@@ -162,26 +180,31 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ~~Add metrics card to dashboard using `GET /api/runs/metrics/summary`~~ — ✅ Done
 - ~~Add input variables form modal at run-start that reads `variables_schema` from the procedure~~ — ✅ Done
 - ~~Extract `StatusBadge` and `ApprovalStatusBadge` into `src/components/shared/`~~ — ✅ Done
-- Add LLM/agent step detail panel (model, tokens, latency)
-- Add approval SLA/escalation indicators
+- ~~Add LLM/agent step detail panel (model, tokens, latency)~~ → ✅ Done (Batch 24)
+- ~~Add approval SLA/escalation indicators~~ → ✅ Done (Batch 24)
 
 ## 6) Quality and delivery discipline
-### Current — UPDATED 2026-02-18 (Batch 18)
+### Current — UPDATED 2026-02-19 (Batch 21)
 - ✅ 278 backend tests (Batch 13): retry config, step_timeout events, SLA breach, alert webhook, Prometheus, shared UI
 - ✅ **312 backend tests** (Batch 14): explain service (19), step retry config (5), LLM retry (3), is_checkpoint marker (2), checkpoint event (2), endpoint (3)
 - ✅ **319 backend tests** (Batch 15): notify_on_error in IRErrorHandler (7)
 - ✅ **344 backend tests** (Batch 16): server-side input_vars validation (20) + step-level dry_run guard (5)
 - ✅ **362 backend tests** (Batch 18): GET agent endpoint fix + test count reconciliation across 20 test files
+- ✅ **388 backend tests** (Batch 20): Trigger automation — 26 tests (cron parsing, HMAC verification, DB models, schemas)
+- ✅ **409 backend tests** (Batch 21): Secrets providers — 47 tests (AWS/Azure/Vault/Caching/factory) via mocks
+- ✅ **460 backend tests** (Batch 22): Dynamic internal step timeout fix, screenshot_on_fail events, mock_external_calls/test_data_overrides, procedure keyword search, checkpoint retention loop, file_watch trigger loop, GitHub Actions CI
+- ✅ **488 backend tests** (Batch 23): Compiler validation hardening (recursive subflow self-reference, template variable enforcement, action/channel compatibility check), agent circuit-breaker dispatch skip, LLM estimated_cost_usd per-run accumulation + per-model cost table, GET /api/projects/{id}/cost-summary endpoint
+- ✅ **515 backend tests** (Batch 24): Frontend LLM/agent step detail panel (llm_usage event display, model/token chips, duration_ms pill), approval SLA overdue indicators, backend integration tests (parallel branch, checkpoint resume, approval decision flow, subflow IR); bugfix: execute_llm_action run_service scope
+- ✅ **549 backend tests** (Batch 25): estimated_cost_usd on run detail UI; agent dispatch now shuffles eligible agents per channel (load distribution, not strict round-robin); confirmed mock_external_calls/test_data_overrides/dry_run/screenshot_on_fail/checkpoint_retention_loop all wired
 
 ### Remaining gaps
 - Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
 - No frontend unit or e2e tests
-- No CI pipeline (lint + type-check + tests + build gates)
+- ~~No CI pipeline (lint + type-check + tests + build gates)~~ → ✅ GitHub Actions CI added (Batch 22)
 
 ### Next implementation items
 - Add backend integration tests for: parallel branch execution, checkpoint resume, approval decision flow, subflow execution
 - Add frontend e2e tests with Playwright for primary operator paths (import procedure, start run, approve, view timeline)
-- Add GitHub Actions CI pipeline: `ruff` + `pyright` + `pytest` + `next build`
 
 ---
 
@@ -200,9 +223,9 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
   - ~~`on_error` transition targets~~ → ✅ Error handler dispatch (retry, fail, ignore, escalate, fallback_node)
   - optional compensation/rollback step references
 - Strengthen compiler validation:
-  - detect unreachable nodes, dead-end branches, recursive subflow loops
-  - enforce required variables for node/step templates
-  - validate action/channel compatibility before runtime
+  - ~~detect unreachable nodes, dead-end branches, recursive subflow loops~~ → ✅ Unreachable nodes (Batch pre-23) + recursive self-reference (Batch 23)
+  - ~~enforce required variables for node/step templates~~ → ✅ Jinja2 `{{ var }}` references validated against declared schema (Batch 23)
+  - ~~validate action/channel compatibility before runtime~~ → ✅ Sequence steps with non-internal actions require `agent` field (Batch 23)
 
 ### Acceptance criteria
 - CKP can express retry/timeouts/idempotency without Python code edits
@@ -286,7 +309,7 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
   - token/latency stats
   - tool invocation history and outcomes
 - Governance UI:
-  - approval SLA/escalation indicators
+  - ~~approval SLA/escalation indicators~~ → ✅ Done (Batch 24: overdue highlight + ⚠ badge on approvals list + detail)
   - secret usage visibility (without secret value exposure)
 
 ### Acceptance criteria
@@ -334,8 +357,8 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - Add side-by-side CKP JSON + visual sync mode
 
 #### Phase U4 — Governance and analytics UX
-- Add approval SLA and escalation dashboards
-- Add LLM/agent observability panels (latency, tokens, failures, model profile)
+- ~~Add approval SLA and escalation dashboards~~ → ✅ Done (Batch 24: overdue highlight + ⚠ badge)
+- ~~Add LLM/agent observability panels (latency, tokens, failures, model profile)~~ → ✅ Done (Batch 24: llm_usage event chips in run timeline)
 - Add operator diagnostics views (checkpoint and lease inspection)
 
 ### Acceptance criteria
@@ -362,15 +385,15 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - Any failed run can be diagnosed from API/UI without direct DB queries
 - Retry behavior is deterministic and configurable per step/node
 
-## Phase 2 — Trigger automation
+## Phase 2 — Trigger automation ✅ COMPLETE (Batch 20)
 ### Deliverables
-- Scheduler service for CKP scheduled triggers
-- Webhook trigger API with request signing verification
-- Trigger dedupe/concurrency controls + trigger audit events
+- ~~Scheduler service for CKP scheduled triggers~~ → ✅ APScheduler cron worker + sync loop
+- ~~Webhook trigger API with request signing verification~~ → ✅ HMAC-SHA256, 401 on bad sig
+- ~~Trigger dedupe/concurrency controls + trigger audit events~~ → ✅ TriggerDedupeRecord + max_concurrent_runs guard
 
 ### Acceptance criteria
-- Procedures can execute automatically from schedule/webhook
-- Trigger source and policy decisions are visible in run timeline
+- ✅ Procedures can execute automatically from schedule/webhook
+- ✅ Trigger source and policy decisions are visible in run timeline (trigger_type/triggered_by on Run)
 
 ## Phase 3 — Security and governance baseline
 ### Deliverables
@@ -410,6 +433,80 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 
 ### Acceptance criteria
 - Stable operation under higher concurrency and mixed channel load
+
+---
+
+## Production readiness checklist (P0/P1)
+
+This is the minimum set of work to call the system production-ready. Items marked ✅ are already implemented in the repo; everything else is a real deployment blocker.
+
+### P0 — Blockers (must-have)
+- **AuthN/AuthZ + roles** (operator/approver/admin)
+  - Deliverables: auth middleware, identity propagation, RBAC checks on approvals/runs/admin endpoints
+  - Acceptance: every mutating endpoint requires auth; approval decisions restricted to approvers; every run/approval action is attributable to an identity
+- **HA-safe triggers + execution** (multi-replica correctness)
+  - Current: triggers exist (cron/webhook/file_watch), but HA semantics are not defined for multiple orchestrator replicas
+  - Deliverables: leader election or external scheduler; idempotent trigger firing; strong dedupe under concurrency
+  - Acceptance: two orchestrator replicas can run without double-firing schedules or creating duplicate runs
+- **Durable worker model** (survive restarts, scale out)
+  - Deliverables: separate API vs execution workers (queue or DB-backed job table); retry-at-job level; safe cancellation
+  - Acceptance: orchestrator restart does not lose in-flight work; workers can be scaled horizontally without duplicate execution
+- **Production database + migrations**
+  - Deliverables: Postgres (or equivalent), Alembic migrations, indexes for hot queries (runs/events/approvals/leases), backup/restore procedure
+  - Acceptance: schema upgrades are repeatable and reversible; query latency remains stable under realistic event volumes
+
+### P1 — Hardening (strongly recommended)
+- **Observability export** (beyond in-memory)
+  - Current: in-memory metrics + Prometheus endpoint exist; export to external backend is still missing
+  - Deliverables: OpenTelemetry traces, structured logs with correlation IDs (run_id/node_id/step_id), metrics shipped to managed backend
+  - Acceptance: an operator can trace a single run end-to-end across services and agents; alerts can be derived from SLOs
+- **Frontend e2e tests (Playwright)**
+  - Deliverables: e2e coverage for import procedure → start run → approve → view timeline/artifacts
+  - Acceptance: CI gate blocks regressions on core operator paths
+- **Load + soak testing**
+  - Deliverables: concurrency test plan (parallel runs + heavy event streams + approvals), soak tests for memory growth/leaks
+  - Acceptance: defined throughput targets and observed stable behavior (no runaway DB growth, no event-stream stalls)
+- **Agent capacity & pool model (true RR/fairness)**
+  - Current: eligible agents are shuffled per dispatch to spread load; there is no `pool_id` or fairness/stickiness guarantees
+  - Deliverables: explicit pool_id, fair/deterministic selection, capacity-aware routing, saturation signals
+  - Acceptance: predictable distribution across agents under load, and clear operator signals when a pool is saturated
+
+---
+
+## Next Sprint (P0): Production baseline plan
+
+Goal: ship the minimum **safe deployment baseline** (security + HA correctness + durable execution + production DB discipline).
+
+1) **AuthN/AuthZ + roles**
+- Implement identity (JWT/session) and a small role model: `operator`, `approver`, `admin`
+- Enforce RBAC on:
+  - approvals decision endpoints (approver/admin only)
+  - agent/lease admin endpoints (admin only)
+  - run/procedure mutation endpoints (operator/admin)
+- Acceptance: unauthenticated requests are rejected; audit fields show who triggered runs/approvals
+
+2) **HA-safe triggers (no double-fire)**
+- Choose one HA approach:
+  - leader election (DB row lock/lease) for the scheduler loop, or
+  - external scheduler (preferred when available)
+- Ensure dedupe/concurrency controls apply identically across replicas
+- Acceptance: two backend replicas running simultaneously do not double-create scheduled runs
+
+3) **Durable worker model (API/worker split)**
+- Introduce a durable run “job” record / queue abstraction and an execution worker loop
+- Keep API node responsible for: validation, enqueue, status endpoints; workers responsible for execution
+- Acceptance: restarting the API does not drop work; multiple workers can scale out without duplicate execution
+
+4) **Production DB + migrations**
+- Add Alembic (or equivalent) migrations for all tables and required indexes
+- Add Postgres config and a migration-run step in deploy/CI
+- Acceptance: clean deploy from scratch runs all migrations; upgrades are repeatable
+
+5) **Verification / release gates**
+- Add at least 1 “smoke” integration test that runs a minimal procedure end-to-end (create → run → events)
+- Acceptance: CI remains green; smoke test fails if critical wiring breaks
+
+Non-goals for this sprint (explicitly deferred): multi-tenancy, editable workflow builder, external metrics backend, autoscaling, advanced pool capacity model.
 
 ---
 
@@ -467,9 +564,9 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
   - `screenshot_on_fail` — parsed but not enforced globally
   - ~~`timeout_ms`~~ → ✅ `asyncio.wait_for` wraps entire graph invocation (Batch 7)
   - ~~`checkpoint_strategy`~~ → ✅ `"none"` strategy disables checkpointer (Batch 11)
-  - `checkpoint_retention_days` — not implemented
+  - ~~`checkpoint_retention_days`~~ → ✅ `_checkpoint_retention_loop` background task prunes RunEvent rows for terminal runs (Batch 22)
   - ~~`execution_mode` (dry_run/validation_only)~~ → ✅ dry_run enforced at step level (Batch 16); `validation_only` mode also works (Batch 5)
-  - `mock_external_calls`, `test_data_overrides` — not wired
+  - ~~`mock_external_calls`, `test_data_overrides`~~ → ✅ both wired in node_executors: mock returns stub + emits step_mock_applied; overrides return configured result + emits step_test_override_applied (Batch 22/25)
   - ~~`rate_limiting`~~ → ✅ `max_concurrent_operations` (semaphore) + `max_requests_per_minute` (token bucket) enforced (Batches 6 + 8)
 - ~~`variables_schema.required[].validation` (regex, max, allowed_values)~~ — ✅ server-side enforcement via `validate_input_vars` in `POST /api/runs` (Batch 16)
 
@@ -517,9 +614,8 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 - ✅ SSE-based live approvals
 
 **Still missing**:
-- LLM/agent invocation detail panel (model, tokens, latency)
-- Approval SLA/escalation indicators
 - Visual workflow builder/editor (editable properties, not just read-only)
+- ~~Frontend: `estimated_cost_usd` cost display on run detail page~~ → ✅ Done (Batch 25: shown in LLM tokens bar alongside prompt/completion/total)
 
 ---
 
@@ -549,11 +645,11 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 3. ~~Add per-node retry policy override support~~ → ✅ Batch 14
 4. ~~Respect `global_config.execution_mode` dry_run flag~~ → ✅ Batch 16
 
-### Sprint 5: Trigger automation
-1. Add `trigger` field parsing to IR + DB table
-2. Implement scheduler worker (cron expression evaluation)
-3. Implement webhook trigger endpoint with request signing verification
-4. Add trigger audit trail and dedupe window logic
+### Sprint 5: Trigger automation — ✅ COMPLETE (Batch 20)
+1. ~~Add `trigger` field parsing to IR + DB table~~ → ✅ Batch 19/20
+2. ~~Implement scheduler worker (cron expression evaluation)~~ → ✅ APScheduler AsyncIOScheduler in runtime/scheduler.py
+3. ~~Implement webhook trigger endpoint with request signing verification~~ → ✅ HMAC-SHA256 in POST /api/triggers/webhook/{id}
+4. ~~Add trigger audit trail and dedupe window logic~~ → ✅ TriggerDedupeRecord table + check_dedupe() + concurrency guard
 
 ### Sprint 6: Security and governance
 1. Add AuthN/AuthZ middleware + role model (`operator`, `approver`, `admin`)
@@ -580,10 +676,10 @@ This roadmap is updated from direct code analysis of current backend, runtime, A
 | Domain | Current State | Gap Level |
 |---|---|---|
 | Identity & Governance (AuthN/AuthZ) | 0% — all endpoints open | CRITICAL |
-| Trigger Automation (cron/webhook/event) | 0% — manual only | CRITICAL |
+| Trigger Automation (cron/webhook/event/file_watch) | 100% — Batch 20 + Batch 22 | COMPLETE |
 | Multi-tenancy | 0% — single tenant DB | HIGH |
 | LLM Cost Visibility | 0% — no token tracking | HIGH |
-| Agent Pool / Circuit Breaker | single-agent only | HIGH |
+| Agent Pool / Circuit Breaker | circuit breaker wired (dispatch skip); single-agent pool | HIGH |
 | Procedure Environment Promotion | no dev→staging→prod path | HIGH |
 | CI/CD Pipeline | 0% — no gates | HIGH |
 | Frontend E2E Tests | 0% | HIGH |
@@ -664,11 +760,11 @@ Required for any SaaS model or internal platform team serving multiple business 
 LLM costs scale non-linearly. Without token tracking, a runaway loop node can generate a surprise bill within hours.
 
 ### Implementation items
-- **Token counter per step**: `llm_action` node executor captures `usage.prompt_tokens`, `usage.completion_tokens` from model response; emits `llm_usage` event
-- **Run-level cost accumulation**: `runs` table adds `total_prompt_tokens`, `total_completion_tokens`, `estimated_cost_usd` columns; updated at each `llm_usage` event
-- **Project-level cost rollup**: `GET /api/projects/{id}/cost-summary` — daily/weekly/monthly breakdown
+- ~~**Token counter per step**: `llm_action` node executor captures `usage.prompt_tokens`, `usage.completion_tokens` from model response; emits `llm_usage` event~~ → ✅ Done (token accumulation in `execute_llm_action`)
+- ~~**Run-level cost accumulation**: `runs` table adds `total_prompt_tokens`, `total_completion_tokens`, `estimated_cost_usd` columns; updated at each `llm_usage` event~~ → ✅ Done (Batch 23: `estimated_cost_usd` column + `_MODEL_COST_PER_1K` rates table)
+- ~~**Project-level cost rollup**: `GET /api/projects/{id}/cost-summary` — daily/weekly/monthly breakdown~~ → ✅ Done (Batch 23: service + API endpoint with `period_days` param)
 - **Budget guardrail in CKP**: `global_config.llm_budget.max_tokens_per_run` — abort run and emit `budget_exceeded` event before limit is reached (warn at 80%, abort at 100%)
-- **Model cost config**: central `models.json` stores cost-per-1k-tokens per model; used for `estimated_cost_usd` calculation
+- ~~**Model cost config**: central `models.json` stores cost-per-1k-tokens per model~~ → ✅ Done (Batch 23: `_MODEL_COST_PER_1K` dict in `node_executors.py`)
 - **Model routing by cost tier**: CKP `llm_action.fallback_model` — on retry, use cheaper model; on first attempt, use full model
 - **Cost dashboard widget**: add to frontend dashboard — top 5 most expensive runs this week, cost by project
 
@@ -685,7 +781,9 @@ A single offline agent silently stalls all runs dispatching to that channel. Pro
 
 ### Implementation items
 - **Agent pool model**: multiple agents can share a `channel` + `pool_id`; dispatcher round-robins across healthy pool members
-- **Circuit breaker per agent**: after N consecutive 5xx responses, mark agent status `circuit_open`; stop dispatching; emit `circuit_opened` event; auto-retry after `reset_timeout_seconds`
+  - ✅ Partial (Batch 25): channel-based pool selection now shuffles eligible agents to spread load
+  - Remaining: `pool_id` field, deterministic/fair round-robin, capacity-aware selection, and stickiness
+- ~~**Circuit breaker per agent**: after N consecutive 5xx responses, mark agent status `circuit_open`; stop dispatching; emit `circuit_opened` event; auto-retry after `reset_timeout_seconds`~~ → ✅ Done (Batch 23: `consecutive_failures` + `circuit_open_at` on `AgentInstance`; `_find_capable_agent` skips circuit-open agents; health loop manages open/reset cycle)
 - **Health check depth**: beyond `GET /health` — orchestrator sends a no-op probe action and validates response schema
 - **Warm/cold states**: `warm` (agent pre-running, ready), `cold` (needs boot); orchestrator can signal `warm_up` before a scheduled trigger fires
 - **Agent capability versioning**: agent reports `capabilities_version: "2.1"`; CKP step can pin `required_capability_version: ">=2.0"`; compile-time binding enforces this
@@ -806,14 +904,14 @@ Ordered by enterprise value vs implementation cost:
 
 | Priority | Item | Estimated Effort | Unblocks |
 |---|---|---|---|
-| P0 | Trigger automation (cron + webhook) | 2 sprints | Real automation |
+| P0 | Trigger automation (cron + webhook) | 2 sprints | ✅ Done (Batch 20) |
 | P0 | AuthN/AuthZ + role model | 2 sprints | Multi-user deployment |
-| P1 | CI/CD pipeline (GitHub Actions) | 0.5 sprint | Enterprise buyer checklist |
+| P1 | CI/CD pipeline (GitHub Actions) | 0.5 sprint | ✅ Done (Batch 22) |
 | P1 | Frontend e2e tests (Playwright) | 1 sprint | Enterprise buyer checklist |
-| P1 | LLM token tracking + cost dashboard | 1 sprint | Production cost safety |
-| P2 | Agent circuit breaker + pool model | 1 sprint | Production resilience |
+| P1 | LLM token tracking + cost dashboard | 1 sprint | ✅ Done (Batch 23) |
+| P2 | Agent circuit breaker + pool model | 1 sprint | ✅ Circuit breaker done (Batch 23); ✅ load distribution via shuffle done (Batch 25); pool_id + fair RR remaining |
 | P2 | Procedure environment promotion | 1 sprint | Safe delivery pipeline |
-| P2 | AWS/Azure secrets adapters | 0.5 sprint | Secrets audit compliance |
+| P2 | AWS/Azure secrets adapters | 0.5 sprint | ✅ Done (Batch 21) |
 | P3 | Multi-tenancy scoping | 3 sprints | SaaS / platform model |
 | P3 | PII detection + tokenization before LLM | 1.5 sprints | HIPAA / GDPR compliance |
 | P4 | Visual workflow builder (edit mode) | 3 sprints | Non-developer authoring |

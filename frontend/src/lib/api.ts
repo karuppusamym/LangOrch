@@ -14,6 +14,7 @@ import type {
   CheckpointMetadata,
   CheckpointState,
   ExplainReport,
+  TriggerRegistration,
 } from "./types";
 
 const API_BASE = "/api";
@@ -317,5 +318,58 @@ export async function explainProcedure(
       method: "POST",
       body: JSON.stringify({ input_vars: inputVars ?? {} }),
     }
+  );
+}
+
+/* ── Triggers ────────────────────────────── */
+
+export async function listTriggers(): Promise<TriggerRegistration[]> {
+  return request("/triggers");
+}
+
+export async function getTrigger(
+  procedureId: string,
+  version: string
+): Promise<TriggerRegistration | null> {
+  return request(`/triggers/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}`);
+}
+
+export async function upsertTrigger(
+  procedureId: string,
+  version: string,
+  body: {
+    trigger_type: string;
+    schedule?: string | null;
+    webhook_secret?: string | null;
+    event_source?: string | null;
+    dedupe_window_seconds?: number;
+    max_concurrent_runs?: number | null;
+    enabled?: boolean;
+  }
+): Promise<TriggerRegistration> {
+  return request(
+    `/triggers/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}`,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+}
+
+export async function deleteTrigger(procedureId: string, version: string): Promise<void> {
+  await request(
+    `/triggers/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function syncTriggers(): Promise<{ synced: number }> {
+  return request("/triggers/sync", { method: "POST" });
+}
+
+export async function fireTrigger(
+  procedureId: string,
+  version: string
+): Promise<{ run_id: string; procedure_id: string; procedure_version: string; trigger_type: string }> {
+  return request(
+    `/triggers/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}/fire`,
+    { method: "POST" }
   );
 }

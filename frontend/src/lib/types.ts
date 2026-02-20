@@ -28,11 +28,14 @@ export interface Run {
   output_vars: Record<string, unknown> | null;
   total_prompt_tokens: number | null;
   total_completion_tokens: number | null;
+  estimated_cost_usd: number | null;
   started_at: string | null;
   ended_at: string | null;
   duration_seconds: number | null;
   error_message: string | null;
   parent_run_id: string | null;
+  trigger_type: string | null;
+  triggered_by: string | null;
   last_node_id: string | null;
   last_step_id: string | null;
   created_at: string;
@@ -211,4 +214,21 @@ export interface ExplainReport {
   route_trace: Array<{ node_id: string; type: string; next_nodes: string[]; is_terminal: boolean }>;
   external_calls: { node_id: string; step_id: string | null; action: string; binding_kind: string; binding_ref: string | null; agent_hint: string | null; timeout_ms: number | null }[];
   policy_summary: Record<string, unknown>;
+}
+
+/* ── Triggers ─────────────────────────────── */
+
+export interface TriggerRegistration {
+  id: number;
+  procedure_id: string;
+  version: string;
+  trigger_type: "scheduled" | "webhook" | "event" | "file_watch" | "manual";
+  schedule: string | null;
+  webhook_secret: string | null;
+  event_source: string | null;
+  dedupe_window_seconds: number;
+  max_concurrent_runs: number | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }

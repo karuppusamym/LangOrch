@@ -9,3 +9,11 @@ langgraph-checkpoint-sqlite>=3.0.0
 langchain-core>=0.3
 sse-starlette>=2.0
 httpx>=0.27
+apscheduler>=3.10
+croniter>=2.0
+
+# Optional secrets providers (install only what you use)
+hvac>=2.0                          # HashiCorp Vault
+boto3>=1.34                        # AWS Secrets Manager
+azure-keyvault-secrets>=4.8        # Azure Key Vault
+azure-identity>=1.16               # Azure authentication (DefaultAzureCredential)

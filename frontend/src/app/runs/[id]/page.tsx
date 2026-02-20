@@ -37,6 +37,7 @@ const EVENT_LABELS: Record<string, string> = {
   approval_requested: "Approval Requested",
   approval_decided: "Approval Decided",
   approval_expired: "Approval Expired",
+  llm_usage: "LLM Usage",
   artifact_created: "Artifact Created",
   checkpoint_saved: "Checkpoint Saved",
   sla_breached: "SLA Breached",
@@ -349,6 +350,9 @@ export default function RunDetailPage() {
           <span>Prompt: <strong>{run.total_prompt_tokens ?? 0}</strong></span>
           <span>Completion: <strong>{run.total_completion_tokens ?? 0}</strong></span>
           <span>Total: <strong>{(run.total_prompt_tokens ?? 0) + (run.total_completion_tokens ?? 0)}</strong></span>
+          {run.estimated_cost_usd != null && (
+            <span>Cost: <strong>${run.estimated_cost_usd.toFixed(6)}</strong></span>
+          )}
         </div>
       )}
 
@@ -411,7 +415,7 @@ export default function RunDetailPage() {
                     // Error events auto-expand; others expand on demand
                     const expanded = errStyle || expandedEvents.has(String(event.event_id));
                     const inlineErr = errStyle ? extractErrorMessage(event.payload) : null;
-                    const isStepEvent = event.event_type.startsWith("step_");
+                    const isStepEvent = event.event_type.startsWith("step_") || event.event_type === "llm_usage";
                     const isNodeEvent = event.event_type.startsWith("node_");
                     const isRunEvent = event.event_type.startsWith("run_") || event.event_type === "execution_started";
                     return (
@@ -449,6 +453,11 @@ export default function RunDetailPage() {
                               retry #{event.attempt}
                             </span>
                           )}
+                          {event.event_type === "step_completed" && typeof event.payload?.duration_ms === "number" && (
+                            <span className="rounded bg-green-50 px-1.5 py-0.5 text-[10px] text-green-600">
+                              {event.payload.duration_ms as number}ms
+                            </span>
+                          )}
                           <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
                             {new Date(event.created_at).toLocaleTimeString()}
                           </span>
@@ -475,9 +484,13 @@ export default function RunDetailPage() {
                         )}
                         {/* Payload detail */}
                         {hasPayload && expanded && !inlineErr && (
-                          <pre className="mt-2 max-h-48 overflow-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-600">
-                            {JSON.stringify(event.payload, null, 2)}
-                          </pre>
+                          event.event_type === "llm_usage" ? (
+                            <LlmUsageDetail payload={event.payload} />
+                          ) : (
+                            <pre className="mt-2 max-h-48 overflow-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-600">
+                              {JSON.stringify(event.payload, null, 2)}
+                            </pre>
+                          )
                         )}
                         {/* Full payload toggle for errors (below inline message) */}
                         {hasPayload && errStyle && (
@@ -865,6 +878,7 @@ function EventDot({ type }: { type: string }) {
     run_completed: "bg-green-600", run_failed: "bg-red-600", step_timeout: "bg-orange-500",
     sla_breached: "bg-red-300", node_error: "bg-red-500", approval_expired: "bg-gray-500",
     run_retry_requested: "bg-indigo-400", dry_run_step_skipped: "bg-gray-400", checkpoint_saved: "bg-teal-400",
+    llm_usage: "bg-purple-300",
   };
   return <div className={`mt-0.5 h-2 w-2 flex-shrink-0 rounded-full ${colors[type] ?? "bg-gray-300"}`} />;
 }
@@ -874,6 +888,33 @@ function DiagCard({ label, value }: { label: string; value: string | number }) {
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
       <p className="text-[10px] text-gray-500">{label}</p>
       <p className="mt-0.5 text-sm font-semibold text-gray-800">{value}</p>
+    </div>
+  );
+}
+
+function LlmUsageDetail({ payload }: { payload: Record<string, unknown> }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2 rounded-lg border border-purple-100 bg-purple-50 p-2">
+      {payload.model && (
+        <span className="rounded-full bg-purple-100 px-2.5 py-0.5 text-[10px] font-medium text-purple-700">
+          {String(payload.model)}
+        </span>
+      )}
+      {payload.prompt_tokens != null && (
+        <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[10px] font-medium text-blue-600">
+          prompt: <strong>{String(payload.prompt_tokens)}</strong> tok
+        </span>
+      )}
+      {payload.completion_tokens != null && (
+        <span className="rounded-full bg-green-50 px-2.5 py-0.5 text-[10px] font-medium text-green-600">
+          completion: <strong>{String(payload.completion_tokens)}</strong> tok
+        </span>
+      )}
+      {payload.total_tokens != null && (
+        <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-[10px] font-medium text-gray-600">
+          total: <strong>{String(payload.total_tokens)}</strong> tok
+        </span>
+      )}
     </div>
   );
 }

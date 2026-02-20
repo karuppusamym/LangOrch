@@ -1,13 +1,13 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns } from "@/lib/api";
+import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns, getTrigger, upsertTrigger, deleteTrigger, fireTrigger } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { ProcedureDetail, Procedure, ExplainReport, Run } from "@/lib/types";
+import type { ProcedureDetail, Procedure, ExplainReport, Run, TriggerRegistration } from "@/lib/types";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import { isFieldSensitive } from "@/lib/redact";
 
@@ -68,10 +68,10 @@ export default function ProcedureVersionDetailPage() {
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain" | "runs">(
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain" | "runs" | "trigger">(
     () => {
       const t = searchParams.get("tab");
-      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain" || t === "runs") ? t : "overview";
+      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain" || t === "runs" || t === "trigger") ? t : "overview";
     }
   );
   const [editMode, setEditMode] = useState(false);
@@ -83,6 +83,21 @@ export default function ProcedureVersionDetailPage() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
+  // Trigger state
+  const [triggerReg, setTriggerReg] = useState<TriggerRegistration | null>(null);
+  const [triggerLoading, setTriggerLoading] = useState(false);
+  const [triggerFetched, setTriggerFetched] = useState(false);
+  const [triggerSaving, setTriggerSaving] = useState(false);
+  const [triggerFiring, setTriggerFiring] = useState(false);
+  const [triggerForm, setTriggerForm] = useState({
+    trigger_type: "webhook" as string,
+    schedule: "",
+    webhook_secret: "",
+    event_source: "",
+    dedupe_window_seconds: 0,
+    max_concurrent_runs: "",
+    enabled: true,
+  });
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
@@ -383,7 +398,7 @@ export default function ProcedureVersionDetailPage() {
       </div>
 
       <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "graph", "explain", "ckp", "versions", "runs"] as const).map((tab) => (
+        {(["overview", "graph", "explain", "ckp", "versions", "runs", "trigger"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => {
@@ -407,6 +422,38 @@ export default function ProcedureVersionDetailPage() {
                   .catch(console.error)
                   .finally(() => setRunsLoading(false));
               }
+              if (tab === "trigger" && !triggerFetched) {
+                setTriggerFetched(true);
+                setTriggerLoading(true);
+                getTrigger(procedureId, version)
+                  .then((r) => {
+                    if (r) {
+                      setTriggerReg(r);
+                      setTriggerForm({
+                        trigger_type: r.trigger_type,
+                        schedule: r.schedule ?? "",
+                        webhook_secret: r.webhook_secret ?? "",
+                        event_source: r.event_source ?? "",
+                        dedupe_window_seconds: r.dedupe_window_seconds,
+                        max_concurrent_runs: r.max_concurrent_runs != null ? String(r.max_concurrent_runs) : "",
+                        enabled: r.enabled,
+                      });
+                    } else {
+                      // No registration yet — pre-populate from CKP trigger field if present
+                      const t = procedure?.trigger as Record<string, unknown> | null | undefined;
+                      if (t) {
+                        setTriggerForm(f => ({
+                          ...f,
+                          trigger_type: (t.type as string) ?? f.trigger_type,
+                          schedule: (t.schedule as string) ?? "",
+                          webhook_secret: (t.webhook_secret as string) ?? "",
+                        }));
+                      }
+                    }
+                  })
+                  .catch(console.error)
+                  .finally(() => setTriggerLoading(false));
+              }
             }}
             className={`px-4 py-2 text-sm font-medium ${
               activeTab === tab
@@ -414,7 +461,7 @@ export default function ProcedureVersionDetailPage() {
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "explain" ? "Explain" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "explain" ? "Explain" : tab === "trigger" ? "Trigger" : tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
         ))}
       </div>
@@ -835,6 +882,219 @@ export default function ProcedureVersionDetailPage() {
           )}
         </div>
       )}
+
+      {/* ── Trigger tab ───────────────────────────────────── */}
+      {activeTab === "trigger" && (
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Trigger Configuration</h3>
+              <p className="mt-0.5 text-xs text-gray-400">
+                Register an automated trigger for this procedure version. Scheduled triggers use cron
+                syntax; webhooks accept POST requests with optional HMAC-SHA256 signature verification.
+              </p>
+            </div>
+            {triggerReg && (
+              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${
+                triggerReg.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+              }`}>
+                {triggerReg.enabled ? "Active" : "Disabled"}
+              </span>
+            )}
+          </div>
+
+          {triggerLoading ? (
+            <p className="text-sm text-gray-400">Loading trigger info…</p>
+          ) : (
+            <div className="space-y-4">
+              {/* Type selector */}
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">Trigger Type</label>
+                <select
+                  value={triggerForm.trigger_type}
+                  onChange={(e) => setTriggerForm((f) => ({ ...f, trigger_type: e.target.value }))}
+                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                >
+                  <option value="webhook">Webhook (HTTP POST)</option>
+                  <option value="scheduled">Scheduled (cron)</option>
+                  <option value="event">Event (message bus)</option>
+                  <option value="file_watch">File Watch</option>
+                </select>
+              </div>
+
+              {/* Schedule — shown only for scheduled */}
+              {triggerForm.trigger_type === "scheduled" && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">
+                    Cron Expression <span className="text-gray-400">(UTC, 5-field)</span>
+                  </label>
+                  <input
+                    value={triggerForm.schedule}
+                    onChange={(e) => setTriggerForm((f) => ({ ...f, schedule: e.target.value }))}
+                    placeholder="e.g. 0 9 * * 1-5  (weekdays at 9am)"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-primary-500 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* Webhook secret env var */}
+              {triggerForm.trigger_type === "webhook" && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      Webhook Secret Env Var <span className="text-gray-400">(optional — env var name holding HMAC key)</span>
+                    </label>
+                    <input
+                      value={triggerForm.webhook_secret}
+                      onChange={(e) => setTriggerForm((f) => ({ ...f, webhook_secret: e.target.value }))}
+                      placeholder="e.g. MY_PROCEDURE_WEBHOOK_SECRET"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-primary-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700">
+                    <strong>Webhook URL:</strong>{" "}
+                    <code className="font-mono select-all">
+                      {typeof window !== "undefined" ? window.location.origin : ""}/api/triggers/webhook/{encodeURIComponent(procedureId)}
+                    </code>
+                    <p className="mt-1 text-blue-600">
+                      Send a POST to this URL. Include{" "}
+                      <code className="font-mono">X-LangOrch-Signature: sha256=&lt;hmac&gt;</code> header when a secret is set.
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {/* Event source */}
+              {triggerForm.trigger_type === "event" && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Event Source <span className="text-gray-400">(Kafka topic / SQS queue)</span></label>
+                  <input
+                    value={triggerForm.event_source}
+                    onChange={(e) => setTriggerForm((f) => ({ ...f, event_source: e.target.value }))}
+                    placeholder="e.g. orders.created"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* Dedupe window + concurrency */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Dedupe Window (seconds)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={triggerForm.dedupe_window_seconds}
+                    onChange={(e) => setTriggerForm((f) => ({ ...f, dedupe_window_seconds: Number(e.target.value) }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                  />
+                  <p className="mt-0.5 text-[10px] text-gray-400">0 = no dedupe</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Max Concurrent Runs</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={triggerForm.max_concurrent_runs}
+                    onChange={(e) => setTriggerForm((f) => ({ ...f, max_concurrent_runs: e.target.value }))}
+                    placeholder="unlimited"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="trigger_enabled"
+                  checked={triggerForm.enabled}
+                  onChange={(e) => setTriggerForm((f) => ({ ...f, enabled: e.target.checked }))}
+                  className="rounded"
+                />
+                <label htmlFor="trigger_enabled" className="text-sm text-gray-700">Enabled</label>
+              </div>
+
+              {/* Action bar */}
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-100">
+                <button
+                  onClick={async () => {
+                    setTriggerSaving(true);
+                    try {
+                      const reg = await upsertTrigger(procedureId, version, {
+                        trigger_type: triggerForm.trigger_type,
+                        schedule: triggerForm.schedule || null,
+                        webhook_secret: triggerForm.webhook_secret || null,
+                        event_source: triggerForm.event_source || null,
+                        dedupe_window_seconds: triggerForm.dedupe_window_seconds,
+                        max_concurrent_runs: triggerForm.max_concurrent_runs ? Number(triggerForm.max_concurrent_runs) : null,
+                        enabled: triggerForm.enabled,
+                      });
+                      setTriggerReg(reg);
+                      toast("Trigger saved", "success");
+                    } catch (err) {
+                      toast(err instanceof Error ? err.message : "Failed to save trigger", "error");
+                    } finally {
+                      setTriggerSaving(false);
+                    }
+                  }}
+                  disabled={triggerSaving}
+                  className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+                >
+                  {triggerSaving ? "Saving…" : triggerReg ? "Update Trigger" : "Register Trigger"}
+                </button>
+
+                {triggerReg && (
+                  <>
+                    <button
+                      onClick={async () => {
+                        setTriggerFiring(true);
+                        try {
+                          const result = await fireTrigger(procedureId, version);
+                          toast(`Run created: ${result.run_id.slice(0, 12)}…`, "success");
+                        } catch (err) {
+                          toast(err instanceof Error ? err.message : "Failed to fire trigger", "error");
+                        } finally {
+                          setTriggerFiring(false);
+                        }
+                      }}
+                      disabled={triggerFiring}
+                      className="rounded-lg border border-green-300 bg-green-50 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-100 disabled:opacity-50"
+                    >
+                      {triggerFiring ? "Firing…" : "Fire Now"}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await deleteTrigger(procedureId, version);
+                          setTriggerReg(null);
+                          toast("Trigger disabled", "success");
+                        } catch (err) {
+                          toast(err instanceof Error ? err.message : "Failed to remove trigger", "error");
+                        }
+                      }}
+                      className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                    >
+                      Disable
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Registration info */}
+              {triggerReg && (
+                <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-500 space-y-0.5">
+                  <p><span className="text-gray-400">Registered:</span> {new Date(triggerReg.created_at).toLocaleString()}</p>
+                  <p><span className="text-gray-400">Last updated:</span> {new Date(triggerReg.updated_at).toLocaleString()}</p>
+                  <p><span className="text-gray-400">Type:</span> {triggerReg.trigger_type}</p>
+                  {triggerReg.schedule && <p><span className="text-gray-400">Schedule:</span> <code className="font-mono">{triggerReg.schedule}</code></p>}
+                  {triggerReg.dedupe_window_seconds > 0 && <p><span className="text-gray-400">Dedupe window:</span> {triggerReg.dedupe_window_seconds}s</p>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Input Variables Modal */}
       {showVarsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">

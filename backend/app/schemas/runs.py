@@ -26,6 +26,7 @@ class RunOut(BaseModel):
     output_vars: dict[str, Any] | None = None
     total_prompt_tokens: int | None = None
     total_completion_tokens: int | None = None
+    estimated_cost_usd: float | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     duration_seconds: float | None = None
@@ -33,6 +34,8 @@ class RunOut(BaseModel):
     last_step_id: str | None = None
     error_message: str | None = None
     parent_run_id: str | None = None
+    trigger_type: str | None = None
+    triggered_by: str | None = None
     project_id: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -56,6 +59,8 @@ class RunOut(BaseModel):
                 "last_step_id": data.last_step_id,
                 "error_message": data.error_message if hasattr(data, "error_message") else None,
                 "parent_run_id": data.parent_run_id if hasattr(data, "parent_run_id") else None,
+                "trigger_type": getattr(data, "trigger_type", None),
+                "triggered_by": getattr(data, "triggered_by", None),
                 "project_id": data.project_id,
                 "created_at": data.created_at,
                 "updated_at": data.updated_at,
@@ -67,6 +72,7 @@ class RunOut(BaseModel):
             d["output_vars"] = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
             d["total_prompt_tokens"] = getattr(data, "total_prompt_tokens", None)
             d["total_completion_tokens"] = getattr(data, "total_completion_tokens", None)
+            d["estimated_cost_usd"] = getattr(data, "estimated_cost_usd", None)
             # Compute duration
             if d["started_at"] and d["ended_at"]:
                 d["duration_seconds"] = (d["ended_at"] - d["started_at"]).total_seconds()

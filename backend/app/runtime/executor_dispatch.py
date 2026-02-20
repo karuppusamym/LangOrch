@@ -19,16 +19,22 @@ The compiler/binder only tags internal actions — everything else lands here.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from datetime import datetime, timezone
 
 from app.compiler.ir import ExecutorBinding, IRNode, IRStep
 from app.connectors.agent_client import AgentClient
 from app.connectors.mcp_client import MCPClient
 from app.config import settings
 from app.db.models import AgentInstance
+
+# Must match main._CIRCUIT_RESET_SECONDS — agents stay circuit-open for this long
+_CIRCUIT_RESET_SECONDS: int = 300
 
 logger = logging.getLogger("langorch.runtime.dispatch")
 
@@ -98,9 +104,21 @@ async def _find_capable_agent(
         .where(AgentInstance.status == "online")
     )
     result = await db.execute(stmt)
-    agents = result.scalars().all()
+    agents = list(result.scalars().all())
+    # Shuffle to distribute load evenly across equally-capable agents (round-robin effect)
+    random.shuffle(agents)
 
+    now = datetime.now(timezone.utc)
     for agent in agents:
+        # Skip agents whose circuit is currently open (too many recent failures)
+        if agent.circuit_open_at is not None:
+            elapsed = (now - agent.circuit_open_at).total_seconds()
+            if elapsed < _CIRCUIT_RESET_SECONDS:
+                logger.debug(
+                    "Skipping circuit-open agent %s (open for %.0fs / %ds reset)",
+                    agent.agent_id, elapsed, _CIRCUIT_RESET_SECONDS,
+                )
+                continue
         caps = agent.capabilities.split(",") if agent.capabilities else []
         # Empty capabilities or "*" means the agent handles ALL actions for its channel
         if not caps or "*" in caps or action in caps:

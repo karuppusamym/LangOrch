@@ -24,6 +24,7 @@ from app.api.agents import router as agents_router
 from app.api.catalog import router as catalog_router
 from app.api.leases import router as leases_router
 from app.api.projects import router as projects_router
+from app.api.triggers import router as triggers_router
 
 logger = logging.getLogger("langorch.main")
 
@@ -115,6 +116,117 @@ async def _approval_expiry_loop() -> None:
             logger.exception("Error in approval expiry loop")
 
 
+_RETENTION_POLL_INTERVAL = 3600  # hourly
+_FILE_WATCH_POLL_INTERVAL = 60   # every minute
+
+
+async def _checkpoint_retention_loop() -> None:
+    """Background task: prune RunEvent rows for runs older than CHECKPOINT_RETENTION_DAYS."""
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import delete, select
+    from app.db.models import RunEvent, Run
+
+    while True:
+        await asyncio.sleep(_RETENTION_POLL_INTERVAL)
+        retention_days = settings.CHECKPOINT_RETENTION_DAYS
+        if not retention_days or retention_days <= 0:
+            continue
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        try:
+            async with async_session() as db:
+                # Find runs older than cutoff that are terminal (completed/failed/canceled)
+                result = await db.execute(
+                    select(Run.run_id).where(
+                        Run.created_at < cutoff,
+                        Run.status.in_(["completed", "failed", "canceled"]),
+                    )
+                )
+                old_run_ids = [r for (r,) in result.all()]
+                if not old_run_ids:
+                    continue
+                # Prune events for those runs in batches
+                deleted = await db.execute(
+                    delete(RunEvent).where(RunEvent.run_id.in_(old_run_ids))
+                )
+                await db.commit()
+                pruned = deleted.rowcount
+                if pruned:
+                    logger.info(
+                        "Retention: pruned %d run_event rows for %d runs older than %d days",
+                        pruned, len(old_run_ids), retention_days,
+                    )
+        except Exception:
+            logger.exception("Error in checkpoint retention loop")
+
+
+async def _file_watch_trigger_loop() -> None:
+    """Background task: poll file_watch trigger registrations and fire runs when files change."""
+    import os
+    from sqlalchemy import select
+    from app.db.models import TriggerRegistration
+
+    # Track last-seen mtime per trigger registration id
+    _last_mtime: dict[int, float] = {}
+
+    while True:
+        await asyncio.sleep(_FILE_WATCH_POLL_INTERVAL)
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(TriggerRegistration).where(
+                        TriggerRegistration.trigger_type == "file_watch",
+                        TriggerRegistration.enabled == True,  # noqa: E712
+                    )
+                )
+                registrations = result.scalars().all()
+
+            for reg in registrations:
+                try:
+                    # event_source stores the watch path for file_watch triggers
+                    watch_path = reg.event_source
+                    if not watch_path:
+                        continue
+                    if not os.path.exists(watch_path):
+                        continue
+
+                    current_mtime = os.path.getmtime(watch_path)
+                    reg_key = reg.id
+                    last_mtime = _last_mtime.get(reg_key)
+
+                    if last_mtime is None:
+                        # First observation — record baseline, don't fire
+                        _last_mtime[reg_key] = current_mtime
+                        continue
+
+                    if current_mtime > last_mtime:
+                        _last_mtime[reg_key] = current_mtime
+                        logger.info(
+                            "file_watch: change detected on %s — firing trigger for %s:%s",
+                            watch_path, reg.procedure_id, reg.version,
+                        )
+                        try:
+                            from app.services.trigger_service import fire_trigger
+                            async with async_session() as db:
+                                await fire_trigger(
+                                    db,
+                                    procedure_id=reg.procedure_id,
+                                    version=reg.version,
+                                    trigger_type="file_watch",
+                                    triggered_by=watch_path,
+                                    input_vars={"file_watch_path": watch_path, "file_mtime": current_mtime},
+                                )
+                                await db.commit()
+                        except Exception:
+                            logger.exception(
+                                "file_watch: failed to fire trigger for %s:%s",
+                                reg.procedure_id, reg.version,
+                            )
+                except Exception:
+                    logger.exception("file_watch: error processing registration id=%s", reg.id)
+        except Exception:
+            logger.exception("Error in file_watch trigger loop")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create tables on startup (dev convenience — use Alembic in prod)
@@ -130,6 +242,9 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
         "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
         "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
+        "ALTER TABLE runs ADD COLUMN trigger_type VARCHAR(32)",
+        "ALTER TABLE runs ADD COLUMN triggered_by VARCHAR(256)",
+        "ALTER TABLE runs ADD COLUMN estimated_cost_usd REAL",
     ]
     async with engine.begin() as conn:
         for stmt in _new_cols:
@@ -139,11 +254,30 @@ async def lifespan(app: FastAPI):
                 pass  # column already exists — ignore
     _expiry_task = asyncio.create_task(_approval_expiry_loop())
     _health_task = asyncio.create_task(_agent_health_loop())
+    _retention_task = asyncio.create_task(_checkpoint_retention_loop())
+    _file_watch_task = asyncio.create_task(_file_watch_trigger_loop())
+    # Start trigger scheduler
+    from app.runtime.scheduler import scheduler as _trigger_scheduler
+    _trigger_scheduler.start()
+    # Initial trigger sync from all procedures
+    try:
+        from app.db.engine import async_session as _asm
+        from app.services.trigger_service import sync_triggers_from_procedures as _sync_t
+        async with _asm() as _db:
+            _count = await _sync_t(_db)
+            await _db.commit()
+        if _count:
+            logger.info("Auto-synced %d trigger registrations from procedures", _count)
+    except Exception:
+        logger.exception("Initial trigger sync failed")
     try:
         yield
     finally:
         _expiry_task.cancel()
         _health_task.cancel()
+        _retention_task.cancel()
+        _file_watch_task.cancel()
+        _trigger_scheduler.stop()
         await engine.dispose()
 
 
@@ -172,6 +306,7 @@ app.include_router(agents_router, prefix="/api/agents", tags=["agents"])
 app.include_router(catalog_router, prefix="/api", tags=["catalog"])
 app.include_router(leases_router, prefix="/api/leases", tags=["leases"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
+app.include_router(triggers_router, prefix="/api/triggers", tags=["triggers"])
 
 # ── Serve local artifacts as static files ──────────────────────────────────
 # Agents write artifacts to ARTIFACTS_DIR and return URIs like

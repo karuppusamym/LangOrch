@@ -42,6 +42,7 @@ async def list_procedures(
     project_id: str | None = None,
     status: str | None = None,
     tags: list[str] | None = None,
+    search: str | None = None,
 ) -> list[Procedure]:
     stmt = select(Procedure).order_by(Procedure.created_at.desc())
     if project_id:
@@ -64,7 +65,39 @@ async def list_procedures(
                     filtered.append(proc)
             except Exception:
                 pass
-        return filtered
+        procs = filtered
+    if search:
+        # Full-text keyword search across procedure_id, name, description, and retrieval_metadata
+        _kw = search.lower()
+        matched = []
+        for proc in procs:
+            # Match against procedure_id and name
+            if _kw in (proc.procedure_id or "").lower():
+                matched.append(proc)
+                continue
+            if _kw in (proc.name or "").lower():
+                matched.append(proc)
+                continue
+            if _kw in (proc.description or "").lower():
+                matched.append(proc)
+                continue
+            # Match against retrieval_metadata fields: intents, domain, keywords, tags
+            if proc.retrieval_metadata_json:
+                try:
+                    import json as _json
+                    meta = _json.loads(proc.retrieval_metadata_json)
+                    meta_str = " ".join([
+                        str(meta.get("domain") or ""),
+                        " ".join(meta.get("intents") or []),
+                        " ".join(meta.get("keywords") or []),
+                        " ".join(meta.get("tags") or []),
+                    ]).lower()
+                    if _kw in meta_str:
+                        matched.append(proc)
+                        continue
+                except Exception:
+                    pass
+        procs = matched
     return procs
 
 
