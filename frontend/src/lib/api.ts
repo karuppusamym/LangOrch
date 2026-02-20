@@ -107,6 +107,7 @@ export async function getGraph(
 /* ── Runs ──────────────────────────────── */
 
 export async function listRuns(params?: {
+  procedure_id?: string;
   status?: string;
   createdFrom?: string;
   createdTo?: string;
@@ -115,6 +116,7 @@ export async function listRuns(params?: {
   offset?: number;
 }): Promise<Run[]> {
   const q = new URLSearchParams();
+  if (params?.procedure_id) q.set("procedure_id", params.procedure_id);
   if (params?.status && params.status !== "all") q.set("status", params.status);
   if (params?.createdFrom) q.set("created_from", params.createdFrom);
   if (params?.createdTo) q.set("created_to", params.createdTo);

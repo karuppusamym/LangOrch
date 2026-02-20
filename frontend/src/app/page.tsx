@@ -26,7 +26,7 @@ export default function DashboardPage() {
     try {
       const [procs, runs, approvals, agents, projects] = await Promise.all([
         listProcedures(),
-        listRuns(),
+        listRuns({ limit: 8 }),
         listApprovals(),
         listAgents(),
         listProjects(),
@@ -42,7 +42,7 @@ export default function DashboardPage() {
         pendingApprovals: approvals.filter((a) => a.status === "pending").length,
         onlineAgents: agents.filter((a) => a.status === "online").length,
         projects: projects.length,
-        recentRuns: runs.slice(0, 8),
+        recentRuns: runs,
         runsByStatus,
       });
       getMetricsSummary().then(setMetrics).catch(() => null);

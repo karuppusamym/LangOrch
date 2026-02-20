@@ -23,6 +23,9 @@ class RunOut(BaseModel):
     thread_id: str
     status: str
     input_vars: dict[str, Any] | None = None
+    output_vars: dict[str, Any] | None = None
+    total_prompt_tokens: int | None = None
+    total_completion_tokens: int | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     duration_seconds: float | None = None
@@ -57,9 +60,13 @@ class RunOut(BaseModel):
                 "created_at": data.created_at,
                 "updated_at": data.updated_at,
             }
-            # Parse input_vars from JSON string
+            # Parse input_vars / output_vars from JSON string
             raw = data.input_vars_json
             d["input_vars"] = json.loads(raw) if isinstance(raw, str) and raw else raw
+            raw_out = getattr(data, "output_vars_json", None)
+            d["output_vars"] = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
+            d["total_prompt_tokens"] = getattr(data, "total_prompt_tokens", None)
+            d["total_completion_tokens"] = getattr(data, "total_completion_tokens", None)
             # Compute duration
             if d["started_at"] and d["ended_at"]:
                 d["duration_seconds"] = (d["ended_at"] - d["started_at"]).total_seconds()
@@ -69,6 +76,9 @@ class RunOut(BaseModel):
             if "input_vars_json" in data and "input_vars" not in data:
                 raw = data.get("input_vars_json")
                 data["input_vars"] = json.loads(raw) if isinstance(raw, str) and raw else raw
+            if "output_vars_json" in data and "output_vars" not in data:
+                raw_out = data.get("output_vars_json")
+                data["output_vars"] = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
             if data.get("started_at") and data.get("ended_at") and "duration_seconds" not in data:
                 data["duration_seconds"] = (data["ended_at"] - data["started_at"]).total_seconds()
         return data

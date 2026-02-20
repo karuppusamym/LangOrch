@@ -35,6 +35,8 @@ class AgentInstanceOut(BaseModel):
     concurrency_limit: int
     resource_key: str
     capabilities: list[str] = []
+    consecutive_failures: int = 0
+    circuit_open_at: datetime | None = None
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -70,6 +72,8 @@ class AgentInstanceOut(BaseModel):
                 "concurrency_limit": data.concurrency_limit,
                 "resource_key": data.resource_key,
                 "capabilities": parsed_caps,
+                "consecutive_failures": getattr(data, "consecutive_failures", 0) or 0,
+                "circuit_open_at": getattr(data, "circuit_open_at", None),
                 "updated_at": data.updated_at,
             }
 

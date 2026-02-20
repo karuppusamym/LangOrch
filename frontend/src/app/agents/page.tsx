@@ -15,6 +15,14 @@ const STATUS_COLORS: Record<string, string> = {
   busy:    "bg-yellow-500",
 };
 
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
 export default function AgentsPage() {
   const [agents, setAgents]   = useState<AgentInstance[]>([]);
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
@@ -50,7 +58,7 @@ export default function AgentsPage() {
       const unique = [...new Set(data.map((a) => a.channel))];
       setRegisteredChannels(unique);
     } catch (err) {
-      console.error(err);
+      toast(err instanceof Error ? err.message : "Failed to load agents", "error");
     } finally {
       setLoading(false);
     }
@@ -376,7 +384,7 @@ export default function AgentsPage() {
           {agents.map((agent) => (
             <div
               key={agent.agent_id}
-              className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm"
+              className={`rounded-xl border bg-white p-5 shadow-sm ${agent.circuit_open_at ? "border-red-300 ring-1 ring-red-200" : "border-gray-200"}`}
             >
               <div className="flex items-center justify-between">
                 <h3 className="font-medium text-gray-900">{agent.name}</h3>
@@ -390,6 +398,33 @@ export default function AgentsPage() {
                 <p><span className="text-gray-400">URL:</span> {agent.base_url}</p>
                 <p><span className="text-gray-400">Resource:</span> {agent.resource_key}</p>
                 <p><span className="text-gray-400">Concurrency:</span> {agent.concurrency_limit}</p>
+                <p className="text-gray-400">
+                  Last seen:{" "}
+                  <span className={`font-medium ${
+                    Date.now() - new Date(agent.updated_at).getTime() < 120_000
+                      ? "text-green-600"
+                      : Date.now() - new Date(agent.updated_at).getTime() < 600_000
+                      ? "text-yellow-600"
+                      : "text-red-500"
+                  }`}>
+                    {formatRelativeTime(agent.updated_at)}
+                  </span>
+                </p>
+                {agent.circuit_open_at && (
+                  <p className="mt-1 flex items-center gap-1.5">
+                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+                      ⚡ circuit open · {agent.consecutive_failures} failure{agent.consecutive_failures !== 1 ? "s" : ""}
+                    </span>
+                    <span className="text-gray-400">since {formatRelativeTime(agent.circuit_open_at)}</span>
+                  </p>
+                )}
+                {!agent.circuit_open_at && agent.consecutive_failures > 0 && (
+                  <p className="mt-0.5">
+                    <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-[10px] font-semibold text-yellow-700">
+                      ⚠ {agent.consecutive_failures} consecutive failure{agent.consecutive_failures !== 1 ? "s" : ""}
+                    </span>
+                  </p>
+                )}
               </div>
               {agent.capabilities.length > 0 && (
                 <div className="mt-3">

@@ -123,8 +123,11 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
     for idx, nid in enumerate(bfs_order):
         node = raw_nodes[nid]
         ntype = node.get("type", "sequence")
-        label = node.get("description") or nid.replace("_", " ").title()
+        # Use node-ID as the card title, description field as the subtitle
+        label = nid.replace("_", " ").title()
+        description = node.get("description") or None
         agent = node.get("agent")
+        step_count = len(node.get("steps", []))
 
         out_nodes.append(
             {
@@ -132,10 +135,12 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
                 "type": ntype,
                 "data": {
                     "label": label,
+                    "description": description,
                     "nodeType": ntype,
                     "agent": agent,
                     "color": NODE_COLORS.get(ntype, "#9CA3AF"),
                     "isStart": nid == start_node,
+                    "stepCount": step_count,
                 },
                 "position": {
                     "x": (idx % cols) * col_width,
@@ -180,5 +185,11 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
                 bid = branch.get("branch_id", "")
                 sn = branch.get("start_node")
                 _add_edge(nid, sn, label=f"branch:{bid}" if bid else "", animated=True)
+
+    # Mark end nodes (no outgoing edges except the start node)
+    edge_sources = {e["source"] for e in out_edges}
+    for n in out_nodes:
+        is_start = n["data"].get("isStart", False)
+        n["data"]["isEnd"] = n["id"] not in edge_sources and not is_start
 
     return {"nodes": out_nodes, "edges": out_edges}

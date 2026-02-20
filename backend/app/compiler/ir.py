@@ -16,6 +16,22 @@ class ExecutorBinding:
     mode: str = "step"  # "step" | "batch"
 
 
+# ── Trigger ─────────────────────────────────────────────────────
+
+
+@dataclass
+class IRTrigger:
+    """Parsed representation of the CKP top-level `trigger` field."""
+    type: str = "manual"  # manual | scheduled | webhook | event | file_watch
+    schedule: str | None = None          # cron expression
+    webhook_secret: str | None = None    # HMAC-SHA256 secret key name
+    event_source: str | None = None      # Kafka topic / SQS queue name
+    file_watch_path: str | None = None   # S3/blob path pattern
+    dedupe_window_seconds: int = 0       # 0 = no dedupe
+    max_concurrent_runs: int | None = None
+    raw: dict[str, Any] = field(default_factory=dict)  # original CKP block
+
+
 # ── Step ────────────────────────────────────────────────────────
 
 
@@ -236,3 +252,4 @@ class IRProcedure:
     nodes: dict[str, IRNode] = field(default_factory=dict)
     provenance: dict[str, Any] | None = None
     retrieval_metadata: dict[str, Any] | None = None
+    trigger: "IRTrigger | None" = None

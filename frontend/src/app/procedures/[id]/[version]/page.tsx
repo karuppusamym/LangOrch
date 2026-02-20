@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure } from "@/lib/api";
+import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { ProcedureDetail, Procedure, ExplainReport } from "@/lib/types";
+import type { ProcedureDetail, Procedure, ExplainReport, Run } from "@/lib/types";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import { isFieldSensitive } from "@/lib/redact";
 
@@ -68,10 +68,10 @@ export default function ProcedureVersionDetailPage() {
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain">(
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain" | "runs">(
     () => {
       const t = searchParams.get("tab");
-      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain") ? t : "overview";
+      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain" || t === "runs") ? t : "overview";
     }
   );
   const [editMode, setEditMode] = useState(false);
@@ -81,6 +81,8 @@ export default function ProcedureVersionDetailPage() {
   const [ckpText, setCkpText] = useState("");
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
@@ -381,7 +383,7 @@ export default function ProcedureVersionDetailPage() {
       </div>
 
       <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "graph", "explain", "ckp", "versions"] as const).map((tab) => (
+        {(["overview", "graph", "explain", "ckp", "versions", "runs"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => {
@@ -397,6 +399,13 @@ export default function ProcedureVersionDetailPage() {
                     setExplainError(msg);
                   })
                   .finally(() => setExplainLoading(false));
+              }
+              if (tab === "runs" && procedureRuns.length === 0 && !runsLoading) {
+                setRunsLoading(true);
+                listRuns({ procedure_id: procedureId })
+                  .then(setProcedureRuns)
+                  .catch(console.error)
+                  .finally(() => setRunsLoading(false));
               }
             }}
             className={`px-4 py-2 text-sm font-medium ${
@@ -780,6 +789,49 @@ export default function ProcedureVersionDetailPage() {
                 </div>
               )}
             </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "runs" && (
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <h3 className="mb-4 text-sm font-semibold text-gray-900">Runs for this procedure</h3>
+          {runsLoading ? (
+            <p className="text-sm text-gray-400">Loading runs…</p>
+          ) : procedureRuns.length === 0 ? (
+            <p className="text-sm text-gray-400">No runs yet.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-xs text-gray-500">
+                  <th className="py-2 text-left font-medium">Run ID</th>
+                  <th className="py-2 text-left font-medium">Status</th>
+                  <th className="py-2 text-left font-medium">Started</th>
+                  <th className="py-2 text-left font-medium">Duration</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {procedureRuns.map((r) => (
+                  <tr key={r.run_id} className="hover:bg-gray-50">
+                    <td className="py-2">
+                      <Link href={`/runs/${r.run_id}`} className="font-mono text-xs text-primary-600 hover:underline">
+                        {r.run_id.slice(0, 14)}…
+                      </Link>
+                    </td>
+                    <td className="py-2">
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        r.status === "completed" ? "bg-green-100 text-green-700" :
+                        r.status === "failed" ? "bg-red-100 text-red-700" :
+                        r.status === "running" ? "bg-blue-100 text-blue-700" :
+                        "bg-gray-100 text-gray-600"
+                      }`}>{r.status}</span>
+                    </td>
+                    <td className="py-2 text-xs text-gray-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
+                    <td className="py-2 text-xs text-gray-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}

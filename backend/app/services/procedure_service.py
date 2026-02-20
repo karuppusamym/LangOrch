@@ -28,6 +28,7 @@ async def import_procedure(db: AsyncSession, ckp: dict[str, Any], project_id: st
         ckp_json=json.dumps(ckp),
         provenance_json=json.dumps(ckp["provenance"]) if ckp.get("provenance") else None,
         retrieval_metadata_json=json.dumps(ckp["retrieval_metadata"]) if ckp.get("retrieval_metadata") else None,
+        trigger_config_json=json.dumps(ckp["trigger"]) if ckp.get("trigger") else None,
         project_id=project_id,
     )
     db.add(proc)
@@ -111,6 +112,8 @@ async def update_procedure(
         proc.provenance_json = json.dumps(ckp["provenance"]) if ckp["provenance"] else None
     if "retrieval_metadata" in ckp:
         proc.retrieval_metadata_json = json.dumps(ckp["retrieval_metadata"]) if ckp["retrieval_metadata"] else None
+    if "trigger" in ckp:
+        proc.trigger_config_json = json.dumps(ckp["trigger"]) if ckp["trigger"] else None
     await db.flush()
     await db.refresh(proc)
     return proc

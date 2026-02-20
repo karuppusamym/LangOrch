@@ -38,6 +38,7 @@ class ProcedureDetail(ProcedureOut):
     ckp_json: dict[str, Any]
     provenance: dict[str, Any] | None = None
     retrieval_metadata: dict[str, Any] | None = None
+    trigger: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -54,4 +55,8 @@ class ProcedureDetail(ProcedureOut):
             data.retrieval_metadata = json.loads(data.retrieval_metadata_json)
         elif hasattr(data, "retrieval_metadata_json") and data.retrieval_metadata_json is None:
             data.retrieval_metadata = None
+        if hasattr(data, "trigger_config_json") and isinstance(data.trigger_config_json, str):
+            data.trigger = json.loads(data.trigger_config_json)
+        elif hasattr(data, "trigger_config_json"):
+            data.trigger = None
         return data

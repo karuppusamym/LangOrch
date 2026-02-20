@@ -42,6 +42,7 @@ async def create_run(
 
 async def list_runs(
     db: AsyncSession,
+    procedure_id: str | None = None,
     project_id: str | None = None,
     status: str | None = None,
     created_from: datetime | None = None,
@@ -51,6 +52,8 @@ async def list_runs(
     offset: int = 0,
 ) -> list[Run]:
     stmt = select(Run)
+    if procedure_id:
+        stmt = stmt.where(Run.procedure_id == procedure_id)
     if project_id:
         stmt = stmt.where(Run.project_id == project_id)
     if status:

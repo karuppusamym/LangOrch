@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { getProcedure, createRun, getGraph, listVersions } from "@/lib/api";
+import { getProcedure, createRun, getGraph, listVersions, listRuns } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
-import type { ProcedureDetail, Procedure } from "@/lib/types";
+import type { ProcedureDetail, Procedure, Run } from "@/lib/types";
 
 const WorkflowGraph = dynamic(
   () => import("@/components/WorkflowGraphWrapper"),
@@ -22,9 +22,11 @@ export default function ProcedureDetailPage() {
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "runs">("overview");
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
@@ -255,12 +257,19 @@ export default function ProcedureDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "graph", "ckp", "versions"] as const).map((tab) => (
+        {(["overview", "graph", "ckp", "versions", "runs"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => {
               setActiveTab(tab);
               if (tab === "graph") loadGraph();
+              if (tab === "runs" && procedureRuns.length === 0 && !runsLoading) {
+                setRunsLoading(true);
+                listRuns({ procedure_id: procedureId })
+                  .then(setProcedureRuns)
+                  .catch(console.error)
+                  .finally(() => setRunsLoading(false));
+              }
             }}
             className={`px-4 py-2 text-sm font-medium ${
               activeTab === tab

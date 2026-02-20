@@ -31,8 +31,13 @@ _EXPIRY_POLL_INTERVAL = 30  # seconds
 _HEALTH_POLL_INTERVAL = 60  # seconds
 
 
+_CIRCUIT_OPEN_THRESHOLD = 3  # consecutive failures before opening circuit
+_CIRCUIT_RESET_SECONDS = 300  # auto-reset circuit after 5 min
+
+
 async def _agent_health_loop() -> None:
-    """Background task: ping every registered agent's /health endpoint and update status."""
+    """Background task: ping every registered agent's /health endpoint,
+    update status, and manage circuit breaker state."""
     import httpx
     from datetime import datetime, timezone
     from sqlalchemy import select
@@ -45,17 +50,46 @@ async def _agent_health_loop() -> None:
                 result = await db.execute(select(AgentInstance))
                 agents = result.scalars().all()
                 changed = 0
+                now = datetime.now(timezone.utc)
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     for agent in agents:
+                        # Auto-reset circuit after threshold
+                        if agent.circuit_open_at is not None:
+                            elapsed = (now - agent.circuit_open_at).total_seconds()
+                            if elapsed >= _CIRCUIT_RESET_SECONDS:
+                                agent.circuit_open_at = None
+                                agent.consecutive_failures = 0
+                                agent.updated_at = now
+                                changed += 1
+                                logger.info(
+                                    "Circuit reset for agent %s after %ds", agent.agent_id, elapsed
+                                )
+                                continue  # don't ping until next cycle
                         try:
                             r = await client.get(f"{agent.base_url.rstrip('/')}/health")
-                            new_status = "online" if r.status_code == 200 else "offline"
+                            is_ok = r.status_code == 200
                         except Exception:
-                            new_status = "offline"
-                        if agent.status != new_status:
-                            agent.status = new_status
-                            agent.updated_at = datetime.now(timezone.utc)
+                            is_ok = False
+
+                        new_status = "online" if is_ok else "offline"
+                        if is_ok:
+                            if agent.consecutive_failures > 0 or agent.status != "online":
+                                agent.consecutive_failures = 0
+                                agent.circuit_open_at = None
+                                agent.status = "online"
+                                agent.updated_at = now
+                                changed += 1
+                        else:
+                            agent.consecutive_failures = (agent.consecutive_failures or 0) + 1
+                            agent.status = "offline"
+                            agent.updated_at = now
                             changed += 1
+                            if agent.consecutive_failures >= _CIRCUIT_OPEN_THRESHOLD and agent.circuit_open_at is None:
+                                agent.circuit_open_at = now
+                                logger.warning(
+                                    "Circuit OPEN for agent %s after %d consecutive failures",
+                                    agent.agent_id, agent.consecutive_failures,
+                                )
                 if changed:
                     await db.commit()
                     logger.info("Updated status for %d agent(s)", changed)
@@ -90,6 +124,12 @@ async def lifespan(app: FastAPI):
     _new_cols = [
         "ALTER TABLE runs ADD COLUMN error_message TEXT",
         "ALTER TABLE runs ADD COLUMN parent_run_id VARCHAR(64)",
+        "ALTER TABLE runs ADD COLUMN output_vars_json TEXT",
+        "ALTER TABLE runs ADD COLUMN total_prompt_tokens INTEGER",
+        "ALTER TABLE runs ADD COLUMN total_completion_tokens INTEGER",
+        "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
+        "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
+        "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
     ]
     async with engine.begin() as conn:
         for stmt in _new_cols:

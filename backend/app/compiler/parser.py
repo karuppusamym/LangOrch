@@ -25,6 +25,7 @@ from app.compiler.ir import (
     IRTerminatePayload,
     IRTransformOp,
     IRTransformPayload,
+    IRTrigger,
     IRValidation,
     IRVerificationCheck,
     IRVerificationPayload,
@@ -51,10 +52,29 @@ def parse_ckp(ckp: dict[str, Any]) -> IRProcedure:
         nodes=nodes,
         provenance=ckp.get("provenance"),
         retrieval_metadata=ckp.get("retrieval_metadata"),
+        trigger=_parse_trigger(ckp.get("trigger")),
     )
 
 
 # ── Internal helpers ────────────────────────────────────────────
+
+
+def _parse_trigger(raw: dict[str, Any] | None) -> IRTrigger | None:
+    """Parse optional CKP top-level `trigger` block into IRTrigger."""
+    if not raw:
+        return None
+    event_cfg = raw.get("event") or {}
+    file_cfg = raw.get("file_watch") or raw.get("file") or {}
+    return IRTrigger(
+        type=raw.get("type", "manual"),
+        schedule=raw.get("schedule"),
+        webhook_secret=raw.get("webhook_secret"),
+        event_source=event_cfg.get("source") or raw.get("event_source"),
+        file_watch_path=file_cfg.get("path") or raw.get("file_watch_path"),
+        dedupe_window_seconds=int(raw.get("dedupe_window_seconds", 0)),
+        max_concurrent_runs=raw.get("max_concurrent_runs"),
+        raw=raw,
+    )
 
 
 def _parse_node(nid: str, d: dict[str, Any]) -> IRNode:

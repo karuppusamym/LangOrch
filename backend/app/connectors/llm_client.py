@@ -63,9 +63,16 @@ class LLMClient:
 
             message = choices[0].get("message", {})
             text = message.get("content", "")
+            usage = data.get("usage") or {}
             return {
                 "text": text,
                 "raw": data,
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                    "model": data.get("model", ""),
+                },
             }
         except httpx.HTTPStatusError as exc:
             raise LLMCallError(f"HTTP {exc.response.status_code}") from exc

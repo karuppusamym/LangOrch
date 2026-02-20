@@ -58,6 +58,7 @@ class Procedure(Base):
     ckp_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON stored as TEXT
     provenance_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # provenance block
     retrieval_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # retrieval_metadata block
+    trigger_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # parsed trigger block
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
     )
@@ -78,6 +79,9 @@ class Run(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     input_vars_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_vars_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_node_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_step_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -174,6 +178,8 @@ class AgentInstance(Base):
     status: Mapped[str] = mapped_column(String(32), default="online")
     concurrency_limit: Mapped[int] = mapped_column(Integer, default=1)
     resource_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    circuit_open_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

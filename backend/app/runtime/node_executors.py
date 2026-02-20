@@ -818,6 +818,35 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
             "current_node_id": node.node_id,
         }  # type: ignore
 
+    # ── Token tracking ──────────────────────────────────────────
+    usage = llm_result.get("usage", {})
+    prompt_tokens: int = usage.get("prompt_tokens", 0)
+    completion_tokens: int = usage.get("completion_tokens", 0)
+    if (prompt_tokens or completion_tokens) and db_factory:
+        try:
+            from sqlalchemy import select as _select
+            from app.db.models import Run as _Run
+            run_id = state.get("run_id", "")
+            async with db_factory() as _db:
+                _res = await _db.execute(_select(_Run).where(_Run.run_id == run_id))
+                _run = _res.scalar_one_or_none()
+                if _run:
+                    _run.total_prompt_tokens = (_run.total_prompt_tokens or 0) + prompt_tokens
+                    _run.total_completion_tokens = (_run.total_completion_tokens or 0) + completion_tokens
+                    await _db.commit()
+                await run_service.emit_event(
+                    _db, run_id, "llm_usage",
+                    node_id=node.node_id,
+                    payload={
+                        "model": usage.get("model", payload.model),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": usage.get("total_tokens", prompt_tokens + completion_tokens),
+                    },
+                )
+        except Exception as _tok_exc:
+            logger.warning("Failed to persist LLM token usage: %s", _tok_exc)
+
     text = llm_result.get("text", "")
     for key, mapping in payload.outputs.items():
         if mapping in ("text", "raw", "content"):

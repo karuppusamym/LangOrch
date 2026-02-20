@@ -567,10 +567,13 @@ async def execute_run(run_id: str, db_factory) -> None:
                 record_run_completed(run_duration, "failed")
                 asyncio.ensure_future(_fire_alert_webhook(run_id, None))
             else:
+                # Persist final output vars alongside the run record
+                _final_vars = final_state.get("vars", {})
+                run.output_vars_json = json.dumps(_final_vars)
                 await run_service.update_run_status(db, run_id, "completed")
                 await run_service.emit_event(
                     db, run_id, "run_completed",
-                    payload={"outputs": final_state.get("vars", {})}
+                    payload={"outputs": _final_vars}
                 )
                 record_run_completed(run_duration, "completed")
 

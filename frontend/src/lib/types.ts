@@ -15,6 +15,7 @@ export interface ProcedureDetail extends Procedure {
   ckp_json: Record<string, unknown>;
   provenance: Record<string, unknown> | null;
   retrieval_metadata: Record<string, unknown> | null;
+  trigger: Record<string, unknown> | null;
 }
 
 export interface Run {
@@ -24,6 +25,9 @@ export interface Run {
   status: RunStatus;
   thread_id: string;
   input_vars: Record<string, unknown>;
+  output_vars: Record<string, unknown> | null;
+  total_prompt_tokens: number | null;
+  total_completion_tokens: number | null;
   started_at: string | null;
   ended_at: string | null;
   duration_seconds: number | null;
@@ -91,6 +95,8 @@ export interface AgentInstance {
   resource_key: string;
   concurrency_limit: number;
   capabilities: string[];
+  consecutive_failures: number;
+  circuit_open_at: string | null;
   updated_at: string;
 }
 

@@ -342,6 +342,16 @@ export default function RunDetailPage() {
           : <InfoCard label="Last Node" value={run.last_node_id ?? "—"} />}
       </div>
 
+      {/* LLM token usage */}
+      {(run.total_prompt_tokens != null || run.total_completion_tokens != null) && (
+        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2.5 text-xs text-blue-800">
+          <span className="font-semibold">LLM tokens this run:</span>
+          <span>Prompt: <strong>{run.total_prompt_tokens ?? 0}</strong></span>
+          <span>Completion: <strong>{run.total_completion_tokens ?? 0}</strong></span>
+          <span>Total: <strong>{(run.total_prompt_tokens ?? 0) + (run.total_completion_tokens ?? 0)}</strong></span>
+        </div>
+      )}
+
       {/* Input variables */}
       {run.input_vars && Object.keys(run.input_vars).length > 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">

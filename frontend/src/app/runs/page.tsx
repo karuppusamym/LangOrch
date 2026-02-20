@@ -5,6 +5,7 @@ import Link from "next/link";
 import { cleanupRuns, deleteRun, listRuns, cancelRun } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { StatusBadge } from "@/components/shared/StatusBadge";
+import { useToast } from "@/components/Toast";
 import type { Run } from "@/lib/types";
 
 export default function RunsPage() {
@@ -23,6 +24,7 @@ export default function RunsPage() {
   const [bulkAction, setBulkAction] = useState<"cancel" | "delete" | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const PAGE_SIZE = 100;
+  const { toast } = useToast();
 
   // Auto-refresh every 15s when active runs exist
   useEffect(() => {
@@ -58,6 +60,7 @@ export default function RunsPage() {
       setHasMore(data.length === PAGE_SIZE);
     } catch (err) {
       console.error(err);
+      toast(err instanceof Error ? err.message : "Failed to load runs", "error");
     } finally {
       setLoading(false);
     }
@@ -321,7 +324,6 @@ export default function RunsPage() {
                   </th>
                   <th className="px-6 py-3 font-medium">Run ID</th>
                   <th className="px-6 py-3 font-medium">Procedure</th>
-                  <th className="px-6 py-3 font-medium">Version</th>
                   <th className="px-6 py-3 font-medium">Status</th>
                   <th className="px-6 py-3 font-medium">Created</th>
                   <th className="px-6 py-3 font-medium">Actions</th>
@@ -333,6 +335,7 @@ export default function RunsPage() {
                     <td className="px-3 py-3">
                       <input
                         type="checkbox"
+                        aria-label={`Select run ${run.run_id}`}
                         checked={selectedIds.has(run.run_id)}
                         onChange={() => toggleSelect(run.run_id)}
                         className="rounded"
@@ -346,8 +349,15 @@ export default function RunsPage() {
                       {run.run_id.slice(0, 8)}…
                     </Link>
                   </td>
-                  <td className="px-6 py-3 text-gray-700">{run.procedure_id}</td>
-                  <td className="px-6 py-3 text-gray-400">v{run.procedure_version}</td>
+                  <td className="px-6 py-3">
+                    <Link
+                      href={`/procedures/${encodeURIComponent(run.procedure_id)}`}
+                      className="font-mono text-xs text-primary-600 hover:underline"
+                    >
+                      {run.procedure_id}
+                    </Link>
+                    <span className="ml-1.5 text-[10px] text-gray-400">v{run.procedure_version}</span>
+                  </td>
                   <td className="px-6 py-3">
                     <StatusBadge status={run.status} />
                   </td>

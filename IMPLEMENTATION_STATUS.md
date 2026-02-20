@@ -1,6 +1,6 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-18 (Batch 18: GET agent endpoint, doc reconciliation, dark mode, retry-with-inputs, version diff, artifact preview, bulk ops, SSE approvals, configurable redaction — 362 tests)
+Last updated: 2026-02-18 (Batch 19: LLM token tracking, IRTrigger parsing, unreachable-node detection, agent circuit breaker — frontend token display + circuit breaker UI)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -11,7 +11,7 @@ This document is the single authoritative source for **what is implemented vs wh
 | Domain | Spec Coverage | Implementation | Status |
 |--------|---------------|----------------|---------|
 | CKP compiler (parse → validate → bind) | 100% | 98% | Complete — step retry_config field added |
-| CKP top-level fields (trigger, provenance) | 100% | 70% | trigger not parsed; provenance parsed+stored |
+| CKP top-level fields (trigger, provenance) | 100% | 90% | trigger parsed into IRTrigger + stored as trigger_config_json; provenance parsed+stored |
 | All 11 node type executors | 100% | 100% | Complete |
 | Global config enforcement | 100% | 95% | timeout, on_failure, rate_limit, execution_mode, vars_schema, checkpoint_strategy all enforced |
 | Policy: retry/backoff (global) | 100% | 100% | Complete |
@@ -20,7 +20,7 @@ This document is the single authoritative source for **what is implemented vs wh
 | Policy: timeout/SLA (global) | 100% | 100% | asyncio.wait_for wraps full graph stream |
 | Policy: timeout/SLA (step-level) | 100% | 95% | Agent+MCP+internal steps all wrapped with asyncio.wait_for |
 | Policy: rate limiting | 100% | 80% | max_concurrent_operations + max_requests_per_minute both enforced |
-| Trigger automation | 100% | 0% | Not started |
+| Trigger automation | 100% | 15% | IRTrigger dataclass + parser + stored; executor dispatch not yet wired |
 | Checkpointing + replay | 100% | 100% | checkpoint_strategy="none" supported; is_checkpoint per-node forcing; checkpoint_saved event emitted |
 | Step idempotency | 100% | 95% | Template key evaluation implemented |
 | Multi-agent concurrency (leases) | 100% | 95% | Near-complete |
@@ -35,7 +35,7 @@ This document is the single authoritative source for **what is implemented vs wh
 | Graph extraction API | 100% | 100% | Complete |
 | Dry-run explain API | 100% | 100% | POST /{id}/{version}/explain — static analysis, no execution |
 | Projects CRUD | 100% | 100% | Complete — backend + frontend |
-| Agent capabilities + health polling | 100% | 100% | Complete — capabilities in UI, health loop polls /health |
+| Agent capabilities + health polling | 100% | 100% | Complete — capabilities in UI, health loop polls /health, circuit breaker (threshold=3, reset=300s) |
 | Agent management (update/delete) | 100% | 100% | PUT/DELETE endpoints + frontend buttons |
 | Frontend: core CRUD pages (12 routes) | 100% | 100% | Complete |
 | Frontend: projects page | 100% | 100% | Complete — list/create/edit/delete |

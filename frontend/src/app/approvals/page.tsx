@@ -12,6 +12,9 @@ export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "pending">("pending");
+  const [approverName, setApproverName] = useState(() =>
+    typeof window !== "undefined" ? (localStorage.getItem("approver_name") ?? "") : ""
+  );
   const { toast } = useToast();
 
   async function loadApprovals() {
@@ -41,12 +44,17 @@ export default function ApprovalsPage() {
     return cleanup;
   }, []);
 
+  function saveApproverName(name: string) {
+    setApproverName(name);
+    if (typeof window !== "undefined") localStorage.setItem("approver_name", name);
+  }
+
   async function handleDecision(
     approvalId: string,
     decision: "approved" | "rejected"
   ) {
     try {
-      await submitApprovalDecision(approvalId, decision, "ui_user");
+      await submitApprovalDecision(approvalId, decision, approverName.trim() || "ui_user");
       toast(`Approval ${decision}`, "success");
       loadApprovals();
     } catch (err) {
@@ -96,6 +104,17 @@ export default function ApprovalsPage() {
           All ({approvals.length})
         </button>
         <span className="ml-auto text-[10px] text-gray-400">Live (SSE)</span>
+      </div>
+
+      {/* Approver name */}
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-gray-500 shrink-0">Your name:</label>
+        <input
+          value={approverName}
+          onChange={(e) => saveApproverName(e.target.value)}
+          placeholder="approver name (persisted)"
+          className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-primary-400 focus:outline-none w-56"
+        />
       </div>
 
       {/* Approval list */}

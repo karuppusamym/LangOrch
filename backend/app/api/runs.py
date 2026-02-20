@@ -43,7 +43,8 @@ async def create_run(body: RunCreate, background: BackgroundTasks, db: AsyncSess
         procedure_id=proc.procedure_id,
         procedure_version=proc.version,
         input_vars=body.input_vars,
-        project_id=body.project_id,
+        # inherit project from procedure if caller didn't specify
+        project_id=body.project_id or proc.project_id,
     )
 
     # Ensure run is committed before background worker tries to load it.
@@ -54,6 +55,7 @@ async def create_run(body: RunCreate, background: BackgroundTasks, db: AsyncSess
 
 @router.get("", response_model=list[RunOut])
 async def list_runs(
+    procedure_id: str | None = None,
     project_id: str | None = None,
     status: str | None = None,
     created_from: datetime | None = None,
@@ -65,6 +67,7 @@ async def list_runs(
 ):
     return await run_service.list_runs(
         db,
+        procedure_id=procedure_id,
         project_id=project_id,
         status=status,
         created_from=created_from,

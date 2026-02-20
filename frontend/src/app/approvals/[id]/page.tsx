@@ -16,6 +16,14 @@ export default function ApprovalDetailPage() {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [loading, setLoading] = useState(true);
   const [comment, setComment] = useState("");
+  const [approverName, setApproverName] = useState(() =>
+    typeof window !== "undefined" ? (localStorage.getItem("approver_name") ?? "") : ""
+  );
+
+  function saveApproverName(name: string) {
+    setApproverName(name);
+    if (typeof window !== "undefined") localStorage.setItem("approver_name", name);
+  }
 
   useEffect(() => {
     async function load() {
@@ -36,7 +44,7 @@ export default function ApprovalDetailPage() {
       const updated = await submitApprovalDecision(
         approvalId,
         decision,
-        "ui_user",
+        approverName.trim() || "ui_user",
         comment || undefined
       );
       setApproval(updated);
@@ -121,6 +129,15 @@ export default function ApprovalDetailPage() {
 
         {approval.status === "pending" && (
           <div className="mt-8 space-y-4 border-t border-gray-200 pt-6">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-500 shrink-0">Your name:</label>
+              <input
+                value={approverName}
+                onChange={(e) => saveApproverName(e.target.value)}
+                placeholder="approver name (persisted)"
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-primary-400 focus:outline-none w-56"
+              />
+            </div>
             <textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}
