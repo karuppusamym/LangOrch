@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.db.engine import async_session, get_db
 from app.schemas.approvals import ApprovalDecision, ApprovalOut
 from app.services import approval_service, run_service
-from app.services.execution_service import execute_run
+from app.worker.enqueue import requeue_run
 
 router = APIRouter()
 
@@ -71,7 +71,6 @@ async def get_approval(approval_id: str, db: AsyncSession = Depends(get_db)):
 async def submit_decision(
     approval_id: str,
     body: ApprovalDecision,
-    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     approval = await approval_service.submit_decision(
@@ -99,9 +98,11 @@ async def submit_decision(
             payload={"approval_id": approval.approval_id, "decision": approval.status},
         )
 
-        # Ensure decision/update is persisted before resumed worker starts.
-        await db.commit()
-        background.add_task(execute_run, run.run_id, async_session)
+        # Requeue the run so the worker resumes it promptly (priority=10).
+        # Uses UPDATE on the existing RunJob row to avoid the unique-constraint
+        # violation that would occur if we tried to INSERT a second row for
+        # the same run_id.  get_db commits on exit — atomic with the decision.
+        await requeue_run(db, run.run_id, priority=10)
 
     return approval
 

@@ -56,7 +56,11 @@ async def _agent_health_loop() -> None:
                     for agent in agents:
                         # Auto-reset circuit after threshold
                         if agent.circuit_open_at is not None:
-                            elapsed = (now - agent.circuit_open_at).total_seconds()
+                            # SQLite may return naive datetimes — treat as UTC
+                            circuit_ts = agent.circuit_open_at
+                            if circuit_ts.tzinfo is None:
+                                circuit_ts = circuit_ts.replace(tzinfo=timezone.utc)
+                            elapsed = (now - circuit_ts).total_seconds()
                             if elapsed >= _CIRCUIT_RESET_SECONDS:
                                 agent.circuit_open_at = None
                                 agent.consecutive_failures = 0
@@ -229,29 +233,34 @@ async def _file_watch_trigger_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup (dev convenience — use Alembic in prod)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        if settings.is_sqlite:
+            await conn.run_sync(Base.metadata.create_all)
+        # else: for PostgreSQL, run `alembic upgrade head` before starting the server
     # Idempotent column migrations for new fields (SQLite-safe ADD COLUMN)
-    _new_cols = [
-        "ALTER TABLE runs ADD COLUMN error_message TEXT",
-        "ALTER TABLE runs ADD COLUMN parent_run_id VARCHAR(64)",
-        "ALTER TABLE runs ADD COLUMN output_vars_json TEXT",
-        "ALTER TABLE runs ADD COLUMN total_prompt_tokens INTEGER",
-        "ALTER TABLE runs ADD COLUMN total_completion_tokens INTEGER",
-        "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
-        "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
-        "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
-        "ALTER TABLE runs ADD COLUMN trigger_type VARCHAR(32)",
-        "ALTER TABLE runs ADD COLUMN triggered_by VARCHAR(256)",
-        "ALTER TABLE runs ADD COLUMN estimated_cost_usd REAL",
-    ]
-    async with engine.begin() as conn:
-        for stmt in _new_cols:
-            try:
-                await conn.execute(__import__("sqlalchemy").text(stmt))
-            except Exception:
-                pass  # column already exists — ignore
+    # These are no-ops when the column already exists (catches on duplicate column).
+    # For PostgreSQL, Alembic handles all schema changes — these are skipped.
+    if settings.is_sqlite:
+        _new_cols = [
+            "ALTER TABLE runs ADD COLUMN error_message TEXT",
+            "ALTER TABLE runs ADD COLUMN parent_run_id VARCHAR(64)",
+            "ALTER TABLE runs ADD COLUMN output_vars_json TEXT",
+            "ALTER TABLE runs ADD COLUMN total_prompt_tokens INTEGER",
+            "ALTER TABLE runs ADD COLUMN total_completion_tokens INTEGER",
+            "ALTER TABLE runs ADD COLUMN estimated_cost_usd REAL",
+            "ALTER TABLE runs ADD COLUMN trigger_type VARCHAR(32)",
+            "ALTER TABLE runs ADD COLUMN triggered_by VARCHAR(256)",
+            "ALTER TABLE runs ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
+            "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
+            "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
+        ]
+        async with engine.begin() as conn:
+            for stmt in _new_cols:
+                try:
+                    await conn.execute(__import__("sqlalchemy").text(stmt))
+                except Exception:
+                    pass  # column already exists — ignore
     _expiry_task = asyncio.create_task(_approval_expiry_loop())
     _health_task = asyncio.create_task(_agent_health_loop())
     _retention_task = asyncio.create_task(_checkpoint_retention_loop())
@@ -270,6 +279,16 @@ async def lifespan(app: FastAPI):
             logger.info("Auto-synced %d trigger registrations from procedures", _count)
     except Exception:
         logger.exception("Initial trigger sync failed")
+    # Start embedded durable worker when configured (default for SQLite dev mode)
+    _worker_task: asyncio.Task | None = None
+    if settings.WORKER_EMBEDDED:
+        from app.worker.loop import worker_loop as _worker_loop
+        _worker_task = asyncio.create_task(_worker_loop())
+        logger.info(
+            "Embedded worker started (concurrency=%d, poll_interval=%.1fs)",
+            settings.WORKER_CONCURRENCY,
+            settings.WORKER_POLL_INTERVAL,
+        )
     try:
         yield
     finally:
@@ -278,6 +297,8 @@ async def lifespan(app: FastAPI):
         _retention_task.cancel()
         _file_watch_task.cancel()
         _trigger_scheduler.stop()
+        if _worker_task is not None:
+            _worker_task.cancel()
         await engine.dispose()
 
 

@@ -1,6 +1,6 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-20 (Batch 25: estimated_cost_usd run detail UI, agent selection now shuffled across eligible agents; docs reconciled for CI/triggers/secrets and remaining scale/security gaps)
+Last updated: 2026-02-21 (Batch 28: `_build_template_vars()` injects `{{run_id}}` / `{{procedure_id}}` as built-in template variables; artifact files stored under `artifacts/{run_id}/` — run-scoped, no cross-run collisions; 613 tests passing)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 
@@ -29,7 +29,8 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - Agent dispatch with resource lease acquisition/release
 - Retry with exponential backoff (max_retries, retry_delay_ms, backoff_multiplier)
 - Run event timeline + SSE stream + step/subflow/artifact events
-- Artifact extraction/persistence + artifacts API + frontend rendering
+- Artifact extraction/persistence + artifacts API + frontend rendering; artifact files stored under `artifacts/{run_id}/` — run-scoped, no cross-run file collision
+- `_build_template_vars()` in `node_executors.py` — injects `{{run_id}}` and `{{procedure_id}}` as built-in variables into all node executor template contexts; usable in any CKP step param (e.g. `"path": "artifacts/{{run_id}}/screenshot.png"`)
 - Core CRUD APIs for procedures, runs, approvals, agents, projects, and leases — 35+ endpoints total
 - **Projects API**: full CRUD (`GET/POST/PUT/DELETE /api/projects`), project filter on procedure list
 - **Agent management**: register, update (status/capabilities), delete agents; background health polling every 60 s
@@ -42,6 +43,8 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - **Graph extraction API**: `GET /api/procedures/{id}/{version}/graph` → React Flow-compatible nodes/edges
 - **Workflow graph viewer (frontend)**: interactive React Flow with custom CKP nodes, color-coding, minimap, zoom/pan
 - **549 backend tests** — all passing (current baseline)
+- **Durable worker model**: `app/worker/` package with `loop.py` (poll/claim/execute/stall-reclaim), `heartbeat.py` (lock renewal + cancel bridge), `worker_main.py` (standalone entrypoint), `enqueue_run` (new runs) + `requeue_run` (approval-resume + retry, SELECT-UPDATE-or-INSERT avoiding UNIQUE constraint violation on `run_jobs.run_id`); embedded in server via `asyncio.create_task`; SQLite optimistic-locking and PostgreSQL `FOR UPDATE SKIP LOCKED` dialects both implemented
+- **613 backend tests** — all passing after Batch 27
 - 12-route frontend: Dashboard, Procedures (list/detail/edit/version-diff), Runs (list/detail/timeline/bulk-ops), Approvals (inbox/detail/SSE-live), Agents, Projects, Leases
 - **Dark mode**: system-preference-aware toggle in header, persisted to localStorage
 - **Retry with modified inputs**: run detail retry button opens variables editor pre-filled with original inputs
@@ -52,35 +55,30 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - **Configurable redaction**: `build_patterns()` merges CKP `audit_config.redacted_fields` with default patterns
 
 ### Partially implemented
-- ~~Secrets handling: env/vault working; AWS Secrets Manager and Azure Key Vault are stubs with env fallback~~ → ✅ All 4 providers fully implemented (Batch 21)
-- Telemetry fields: `track_duration` and `track_retries` emitted in step events; `custom_metrics` recorded; not exported to external backends
-- Approval flow exists, but no role-based approver governance
-- ~~Error handlers fully parsed into IR but NOT executed at runtime~~ → ✅ Fully dispatched (Batches 7 + 15)
-- ~~`wait`/`wait_after_ms` stored in steps but the `wait` action is a no-op placeholder~~ → ✅ `asyncio.sleep` enforced (Batch 10)
-- ~~`idempotency_key` custom templates stored but not evaluated~~ → ✅ Jinja2 template rendering applied (Batch 7)
+- Telemetry fields: `track_duration` and `track_retries` emitted in step events; `custom_metrics` recorded; not yet exported to external backends
+- Approval flow exists, but no role-based approver governance (AuthN/AuthZ parked)
+- Agent pool model: channel-based shuffle distribution done; `pool_id` + deterministic fair round-robin not yet implemented
 
 ### Not yet implemented (high impact gaps)
-- AuthN/AuthZ and policy enforcement
-- HA-safe scheduling/trigger semantics for multi-replica deployments (leader election or external scheduler; no double-fire)
-- ~~Step/node timeout enforcement~~ → ✅ `asyncio.wait_for` wraps agent_http, mcp_tool, and internal steps (Batch 10)
-- ~~SLA monitoring~~ → ✅ `sla.max_duration_ms` tracked, `sla_breached` events emitted, escalation/fail enforced (Batches 5 + 13)
-- ~~Stale lease management~~ → ✅ `GET/DELETE /api/leases` endpoints + frontend /leases page implemented
-- ~~Rate limiting~~ → ✅ `max_concurrent_operations` (semaphore) + `max_requests_per_minute` (token bucket) enforced (Batches 6 + 8)
-- ~~Frontend: no diagnostics/metrics pages, no input variables form~~ → ✅ All implemented (diagnostics tab, metrics panel, input vars form)
-- Artifact metadata normalization/retention controls are limited
-- Visual workflow builder/editor (read-only viewer exists)
-- Automated frontend tests (Playwright e2e and/or unit tests)
+- **AuthN/AuthZ** — all 35+ API endpoints are open; no identity, no roles, no audit attribution
+- **HA-safe scheduling** — APScheduler cron worker fires triggers but will double-fire under multiple replicas; no leader election
+- **Artifact retention/TTL** — run-scoped paths (`artifacts/{run_id}/`) prevent collision but old folders are never purged
+- **Visual workflow builder/editor** — read-only React Flow graph viewer exists; editable authoring not started
+- **Metrics export to external backend** — Prometheus `/api/metrics` endpoint exists but nothing ships to Grafana/OTel remote write
+- **Frontend tests** — no Playwright e2e or unit tests (0%)
 
 ---
 
 ## Gap analysis by domain
 
 ## 1) Execution correctness and recoverability
-### Current — UPDATED 2026-02-18
+### Current — UPDATED 2026-02-21 (Batch 28)
 - ✅ Durable graph execution with LangGraph SQLite checkpointer
 - ✅ `GET /api/runs/{id}/diagnostics` — idempotency entries, active leases, event counts, retry markers
 - ✅ `GET /api/runs/{id}/checkpoints` — full checkpoint introspection
 - ✅ Retry with exponential backoff (max_retries, delay_ms, backoff_multiplier) enforced globally
+- ✅ `_build_template_vars()` — `{{run_id}}` and `{{procedure_id}}` available as built-in template variables in every CKP step parameter
+- ✅ Run-scoped artifact storage — `artifacts/{run_id}/` subfolder per run; no cross-run collisions
 
 ### Remaining gaps
 - ~~Error handlers (`recovery_steps`, `fallback_node`, `retry_policy`) are parsed into IR but NOT executed~~ → ✅ Fully implemented (Batches 7 + 15)
@@ -147,10 +145,8 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - ~~`telemetry` fields parsed but not acted on~~ → ✅ `track_duration` + `track_retries` emitted in step events; `custom_metrics` recorded (Batches 10 + 11)
 
 ### Next implementation items
-- ~~Track node execution start time vs `sla.max_duration_ms`, emit `sla_breached` event~~ → ✅ Done (Batch 13)
-- ~~Add Prometheus-compatible `/metrics` endpoint using existing in-memory MetricsCollector~~ → ✅ Done (Batch 13)
-- ~~Add alert hooks (configurable webhook or log-based) for `run_failed` and stuck runs~~ → ✅ Done (Batch 13)
-- Export metrics to external Prometheus/OpenTelemetry backend (currently in-memory only)
+- Export metrics to external Prometheus/OpenTelemetry backend (in-memory only; endpoint exists)
+- Add artifact retention/cleanup policy: configurable TTL + background sweep of `artifacts/{run_id}/` folders older than N days
 
 ## 5) Frontend operations UX
 ### Current — UPDATED 2026-02-17
@@ -195,7 +191,9 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - ✅ **460 backend tests** (Batch 22): Dynamic internal step timeout fix, screenshot_on_fail events, mock_external_calls/test_data_overrides, procedure keyword search, checkpoint retention loop, file_watch trigger loop, GitHub Actions CI
 - ✅ **488 backend tests** (Batch 23): Compiler validation hardening (recursive subflow self-reference, template variable enforcement, action/channel compatibility check), agent circuit-breaker dispatch skip, LLM estimated_cost_usd per-run accumulation + per-model cost table, GET /api/projects/{id}/cost-summary endpoint
 - ✅ **515 backend tests** (Batch 24): Frontend LLM/agent step detail panel (llm_usage event display, model/token chips, duration_ms pill), approval SLA overdue indicators, backend integration tests (parallel branch, checkpoint resume, approval decision flow, subflow IR); bugfix: execute_llm_action run_service scope
-- ✅ **549 backend tests** (Batch 25): estimated_cost_usd on run detail UI; agent dispatch now shuffles eligible agents per channel (load distribution, not strict round-robin); confirmed mock_external_calls/test_data_overrides/dry_run/screenshot_on_fail/checkpoint_retention_loop all wired
+  ✅ **549 backend tests** (Batch 25): estimated_cost_usd on run detail UI; agent dispatch shuffles eligible agents per channel; confirmed mock/test_data_overrides/dry_run/screenshot_on_fail/checkpoint_retention_loop all wired
+- ✅ **582 backend tests** (Batch 26): SQLite/PG dual-dialect engine; Alembic setup + `v001_initial_schema` migration; `RunJob` ORM; `cancellation_requested` on `Run`; dialect-aware checkpointer
+- ✅ **613 backend tests** (Batch 27): Full durable worker model — `app/worker/` package; `enqueue_run` + `requeue_run`; embedded worker; stall recovery; heartbeat; DB-level cancellation bridge; approval-resume UNIQUE constraint bug fixed
 
 ### Remaining gaps
 - Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
@@ -449,8 +447,8 @@ This is the minimum set of work to call the system production-ready. Items marke
   - Deliverables: leader election or external scheduler; idempotent trigger firing; strong dedupe under concurrency
   - Acceptance: two orchestrator replicas can run without double-firing schedules or creating duplicate runs
 - **Durable worker model** (survive restarts, scale out)
-  - Deliverables: separate API vs execution workers (queue or DB-backed job table); retry-at-job level; safe cancellation
-  - Acceptance: orchestrator restart does not lose in-flight work; workers can be scaled horizontally without duplicate execution
+  - ✅ **DONE (Batch 27)**: `app/worker/` package: poll-and-claim loop (`loop.py`), heartbeat/lock renewal (`heartbeat.py`), standalone entrypoint (`worker_main.py`); `enqueue_run` for new runs; `requeue_run` (SELECT-UPDATE-or-INSERT) for approval-resume and retry; SQLite + PostgreSQL claim dialects; embedded worker in server process via `asyncio.create_task`; stalled-job recovery; DB-level `cancellation_requested` flag bridges cancel signal across restarts
+  - Remaining: external worker process at scale (run `worker_main.py` separately), horizontal worker scaling, worker count/concurrency tuning docs
 - **Production database + migrations**
   - Deliverables: Postgres (or equivalent), Alembic migrations, indexes for hot queries (runs/events/approvals/leases), backup/restore procedure
   - Acceptance: schema upgrades are repeatable and reversible; query latency remains stable under realistic event volumes
@@ -492,15 +490,12 @@ Goal: ship the minimum **safe deployment baseline** (security + HA correctness +
 - Ensure dedupe/concurrency controls apply identically across replicas
 - Acceptance: two backend replicas running simultaneously do not double-create scheduled runs
 
-3) **Durable worker model (API/worker split)**
-- Introduce a durable run “job” record / queue abstraction and an execution worker loop
-- Keep API node responsible for: validation, enqueue, status endpoints; workers responsible for execution
-- Acceptance: restarting the API does not drop work; multiple workers can scale out without duplicate execution
+3) ~~**Durable worker model (API/worker split)**~~ ✅ **DONE (Batch 27)**
+- `app/worker/` package: `enqueue_run` (new runs) + `requeue_run` (approval-resume/retry); poll-and-claim loop with SQLite optimistic lock + PostgreSQL `FOR UPDATE SKIP LOCKED`; heartbeat task renews lock + bridges `cancellation_requested` DB flag to in-process `asyncio.Event`; stall recovery requeues jobs with expired locks; embedded in server process; `worker_main.py` for standalone deployment
+- Approval decision and retry now use `requeue_run` — fixes prior silent UNIQUE-constraint violation that lost approval decisions
 
-4) **Production DB + migrations**
-- Add Alembic (or equivalent) migrations for all tables and required indexes
-- Add Postgres config and a migration-run step in deploy/CI
-- Acceptance: clean deploy from scratch runs all migrations; upgrades are repeatable
+4) ~~**Production DB + migrations**~~ ✅ **DONE (Batch 26)**
+- Alembic `v001_initial_schema` migration covers all tables including `run_jobs`; `sync_db_url()` converts async URL to sync for Alembic; PostgreSQL `asyncpg` engine supported; `alembic upgrade head` required before starting with PostgreSQL
 
 5) **Verification / release gates**
 - Add at least 1 “smoke” integration test that runs a minimal procedure end-to-end (create → run → events)
@@ -677,13 +672,15 @@ Non-goals for this sprint (explicitly deferred): multi-tenancy, editable workflo
 |---|---|---|
 | Identity & Governance (AuthN/AuthZ) | 0% — all endpoints open | CRITICAL |
 | Trigger Automation (cron/webhook/event/file_watch) | 100% — Batch 20 + Batch 22 | COMPLETE |
+| **Durable Worker Model** | **100% — Batch 27: RunJob queue, poll/claim/execute, heartbeat, stall recovery, embedded + standalone modes** | **COMPLETE** |
+| **Production DB + Migrations (Alembic)** | **85% — Batch 26: Alembic + v001 migration + PostgreSQL asyncpg; indexes and backup/restore docs still needed** | **LOW** |
+| **CI/CD Pipeline** | **100% — Batch 22: GitHub Actions (ruff + pytest + tsc + next build)** | **COMPLETE** |
 | Multi-tenancy | 0% — single tenant DB | HIGH |
-| LLM Cost Visibility | 0% — no token tracking | HIGH |
-| Agent Pool / Circuit Breaker | circuit breaker wired (dispatch skip); single-agent pool | HIGH |
+| **LLM Cost Visibility** | **100% — Batch 23: token tracking + estimated_cost_usd + project cost-summary API; Batch 25: run detail UI** | **COMPLETE** |
+| Agent Pool / Circuit Breaker | circuit breaker wired (Batch 23); shuffle-based load distribution (Batch 25); pool_id + fair RR remaining | MEDIUM |
 | Procedure Environment Promotion | no dev→staging→prod path | HIGH |
-| CI/CD Pipeline | 0% — no gates | HIGH |
 | Frontend E2E Tests | 0% | HIGH |
-| AWS/Azure Secrets Adapters | stub only | MEDIUM |
+| **AWS/Azure Secrets Adapters** | **100% — Batch 21: AWS Secrets Manager (boto3) + Azure Key Vault (DefaultAzureCredential) fully implemented** | **COMPLETE** |
 | PII Masking before external LLM calls | not present | MEDIUM |
 | Data Residency / Compliance Labels | not present | MEDIUM |
 | Approval RBAC governance | any caller can approve | MEDIUM |
@@ -898,7 +895,7 @@ For regulated industries — enforce at compile time, not audit time:
 
 ---
 
-## Prioritised Next-Sprint Picks (post-Batch 18)
+## Prioritised Next-Sprint Picks (post-Batch 28)
 
 Ordered by enterprise value vs implementation cost:
 
@@ -906,9 +903,13 @@ Ordered by enterprise value vs implementation cost:
 |---|---|---|---|
 | P0 | Trigger automation (cron + webhook) | 2 sprints | ✅ Done (Batch 20) |
 | P0 | AuthN/AuthZ + role model | 2 sprints | Multi-user deployment |
+| P0 | Durable worker model | Large | ✅ Done (Batch 27) |
+| P0 | Production DB + migrations | ✅ Done (Batch 26) | Alembic + PostgreSQL |
 | P1 | CI/CD pipeline (GitHub Actions) | 0.5 sprint | ✅ Done (Batch 22) |
 | P1 | Frontend e2e tests (Playwright) | 1 sprint | Enterprise buyer checklist |
 | P1 | LLM token tracking + cost dashboard | 1 sprint | ✅ Done (Batch 23) |
+| P1 | `{{run_id}}` template variables + run-scoped artifacts | Small | ✅ Done (Batch 28) |
+| P1 | Artifact retention/cleanup (TTL + background sweep) | Small | Prevents unbounded disk growth |
 | P2 | Agent circuit breaker + pool model | 1 sprint | ✅ Circuit breaker done (Batch 23); ✅ load distribution via shuffle done (Batch 25); pool_id + fair RR remaining |
 | P2 | Procedure environment promotion | 1 sprint | Safe delivery pipeline |
 | P2 | AWS/Azure secrets adapters | 0.5 sprint | ✅ Done (Batch 21) |

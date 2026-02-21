@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -90,6 +91,8 @@ class Run(Base):
     parent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # set for sub-procedure child runs
     trigger_type: Mapped[str | None] = mapped_column(String(32), nullable=True)   # manual | scheduled | webhook | event
     triggered_by: Mapped[str | None] = mapped_column(String(256), nullable=True)  # identity / scheduler job id
+    # DB-level cancellation signal — set by /cancel API; workers check between steps.
+    cancellation_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
     )
@@ -237,3 +240,55 @@ class TriggerDedupeRecord(Base):
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     run_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+# ── Durable job queue (worker model) ───────────────────────────
+
+
+class RunJob(Base):
+    """Durable execution job record.
+
+    Created atomically alongside the Run row.  A worker process polls this
+    table with ``SELECT … FOR UPDATE SKIP LOCKED`` (PostgreSQL) or a
+    lock-based equivalent (SQLite) to claim and execute jobs.
+
+    Status lifecycle:
+        queued → running → done | failed | cancelled
+        failed  → queued  (retry, limited by max_attempts)
+    """
+
+    __tablename__ = "run_jobs"
+    __table_args__ = (
+        # Partial index speeds up the worker poll query; dialect-agnostic syntax
+        # accepted by both SQLite and PostgreSQL.
+        Index(
+            "ix_run_jobs_poll",
+            "status",
+            "available_at",
+            "priority",
+        ),
+    )
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("runs.run_id"), nullable=False, unique=True, index=True
+    )
+    # queued | running | done | failed | cancelled
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    # Higher priority = picked first (default 0)
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    # When the job becomes eligible for pickup (supports delayed/retry scheduling)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    # Set by the worker that claims the job; cleared on completion/failure
+    locked_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Heartbeat deadline — if now() > locked_until the job is stale and reclaimable
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

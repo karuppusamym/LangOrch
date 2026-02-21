@@ -67,6 +67,8 @@ CAPABILITIES: list[str] = [
     "wait_for_element",
     "extract_text",
     "extract_table_data",
+    "select_all_text",
+    "get_attribute",
     "screenshot",
     "close",
 ]
@@ -197,6 +199,32 @@ async def _execute_dry_run(action: str, params: dict[str, Any]) -> dict[str, Any
             "artifact": {"kind": "screenshot", "uri": "memory://demo-screenshot"},
         }
 
+    if action == "select_all_text":
+        target = params.get("target")
+        # Deterministic mock: three book titles for books.toscrape.com demos
+        texts = [
+            "A Light in the Attic",
+            "Tipping the Velvet",
+            "Soumission",
+        ]
+        return {
+            "ok": True,
+            "action": action,
+            "target": target,
+            "texts": texts,
+            "count": len(texts),
+            "text": texts[0] if texts else "",
+        }
+
+    if action == "get_attribute":
+        return {
+            "ok": True,
+            "action": action,
+            "target": params.get("target"),
+            "attribute": params.get("attribute", "href"),
+            "value": "https://demo-attribute-value.example.com",
+        }
+
     if action == "close":
         return {"ok": True, "action": action}
 
@@ -286,14 +314,40 @@ async def _execute_playwright(action: str, params: dict[str, Any], run_id: str) 
         return {"ok": True, "action": action, "target": target, "rows": rows}
 
     if action == "screenshot":
+        import os as _os
         path = params.get("path")
         if path:
-            await page.screenshot(path=path, full_page=True)
-            uri = f"file://{path}"
+            abs_path = _os.path.abspath(path)
+            _os.makedirs(_os.path.dirname(abs_path), exist_ok=True)
+            await page.screenshot(path=abs_path, full_page=True)
+            # Return raw absolute path (no file:// prefix) so run_service._normalize
+            # can match it against ARTIFACTS_DIR and convert to /api/artifacts/<rel>
+            uri = abs_path
         else:
             _ = await page.screenshot(full_page=True)
             uri = "memory://playwright-screenshot"
         return {"ok": True, "action": action, "artifact": {"kind": "screenshot", "uri": uri}}
+
+    if action == "select_all_text":
+        target = params.get("target")
+        texts = await page.eval_on_selector_all(
+            target,
+            "(els) => els.map(e => e.textContent ? e.textContent.trim() : '')",
+        )
+        return {
+            "ok": True,
+            "action": action,
+            "target": target,
+            "texts": texts,
+            "count": len(texts),
+            "text": texts[0] if texts else "",
+        }
+
+    if action == "get_attribute":
+        target = params.get("target")
+        attr = params.get("attribute", "href")
+        value = await page.get_attribute(target, attr)
+        return {"ok": True, "action": action, "target": target, "attribute": attr, "value": value}
 
     if action == "close":
         pg = _pages.pop(run_id, None)

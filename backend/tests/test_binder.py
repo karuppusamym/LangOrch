@@ -60,7 +60,7 @@ class TestBindExecutors:
         internal_actions = [
             "log", "wait", "set_variable", "calculate", "format_data",
             "parse_json", "parse_csv", "generate_id", "get_timestamp",
-            "set_checkpoint", "restore_checkpoint", "screenshot",
+            "set_checkpoint", "restore_checkpoint",
         ]
         ckp = {
             "procedure_id": "p",

@@ -11,16 +11,16 @@ from app.db.engine import get_db, async_session
 from app.schemas.runs import ArtifactOut, RunCreate, RunDiagnostics, RunOut, CheckpointMetadata, CheckpointState
 from app.services import procedure_service, run_service
 from app.services import checkpoint_service
-from app.services.execution_service import execute_run
 from app.utils.metrics import get_metrics_summary
-from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled
+from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled, mark_cancelled_db as _mark_run_cancelled_db
 from app.utils.input_vars import validate_input_vars
+from app.worker.enqueue import enqueue_run, requeue_run
 
 router = APIRouter()
 
 
 @router.post("", response_model=RunOut, status_code=201)
-async def create_run(body: RunCreate, background: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
     # Resolve procedure
     proc = await procedure_service.get_procedure(db, body.procedure_id, body.procedure_version)
     if not proc:
@@ -47,9 +47,9 @@ async def create_run(body: RunCreate, background: BackgroundTasks, db: AsyncSess
         project_id=body.project_id or proc.project_id,
     )
 
-    # Ensure run is committed before background worker tries to load it.
-    await db.commit()
-    background.add_task(execute_run, run.run_id, async_session)
+    # Atomically enqueue a durable RunJob in the same transaction as the Run.
+    enqueue_run(db, run.run_id)
+    # get_db commits on success — both Run + RunJob land atomically.
     return run
 
 
@@ -136,7 +136,10 @@ async def get_checkpoint_state(run_id: str, checkpoint_id: str, db: AsyncSession
 
 @router.post("/{run_id}/cancel", response_model=RunOut)
 async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
-    _mark_run_cancelled(run_id)  # signal in-process cancellation
+    # Set DB-level flag (works across processes / between worker heartbeats)
+    await _mark_run_cancelled_db(run_id, db)
+    # Also signal in-process event for immediate effect in embedded mode
+    _mark_run_cancelled(run_id)
     run = await run_service.update_run_status(db, run_id, "canceled")
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -144,7 +147,7 @@ async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{run_id}/retry", response_model=RunOut)
-async def retry_run(run_id: str, background: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def retry_run(run_id: str, db: AsyncSession = Depends(get_db)):
     existing = await run_service.get_run(db, run_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -153,8 +156,11 @@ async def retry_run(run_id: str, background: BackgroundTasks, db: AsyncSession =
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    await db.commit()
-    background.add_task(execute_run, run.run_id, async_session)
+    # prepare_retry reuses the same run_id, so an existing RunJob already
+    # exists for this run.  Use requeue_run to UPDATE it back to queued
+    # instead of attempting a second INSERT (which would fail the unique
+    # constraint on run_jobs.run_id).
+    await requeue_run(db, run.run_id)
     return run
 
 

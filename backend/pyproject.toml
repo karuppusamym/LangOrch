@@ -18,7 +18,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.1", "asyncpg>=0.29"]
+postgres = [
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "langgraph-checkpoint-postgres>=2.0",
+]
 sqlserver = ["pyodbc>=5.1"]
 webagent = ["playwright>=1.50"]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.5"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.5",
+    "alembic>=1.13",
+]
+
+[tool.alembic]
+script_location = "alembic"

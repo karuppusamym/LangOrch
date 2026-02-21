@@ -199,7 +199,7 @@ class TestCreateRunValidation:
         """POST /api/runs returns 422 when a required input var is absent."""
         from app.api.runs import create_run
         from app.schemas.runs import RunCreate
-        from fastapi import BackgroundTasks, HTTPException
+        from fastapi import HTTPException
 
         schema = {"env": {"type": "string", "required": True}}
         proc = MagicMock()
@@ -212,7 +212,7 @@ class TestCreateRunValidation:
         ):
             body = RunCreate(procedure_id="p1", procedure_version="1", input_vars={})
             with pytest.raises(HTTPException) as exc_info:
-                await create_run(body, BackgroundTasks(), db=AsyncMock())
+                await create_run(body, db=AsyncMock())
             assert exc_info.value.status_code == 422
             detail = exc_info.value.detail
             assert isinstance(detail, dict)
@@ -224,7 +224,7 @@ class TestCreateRunValidation:
         """POST /api/runs returns 422 when a field fails regex validation."""
         from app.api.runs import create_run
         from app.schemas.runs import RunCreate
-        from fastapi import BackgroundTasks, HTTPException
+        from fastapi import HTTPException
 
         proc = MagicMock()
         proc.procedure_id = "p1"
@@ -234,7 +234,7 @@ class TestCreateRunValidation:
         with patch("app.api.runs.procedure_service.get_procedure", new=AsyncMock(return_value=proc)):
             body = RunCreate(procedure_id="p1", procedure_version="1", input_vars={"code": "abc"})
             with pytest.raises(HTTPException) as exc_info:
-                await create_run(body, BackgroundTasks(), db=AsyncMock())
+                await create_run(body, db=AsyncMock())
             assert exc_info.value.status_code == 422
             assert "code" in exc_info.value.detail["errors"]
 
@@ -243,7 +243,6 @@ class TestCreateRunValidation:
         """POST /api/runs with no variables_schema skips validation entirely."""
         from app.api.runs import create_run
         from app.schemas.runs import RunCreate
-        from fastapi import BackgroundTasks
 
         proc = MagicMock()
         proc.procedure_id = "p1"
@@ -256,12 +255,11 @@ class TestCreateRunValidation:
         with (
             patch("app.api.runs.procedure_service.get_procedure", new=AsyncMock(return_value=proc)),
             patch("app.api.runs.run_service.create_run", new=AsyncMock(return_value=mock_run)),
-            patch("app.api.runs.execute_run"),
+            patch("app.api.runs.enqueue_run", MagicMock(return_value=MagicMock())),
         ):
             mock_db = AsyncMock()
-            mock_db.commit = AsyncMock()
             body = RunCreate(procedure_id="p1", procedure_version="1", input_vars={"anything": "goes"})
-            result = await create_run(body, BackgroundTasks(), db=mock_db)
+            result = await create_run(body, db=mock_db)
             assert result == mock_run
 
     @pytest.mark.asyncio
@@ -269,7 +267,6 @@ class TestCreateRunValidation:
         """POST /api/runs with valid input_vars that satisfy schema runs successfully."""
         from app.api.runs import create_run
         from app.schemas.runs import RunCreate
-        from fastapi import BackgroundTasks
 
         proc = MagicMock()
         proc.procedure_id = "p1"
@@ -282,12 +279,11 @@ class TestCreateRunValidation:
         with (
             patch("app.api.runs.procedure_service.get_procedure", new=AsyncMock(return_value=proc)),
             patch("app.api.runs.run_service.create_run", new=AsyncMock(return_value=mock_run)),
-            patch("app.api.runs.execute_run"),
+            patch("app.api.runs.enqueue_run", MagicMock(return_value=MagicMock())),
         ):
             mock_db = AsyncMock()
-            mock_db.commit = AsyncMock()
             body = RunCreate(procedure_id="p1", procedure_version="1", input_vars={"env": "prod"})
-            result = await create_run(body, BackgroundTasks(), db=mock_db)
+            result = await create_run(body, db=mock_db)
             assert result == mock_run
 
 

@@ -86,6 +86,23 @@ def _get_step_retry_config(step: Any, state: OrchestratorState) -> dict[str, Any
     }
 
 
+def _build_template_vars(state: OrchestratorState) -> dict[str, Any]:
+    """Build the variable context for template rendering.
+
+    Merges workflow variables with system-provided built-ins so CKP authors
+    can reference them directly in templates:
+
+    * ``{{run_id}}``       — unique ID of the current run
+    * ``{{procedure_id}}`` — ID of the procedure being executed
+
+    User-defined variables with the same name take precedence.
+    """
+    vs = dict(state.get("vars", {}))
+    vs.setdefault("run_id", state.get("run_id", ""))
+    vs.setdefault("procedure_id", state.get("procedure_id", ""))
+    return vs
+
+
 async def execute_sequence(
     node: IRNode, state: OrchestratorState, db_factory: Callable | None = None
 ) -> OrchestratorState:
@@ -104,7 +121,7 @@ async def execute_sequence(
     from app.utils.redaction import redact_sensitive_data
 
     payload: IRSequencePayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
     run_id = state.get("run_id", "")
 
     # Rate limiting: honour global_config.rate_limiting.max_concurrent if a semaphore is in state
@@ -622,7 +639,7 @@ def execute_logic(node: IRNode, state: OrchestratorState) -> OrchestratorState:
 def execute_loop(node: IRNode, state: OrchestratorState) -> OrchestratorState:
     """Set up or advance loop iteration."""
     payload: IRLoopPayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
 
     iterator = vs.get(payload.iterator_var, [])
     index = state.get("loop_index", 0)
@@ -773,7 +790,7 @@ def execute_verification(node: IRNode, state: OrchestratorState) -> Orchestrator
 def execute_processing(node: IRNode, state: OrchestratorState) -> OrchestratorState:
     """Execute processing operations (set_variable, log, etc.)."""
     payload: IRProcessingPayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
 
     for op in payload.operations:
         rendered = render_template_dict(op.params, vs)
@@ -788,7 +805,7 @@ def execute_processing(node: IRNode, state: OrchestratorState) -> OrchestratorSt
 def execute_transform(node: IRNode, state: OrchestratorState) -> OrchestratorState:
     """Execute transform operations (filter, map, aggregate, etc.)."""
     payload: IRTransformPayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
 
     for t in payload.transformations:
         source = vs.get(t.source_variable, [])
@@ -810,7 +827,7 @@ def execute_human_approval(node: IRNode, state: OrchestratorState) -> Orchestrat
       vars.__approval_decisions[node_id] = "approved" | "rejected" | "timeout"
     """
     payload: IRHumanApprovalPayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
     decisions = vs.get("__approval_decisions", {}) if isinstance(vs.get("__approval_decisions"), dict) else {}
     existing_decision = decisions.get(node.node_id)
 
@@ -848,7 +865,7 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
     from app.connectors.llm_client import LLMCallError, LLMClient
 
     payload: IRLlmActionPayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
     prompt = render_template_str(payload.prompt, vs)
     logger.info("LLM action: model=%s prompt=%s", payload.model, prompt[:100])
 
@@ -967,7 +984,7 @@ async def execute_subflow(
     from app.services import procedure_service, run_service
 
     payload: IRSubflowPayload = node.payload
-    vs = dict(state.get("vars", {}))
+    vs = _build_template_vars(state)
     run_id = state.get("run_id", "")
 
     if not db_factory:

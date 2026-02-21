@@ -112,7 +112,11 @@ async def _find_capable_agent(
     for agent in agents:
         # Skip agents whose circuit is currently open (too many recent failures)
         if agent.circuit_open_at is not None:
-            elapsed = (now - agent.circuit_open_at).total_seconds()
+            # SQLite returns naive datetimes — treat as UTC for comparison
+            circuit_ts = agent.circuit_open_at
+            if circuit_ts.tzinfo is None:
+                circuit_ts = circuit_ts.replace(tzinfo=timezone.utc)
+            elapsed = (now - circuit_ts).total_seconds()
             if elapsed < _CIRCUIT_RESET_SECONDS:
                 logger.debug(
                     "Skipping circuit-open agent %s (open for %.0fs / %ds reset)",

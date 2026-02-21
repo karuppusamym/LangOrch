@@ -12,7 +12,17 @@ httpx>=0.27
 apscheduler>=3.10
 croniter>=2.0
 
-# Optional secrets providers (install only what you use)
+# ── Database migrations ─────────────────────────────────────────
+alembic>=1.13
+
+# ── PostgreSQL async driver (production DB) ────────────────────
+asyncpg>=0.29
+
+# ── PostgreSQL LangGraph checkpointer (production) ─────────────
+# Install for production; SQLite checkpointer is used in dev by default
+# langgraph-checkpoint-postgres>=2.0
+
+# ── Optional secrets providers (install only what you use) ─────
 hvac>=2.0                          # HashiCorp Vault
 boto3>=1.34                        # AWS Secrets Manager
 azure-keyvault-secrets>=4.8        # Azure Key Vault

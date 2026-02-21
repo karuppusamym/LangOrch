@@ -1,0 +1,139 @@
+{
+  "procedure_id": "books-price-monitor",
+  "version": "1.0.3",
+  "status": "active",
+  "effective_date": "2026-02-18",
+  "description": "Real-world price monitoring workflow: scrapes books.toscrape.com with a visible Playwright browser, extracts book titles and prices, verifies data integrity, then reports findings. Uses headless=false so the scraping session is visible to the operator.",
+  "global_config": {
+    "execution_mode": "production",
+    "max_retries": 2,
+    "retry_delay_ms": 2000,
+    "timeout_ms": 120000
+  },
+  "variables_schema": {
+    "required": {
+      "catalogue_url": {
+        "type": "string",
+        "description": "Books catalogue page URL (e.g. page 1 or a specific category)",
+        "origin": "user_strict",
+        "default": "https://books.toscrape.com/catalogue/page-1.html"
+      }
+    },
+    "optional": {
+      "book_titles": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Agent result: {texts: [...], count: N, text: first_title}"
+      },
+      "book_prices": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Agent result: {texts: [...], count: N, text: first_price}"
+      },
+      "total_count": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Agent result: {text: '1000', target: '.col-sm-8 strong:first-of-type'}"
+      },
+      "screenshot_result": {
+        "type": "object",
+        "origin": "system_captured",
+        "description": "Screenshot artifact payload"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "load_catalogue",
+    "nodes": {
+      "load_catalogue": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Navigate to the books catalogue and wait for products to load",
+        "steps": [
+          {
+            "step_id": "navigate_to_catalogue",
+            "action": "navigate",
+            "url": "{{catalogue_url}}"
+          },
+          {
+            "step_id": "wait_for_books",
+            "action": "wait_for_element",
+            "target": "ol.row",
+            "timeout_ms": 15000
+          }
+        ],
+        "next_node": "extract_data"
+      },
+      "extract_data": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Extract book titles, prices, and catalogue total from the page",
+        "steps": [
+          {
+            "step_id": "get_titles",
+            "action": "select_all_text",
+            "target": "article.product_pod h3 a",
+            "output_variable": "book_titles"
+          },
+          {
+            "step_id": "get_prices",
+            "action": "select_all_text",
+            "target": "p.price_color",
+            "output_variable": "book_prices"
+          },
+          {
+            "step_id": "get_total_count",
+            "action": "extract_text",
+            "target": ".col-sm-8 strong:first-of-type",
+            "output_variable": "total_count"
+          },
+          {
+            "step_id": "capture_screenshot",
+            "action": "screenshot",
+            "path": "artifacts/{{run_id}}/books_monitor_screenshot.png",
+            "output_variable": "screenshot_result"
+          }
+        ],
+        "next_node": "verify_data"
+      },
+      "verify_data": {
+        "type": "verification",
+        "description": "Confirm that books and prices were successfully extracted",
+        "checks": [
+          {
+            "id": "titles_found",
+            "condition": "{{book_titles.count}} > 0",
+            "on_fail": "fail_workflow",
+            "message": "No book titles found — page may not have loaded or selectors changed"
+          },
+          {
+            "id": "prices_found",
+            "condition": "{{book_prices.count}} > 0",
+            "on_fail": "fail_workflow",
+            "message": "No prices found — page structure may have changed"
+          },
+          {
+            "id": "counts_match",
+            "condition": "{{book_titles.count}} == {{book_prices.count}}",
+            "on_fail": "fail_workflow",
+            "message": "Title count does not match price count — incomplete page extraction"
+          }
+        ],
+        "next_node": "done"
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "books_on_page": "{{book_titles.count}}",
+          "total_in_catalogue": "{{total_count.text}}",
+          "first_title": "{{book_titles.text}}",
+          "first_price": "{{book_prices.text}}",
+          "all_titles": "{{book_titles.texts}}",
+          "all_prices": "{{book_prices.texts}}",
+          "screenshot": "{{screenshot_result}}"
+        }
+      }
+    }
+  }
+}

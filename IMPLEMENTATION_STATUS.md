@@ -1,6 +1,6 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-20 (Batch 25: estimated_cost_usd on run detail UI; agent round-robin shuffle in executor_dispatch; confirmed mock_external_calls/test_data_overrides/dry_run/screenshot_on_fail/checkpoint_retention_loop all fully wired; 34 new tests)
+Last updated: 2026-02-21 (Batch 28: `_build_template_vars()` injects `{{run_id}}` / `{{procedure_id}}` as built-in template variables in all node executors; artifact files stored under `artifacts/{run_id}/` — run-scoped storage; 613 tests passing)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -55,10 +55,12 @@ This document is the single authoritative source for **what is implemented vs wh
 | Frontend: project filter in procedures | 100% | 100% | Complete |
 | Frontend: workflow builder/editor | 100% | 0% | Not started |
 | Frontend→Backend API linkage | 100% | 100% | All 35+ call sites verified; 204-body bug fixed |
-| Backend tests (unit) | Target | 99% | **549 tests** — all passing (Batch 25 adds 34 new tests) |
+| Backend tests (unit) | Target | 99% | **613 tests** — all passing (Batch 28: no new tests; runtime wiring change) |
 | Backend tests (integration) | Target | 35% | 18 API tests |
 | Frontend tests | Target | 0% | Not started |
 | AuthN/AuthZ | Target | 0% | Not started (parked) |
+| Production DB + migrations (Alembic) | Target | 85% | Alembic setup complete; `v001_initial_schema` migration (includes `run_jobs`); SQLite/PostgreSQL dual-dialect; asyncpg engine pool; Alembic env.py; `sync_db_url()` (Batch 26) |
+| Durable worker model (RunJob queue) | Target | 100% | Full worker: `app/worker/` package — `loop.py` (poll/claim/execute/stall-reclaim), `heartbeat.py` (lock renewal + cancel bridge), `worker_main.py` (standalone entrypoint), `enqueue_run` + `requeue_run`; embedded in server via `asyncio.create_task`; SQLite + PostgreSQL claim dialects; DB-level run cancellation (Batch 27) |
 | CI/CD pipeline | Target | 100% | GitHub Actions CI: backend ruff + pytest; frontend tsc + build (Batch 22) |
 
 ---
@@ -72,7 +74,7 @@ This document is the single authoritative source for **what is implemented vs wh
 - ir.py: 20 dataclasses covering all CKP constructs
 
 ### Runtime execution engine (backend/app/runtime/)
-- All 11 node executors (node_executors.py, 1097 lines): sequence, logic, loop, parallel, processing, verification, llm_action, human_approval, transform, subflow, terminate
+- All 11 node executors (node_executors.py, ~1495 lines): sequence, logic, loop, parallel, processing, verification, llm_action, human_approval, transform, subflow, terminate
 - LangGraph StateGraph construction with conditional routing (logic/approval/loop)
 - Checkpoint-aware execution with LangGraph SQLite saver and resume from last_node_id
 - Step idempotency (check then execute then store in step_idempotency table)
@@ -83,7 +85,7 @@ This document is the single authoritative source for **what is implemented vs wh
 - Parallel branch execution with wait_strategy (all/any) and branch_failure policy
 - Subflow execution: child procedure compile, nested graph, input/output variable mapping
 - Transform operations: filter, map, aggregate (count/sum/min/max), sort, unique
-- Template engine: path.to.var expansion, dotted paths, defaults, recursive dict/list
+- Template engine: path.to.var expansion, dotted paths, defaults, recursive dict/list; `_build_template_vars()` injects `{{run_id}}` and `{{procedure_id}}` as built-in variables — available in every step param without declaring in `variables_schema`
 - Safe expression evaluator: 12 operators, no eval(), boolean/number coercion
 
 ### Services (backend/app/services/) - 9 services
@@ -103,8 +105,11 @@ This document is the single authoritative source for **what is implemented vs wh
 - metrics.py: in-memory counters + histograms, record_run_started/completed/retry, get_metrics_summary
 - redaction.py: recursive field sanitization by key pattern (password, token, api_key, secret, credential, authorization)
 
-### Database (backend/app/db/) - 9 tables
-projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, agent_instances, resource_leases
+### Database (backend/app/db/) - 11 tables
+projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, agent_instances, resource_leases, run_jobs, trigger_registrations
+
+- `run_jobs` — durable execution queue: `job_id`, `run_id` (UNIQUE), `status` (queued/running/done/failed/retrying/cancelled), `priority`, `attempts`, `max_attempts`, `locked_by`, `locked_until`, `available_at`, `error_message`
+- `trigger_registrations` — persistent trigger config per procedure version (Batch 20)
 
 ### API layer - 38 endpoints confirmed
 
@@ -150,7 +155,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | POST /api/triggers/webhook/{id} | Complete — HMAC verify + dedupe + async run creation |
 | POST /api/triggers/sync | Complete — scan procedures and auto-register triggers |
 
-### Tests (backend/tests/) - 549 tests, all passing
+### Tests (backend/tests/) - 613 tests, all passing
 
 | File | Tests | Scope |
 |------|-------|-------|
@@ -179,6 +184,8 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | test_batch23.py | 28 | Compiler: recursive subflow self-reference, template variable enforcement, action/channel compatibility; executor_dispatch: circuit-breaker skip; LLM estimated_cost_usd; projects: cost-summary endpoint |
 | test_batch24.py | 27 | Parallel branch IR, checkpoint resume IR, approval decision flow service, subflow IR, LLM usage event structure; bugfix: execute_llm_action run_service scope |
 | test_batch25.py | 34 | estimated_cost_usd schema/model, agent round-robin shuffle, screenshot_on_fail, mock_external_calls, test_data_overrides, dry_run mode, retention loop structural checks |
+| test_batch26.py | 33 | SQLite/PG dialect support, Alembic setup, RunJob ORM, cancellation_requested column, checkpointer dialect-aware config |
+| test_batch27.py | 31 | enqueue_run, requeue_run (UPDATE-or-INSERT for same run_id), worker loop poll/claim/execute/stall-reclaim, heartbeat lock renewal, DB-level run cancellation, embedded worker startup |
 | test_api.py | 18 | API integration (run separately) |
 
 ### Frontend (frontend/src/) - 12 routes
@@ -248,7 +255,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | Field | Parsed | Runtime Enforced | Gap |
 |-------|--------|-----------------|-----|
 | action | Yes | Yes | Complete |
-| params (with templating) | Yes | Yes | Complete |
+| params (with templating) | Yes | Yes | Complete; `{{run_id}}` and `{{procedure_id}}` available as built-ins via `_build_template_vars()` |
 | timeout_ms | Yes | **Yes** | `asyncio.wait_for` wraps internal, agent_http, and mcp_tool dispatch paths |
 | wait_ms / wait_after_ms | Yes | **Yes** | asyncio.sleep enforced before/after each step |
 | retry_on_failure | Yes | Yes | Complete (global policy) |
@@ -270,25 +277,12 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 | Item | Detail |
 |------|--------|
-| ~~Duplicate UI components~~ | ✅ StatusBadge, ProcedureStatusBadge, ApprovalStatusBadge extracted to `@/components/shared/` |
-| ~~AWS/Azure secrets stubs~~ | ✅ AWS Secrets Manager + Azure Key Vault providers implemented (Batch 21) |
 | No server-side data fetching | All pages use `useEffect` + client fetch; no SWR/React Query caching |
-| ~~Metrics export~~ | ✅ Prometheus `/api/metrics` text format endpoint added |
 | Frontend e2e tests | No Playwright/Cypress tests |
-| ~~CI/CD pipeline~~ | ✅ GitHub Actions CI: backend ruff+pytest; frontend tsc+build (Batch 22) |
 | Workflow editor (frontend) | Read-only graph viewer done; editable properties not started |
-| Retrieval metadata search | retrieval_metadata parsed + stored; no full-text search API | Medium |
-
-### Priority 4 - Technical debt
-
-| Item | Detail |
-|------|--------|
-| ~~Duplicate UI components~~ | ✅ StatusBadge and ApprovalStatusBadge extracted to `src/components/shared/` |
-| ~~Dead npm dependency~~ | ✅ @heroicons/react removed from package.json (Batch 17) |
-| event_service.py is 6-line re-export | Could be consolidated into run_service.py |
-| ~~AWS/Azure secrets stubs~~ | ✅ AWS Secrets Manager + Azure Key Vault providers implemented (Batch 21) |
-| ~~No error toast system~~ | ✅ `Toast.tsx` with `ToastProvider` + `useToast()` hook, 4 types, auto-dismiss |
-| All pages use useEffect only | No server-side data fetching, no caching (SWR/React Query) |
+| Retrieval metadata full-text search | `retrieval_metadata` parsed + stored in DB; no full-text search API |
+| Artifact retention/cleanup | Run-scoped paths (`artifacts/{run_id}/`) prevent collision; no TTL or background sweep |
+| `event_service.py` thin re-export | 6-line module re-exports from `run_service`; could be consolidated |
 
 ---
 
@@ -411,6 +405,29 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 **Total tests after Batch 18: 362 (up from 344)**
 
+### Batch 26 (2026-02-20) — SQLite/PostgreSQL dual-dialect + Alembic migrations
+72. **SQLite/PostgreSQL dual-dialect engine** — `config.py` detects dialect from `ORCH_DB_URL`; `engine.py` creates `aiosqlite` or `asyncpg` engine accordingly; checkpointer is dialect-aware; `WORKER_EMBEDDED` defaults to `True` for SQLite (single-process) and `False` for PostgreSQL (external worker)
+73. **Alembic migrations setup** — `alembic.ini` + `alembic/env.py` with `sync_db_url()` helper; `v001_initial_schema` migration covers all tables including `run_jobs`; `asyncpg` + `alembic` added to `requirements.txt`
+74. **`RunJob` ORM model** — `run_jobs` table: `job_id` (PK), `run_id` (UNIQUE FK), `status`, `priority`, `attempts`, `max_attempts`, `locked_by`, `locked_until`, `available_at`, `error_message`
+75. **`cancellation_requested` column on `Run`** — `INTEGER NOT NULL DEFAULT 0`; DB-level flag readable by worker processes across restarts without in-memory state
+
+**Total tests after Batch 26: 582 (up from 549)**
+
+### Batch 27 (2026-02-21) — Full durable worker model + approval-resume bug fix
+76. **`app/worker/` package** — `enqueue.py` (`enqueue_run` sync for new runs), `loop.py` (full poll/claim/execute cycle with SQLite optimistic locking and PostgreSQL `FOR UPDATE SKIP LOCKED`), `heartbeat.py` (lock-renewal task bridges DB `cancellation_requested → asyncio.Event`), `worker_main.py` (standalone CLI entrypoint for external worker processes)
+77. **Stalled-job recovery** — `reclaim_stalled_jobs()` finds `status=running AND locked_until < now`; resets to `retrying` (with exponential delay) or marks `failed` when `max_attempts` exceeded; called at the top of every poll cycle
+78. **Embedded worker** — `main.py` lifespan starts `asyncio.create_task(_worker_loop())` when `settings.WORKER_EMBEDDED=True`; task is cancelled cleanly on shutdown
+79. **`requeue_run()` approval-resume + retry fix** — async SELECT-then-UPDATE-or-INSERT replaces blind INSERT that was violating the UNIQUE constraint on `run_jobs.run_id`; `approvals.py` and `runs.py` retry path both call `requeue_run()`; approval decisions no longer silently discarded on duplicate key
+80. **API wiring** — `POST /api/runs` calls `enqueue_run()` for new runs; `POST /api/approvals/{id}/decision` calls `requeue_run(priority=10)` to fast-track resumed runs; `POST /api/runs/{id}/retry` calls `requeue_run()`
+
+**Total tests after Batch 27: 613 (up from 582)**
+
+### Batch 28 (2026-02-21) — Run-scoped artifact paths + built-in template variables
+81. **`_build_template_vars(state)` helper** — new function in `node_executors.py`; replaces all 7 `vs = dict(state.get("vars", {}))` calls across every node executor; calls `setdefault("run_id", ...)` and `setdefault("procedure_id", ...)` so user-defined variables always take precedence; makes `{{run_id}}` and `{{procedure_id}}` available in any CKP step parameter without declaring them in `variables_schema`
+82. **Run-scoped artifact storage** — artifact files now saved to `artifacts/{run_id}/filename` subfolders; prevents multiple runs from overwriting each other's files; demonstrated in `books_price_monitor.ckp.json` v1.0.3 with `"path": "artifacts/{{run_id}}/books_monitor_screenshot.png"`; served at `GET /api/artifacts/{run_id}/filename` via FastAPI `StaticFiles` mount
+
+**Total tests after Batch 28: 613** (no new tests — change is runtime wiring; existing executor tests cover the affected paths)
+
 ---
 
 ## Suggested next quick wins (from audit)
@@ -428,6 +445,12 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | 33 | SSE for approvals | Medium | High | ✅ Done (Batch 17) |
 | 34 | Artifact preview/download | Small | Medium | ✅ Done (Batch 17) |
 | 35 | Bulk operations on runs | Medium | Medium | ✅ Done (Batch 17) |
+| 36 | Durable worker model | Large | High | ✅ Done (Batch 27) |
+| 37 | `{{run_id}}` built-in template variable | Small | Medium | ✅ Done (Batch 28) |
+| 38 | Run-scoped artifact paths | Small | Medium | ✅ Done (Batch 28) |
+| 39 | Artifact retention/TTL cleanup | Small | Medium | Not started |
+| 40 | Frontend e2e tests (Playwright) | Large | High | Not started |
+| 41 | AuthN/AuthZ + role model | Large | Critical | Not started |
 
 ---
 

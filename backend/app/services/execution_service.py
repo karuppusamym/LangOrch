@@ -198,19 +198,46 @@ async def _invoke_graph_with_checkpointer(
         if checkpoint_strategy == "none":
             compiled = graph.compile()
             return await _invoke(compiled)
-        try:
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-            async with AsyncSqliteSaver.from_conn_string(checkpointer_url) as checkpointer:
-                compiled = graph.compile(checkpointer=checkpointer)
-                return await _invoke(compiled)
-        except asyncio.TimeoutError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Failed to initialize SQLite checkpointer (%s). Falling back to non-checkpointed run.",
-                exc,
-            )
+        # ── Select checkpointer based on dialect ────────────────────────────
+        if settings.is_postgres:
+            # PostgreSQL checkpointer — requires langgraph-checkpoint-postgres
+            try:
+                from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore[import]
+
+                async with await AsyncPostgresSaver.from_conn_string(checkpointer_url) as checkpointer:
+                    await checkpointer.setup()  # ensures checkpointer tables exist
+                    compiled = graph.compile(checkpointer=checkpointer)
+                    return await _invoke(compiled)
+            except ImportError:
+                logger.warning(
+                    "langgraph-checkpoint-postgres is not installed. "
+                    "Install it with: pip install langgraph-checkpoint-postgres. "
+                    "Falling back to non-checkpointed run."
+                )
+            except asyncio.TimeoutError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Failed to initialize PostgreSQL checkpointer (%s). "
+                    "Falling back to non-checkpointed run.",
+                    exc,
+                )
+        else:
+            # SQLite checkpointer (default for dev)
+            try:
+                from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+                async with AsyncSqliteSaver.from_conn_string(checkpointer_url) as checkpointer:
+                    compiled = graph.compile(checkpointer=checkpointer)
+                    return await _invoke(compiled)
+            except asyncio.TimeoutError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Failed to initialize SQLite checkpointer (%s). Falling back to non-checkpointed run.",
+                    exc,
+                )
 
     compiled = graph.compile()
     return await _invoke(compiled)

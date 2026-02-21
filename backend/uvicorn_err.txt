@@ -1,0 +1,205 @@
+INFO:     Started server process [40676]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 10048] error while attempting to bind on address ('127.0.0.1', 8000): [winerror 10048] only one usage of each socket address (protocol/network address/port) is normally permitted
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+Exception terminating connection <AdaptedConnection <aiosqlite.core.Connection object at 0x0000025FFDBBA510>>
+Traceback (most recent call last):
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 172, in startup
+    server = await loop.create_server(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 1622, in create_server
+    raise OSError(err.errno, msg) from None
+OSError: [Errno 10048] error while attempting to bind on address ('127.0.0.1', 8000): [winerror 10048] only one usage of each socket address (protocol/network address/port) is normally permitted
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 712, in run_until_complete
+    self.run_forever()
+    ~~~~~~~~~~~~~~~~^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 683, in run_forever
+    self._run_once()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 2042, in _run_once
+    handle._run()
+    ~~~~~~~~~~~^^
+  File "C:\Python313\Lib\asyncio\events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 79, in serve
+    await self._serve(sockets)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 94, in _serve
+    await self.startup(sockets=sockets)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 182, in startup
+    sys.exit(1)
+    ~~~~~~~~^^^
+SystemExit: 1
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\pool\base.py", line 372, in _close_connection
+    self._dialect.do_terminate(connection)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\dialects\sqlite\aiosqlite.py", line 479, in do_terminate
+    dbapi_connection.terminate()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\connectors\asyncio.py", line 402, in terminate
+    self.await_(asyncio.shield(self._terminate_graceful_close()))  # type: ignore[attr-defined] # noqa: E501
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+Error in stalled-job reclaim
+Traceback (most recent call last):
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 172, in startup
+    server = await loop.create_server(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 1622, in create_server
+    raise OSError(err.errno, msg) from None
+OSError: [Errno 10048] error while attempting to bind on address ('127.0.0.1', 8000): [winerror 10048] only one usage of each socket address (protocol/network address/port) is normally permitted
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 712, in run_until_complete
+    self.run_forever()
+    ~~~~~~~~~~~~~~~~^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 683, in run_forever
+    self._run_once()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 2042, in _run_once
+    handle._run()
+    ~~~~~~~~~~~^^
+  File "C:\Python313\Lib\asyncio\events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 79, in serve
+    await self._serve(sockets)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 94, in _serve
+    await self.startup(sockets=sockets)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\uvicorn\server.py", line 182, in startup
+    sys.exit(1)
+    ~~~~~~~~^^^
+SystemExit: 1
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\dialects\sqlite\aiosqlite.py", line 307, in rollback
+    self.await_(self._connection.rollback())
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\aiosqlite\core.py", line 197, in rollback
+    await self._execute(self._conn.rollback)
+                        ^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\aiosqlite\core.py", line 137, in _conn
+    raise ValueError("no active connection")
+ValueError: no active connection
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1128, in _rollback_impl
+    self.engine.dialect.do_rollback(self.connection)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\default.py", line 712, in do_rollback
+    dbapi_connection.rollback()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\dialects\sqlite\aiosqlite.py", line 309, in rollback
+    self._handle_exception(error)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\dialects\sqlite\aiosqlite.py", line 338, in _handle_exception
+    raise self.dbapi.sqlite.OperationalError(
+        "no active connection"
+    ) from error
+sqlite3.OperationalError: no active connection
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\karup\AGProjects\LangOrch\backend\app\worker\loop.py", line 385, in worker_loop
+    stalled = await reclaim_stalled_jobs()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\app\worker\loop.py", line 186, in reclaim_stalled_jobs
+    async with async_session() as db:
+               ~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\ext\asyncio\session.py", line 1071, in __aexit__
+    await asyncio.shield(task)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\ext\asyncio\session.py", line 1016, in close
+    await greenlet_spawn(self.sync_session.close)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 203, in greenlet_spawn
+    result = context.switch(value)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\orm\session.py", line 2507, in close
+    self._close_impl(invalidate=False)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\orm\session.py", line 2576, in _close_impl
+    transaction.close(invalidate)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "<string>", line 2, in close
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\orm\state_changes.py", line 137, in _go
+    ret_value = fn(self, *arg, **kw)
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\orm\session.py", line 1417, in close
+    transaction.close()
+    ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 2597, in close
+    self._do_close()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 2735, in _do_close
+    self._close_impl()
+    ~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 2721, in _close_impl
+    self._connection_rollback_impl()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 2713, in _connection_rollback_impl
+    self.connection._rollback_impl()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1130, in _rollback_impl
+    self._handle_dbapi_exception(e, None, None, None, None)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 2363, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1128, in _rollback_impl
+    self.engine.dialect.do_rollback(self.connection)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\engine\default.py", line 712, in do_rollback
+    dbapi_connection.rollback()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\dialects\sqlite\aiosqlite.py", line 309, in rollback
+    self._handle_exception(error)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\karup\AGProjects\LangOrch\backend\.venv\Lib\site-packages\sqlalchemy\dialects\sqlite\aiosqlite.py", line 338, in _handle_exception
+    raise self.dbapi.sqlite.OperationalError(
+        "no active connection"
+    ) from error
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no active connection
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
