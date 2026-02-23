@@ -171,6 +171,11 @@ class IRLlmActionPayload:
     retry: dict[str, Any] | None = None
     outputs: dict[str, str] = field(default_factory=dict)
     next_node_id: str | None = None
+    # ── Agent Orchestrator mode ───────────────────────────────────
+    # When True the LLM output must include {"_next_node": "<branch>"}
+    # and the runtime routes to that branch dynamically.
+    orchestration_mode: bool = False
+    branches: list[str] = field(default_factory=list)  # valid next-node names
 
 
 @dataclass

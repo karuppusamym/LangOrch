@@ -1,0 +1,27 @@
+{
+  "procedure_id": "e2e_hil_procedure",
+  "version": "1.0.0",
+  "global_config": {
+    "max_retries": 1,
+    "retry_delay_ms": 100
+  },
+  "variables_schema": {},
+  "workflow_graph": {
+    "start_node": "gate",
+    "nodes": {
+      "gate": {
+        "type": "human_in_the_loop",
+        "description": "e2e approval gate",
+        "approval_message": "E2E test: please approve or reject",
+        "timeout_minutes": 60,
+        "on_approved": "final",
+        "on_rejected": "final",
+        "on_timeout": "final"
+      },
+      "final": {
+        "type": "terminate",
+        "status": "success"
+      }
+    }
+  }
+}

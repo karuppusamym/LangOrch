@@ -876,6 +876,20 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
     retry_delay_ms = int(node_retry.get("retry_delay_ms") or node_retry.get("delay_ms") or global_cfg["retry_delay_ms"])
     backoff_multiplier = float(node_retry.get("backoff_multiplier") or global_cfg["backoff_multiplier"])
 
+    # ── Orchestration mode: force JSON and inject branch-selection instruction ─
+    _eff_json_mode = payload.json_mode
+    _eff_system_prompt: str | None = payload.system_prompt
+    if payload.orchestration_mode and payload.branches:
+        _eff_json_mode = True
+        _branch_list = ", ".join(f'"{b}"' for b in payload.branches)
+        _orchestration_instruction = (
+            f"\n\nYou are acting as a workflow orchestrator. Based on your analysis you MUST "
+            f"include a JSON field \"_next_node\" whose value is exactly one of: [{_branch_list}]. "
+            f"This field tells the runtime which step to execute next. "
+            f"Choose the most appropriate branch. Do not invent other branch names."
+        )
+        _eff_system_prompt = ((_eff_system_prompt or "") + _orchestration_instruction).strip() or None
+
     attempt = 0
     last_exc: Exception | None = None
     while True:
@@ -886,8 +900,8 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
                 model=payload.model,
                 temperature=payload.temperature,
                 max_tokens=payload.max_tokens,
-                system_prompt=payload.system_prompt,
-                json_mode=payload.json_mode,
+                system_prompt=_eff_system_prompt,
+                json_mode=_eff_json_mode,
             )
             last_exc = None
             break
@@ -914,10 +928,12 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
             "current_node_id": node.node_id,
         }  # type: ignore
 
-    # ── Token tracking ──────────────────────────────────────────
+    # ── Token tracking + budget enforcement ─────────────────────
     usage = llm_result.get("usage", {})
     prompt_tokens: int = usage.get("prompt_tokens", 0)
     completion_tokens: int = usage.get("completion_tokens", 0)
+    _budget_abort: bool = False
+    _budget_msg: str = ""
     if (prompt_tokens or completion_tokens) and db_factory:
         try:
             from sqlalchemy import select as _select
@@ -937,6 +953,23 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
                         + completion_tokens * _rates["completion"]
                     ) / 1000.0
                     _run.estimated_cost_usd = (_run.estimated_cost_usd or 0.0) + _cost
+                    # ── Hard budget abort ─────────────────────────────────────
+                    # Checked AFTER the current call so the cost is always persisted
+                    # even on the call that trips the limit.
+                    _max_cost = (state.get("global_config") or {}).get("max_cost_usd")
+                    if _max_cost is not None:
+                        try:
+                            _max_cost_f = float(_max_cost)
+                        except (TypeError, ValueError):
+                            _max_cost_f = None
+                        if _max_cost_f is not None and _run.estimated_cost_usd > _max_cost_f:
+                            _budget_abort = True
+                            _budget_msg = (
+                                f"LLM budget exceeded: cumulative cost "
+                                f"${_run.estimated_cost_usd:.4f} > max_cost_usd="
+                                f"{_max_cost_f:.4f} (node={node.node_id})"
+                            )
+                            logger.warning("Run %s: %s", run_id, _budget_msg)
                     await _db.commit()
                 from app.services import run_service
                 await run_service.emit_event(
@@ -949,8 +982,26 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
                         "total_tokens": usage.get("total_tokens", prompt_tokens + completion_tokens),
                     },
                 )
+                if _budget_abort:
+                    await run_service.emit_event(
+                        _db, run_id, "budget_exceeded",
+                        node_id=node.node_id,
+                        payload={"message": _budget_msg},
+                    )
+                    await _db.commit()
         except Exception as _tok_exc:
             logger.warning("Failed to persist LLM token usage: %s", _tok_exc)
+
+    # Abort run if LLM budget was exceeded.  Checked after token tracking so
+    # the final call's cost is committed to DB before we fail the run.
+    if _budget_abort:
+        return {
+            **state,
+            "error": {"message": _budget_msg, "node_id": node.node_id, "type": "budget_exceeded"},
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
 
     text = llm_result.get("text", "")
     for key, mapping in payload.outputs.items():
@@ -968,7 +1019,36 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
     if not payload.outputs:
         vs["llm_output"] = text
 
-    return {**state, "vars": vs, "next_node_id": payload.next_node_id, "current_node_id": node.node_id}  # type: ignore
+    # ── Orchestration mode: extract _next_node from LLM JSON response ─────────
+    resolved_next: str | None = payload.next_node_id
+    if payload.orchestration_mode and payload.branches:
+        try:
+            obj = json.loads(text)
+            chosen = obj.get("_next_node")
+            if chosen and chosen in payload.branches:
+                resolved_next = chosen
+                logger.info(
+                    "Orchestrator node '%s' chose branch '%s'",
+                    node.node_id, chosen,
+                )
+            else:
+                logger.warning(
+                    "Orchestrator node '%s': LLM returned invalid branch '%s', "
+                    "using fallback '%s'. Valid branches: %s",
+                    node.node_id, chosen, payload.branches[0] if payload.branches else None,
+                    payload.branches,
+                )
+                if payload.branches:
+                    resolved_next = payload.branches[0]
+        except (json.JSONDecodeError, TypeError) as _exc:
+            logger.warning(
+                "Orchestrator node '%s': failed to parse JSON for branch selection: %s",
+                node.node_id, _exc,
+            )
+            if payload.branches:
+                resolved_next = payload.branches[0]
+
+    return {**state, "vars": vs, "next_node_id": resolved_next, "current_node_id": node.node_id}  # type: ignore
 
 
 async def execute_subflow(

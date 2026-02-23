@@ -276,9 +276,20 @@ def upgrade() -> None:
     # Composite index for efficient worker poll query
     op.create_index("ix_run_jobs_poll", "run_jobs", ["status", "available_at", "priority"])
 
+    # ── scheduler_leader_leases (Batch 29: HA leader election) ─────────────
+    op.create_table(
+        "scheduler_leader_leases",
+        sa.Column("name", sa.String(64), primary_key=True),       # always "scheduler"
+        sa.Column("leader_id", sa.String(256), nullable=False),   # hostname-pid-rand
+        sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_index("ix_scheduler_leader_leases_expires_at", "scheduler_leader_leases", ["expires_at"])
+
 
 def downgrade() -> None:
     # Drop in reverse FK order
+    op.drop_table("scheduler_leader_leases")
     op.drop_table("run_jobs")
     op.drop_table("trigger_dedupe_records")
     op.drop_table("trigger_registrations")

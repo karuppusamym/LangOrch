@@ -16,6 +16,8 @@ class AgentInstanceCreate(BaseModel):
     concurrency_limit: int = 1
     resource_key: str | None = None
     capabilities: list[str] | None = None
+    pool_id: str | None = None
+    """Optional pool name for round-robin dispatch across multiple agents."""
 
 
 class AgentInstanceUpdate(BaseModel):
@@ -24,6 +26,7 @@ class AgentInstanceUpdate(BaseModel):
     base_url: str | None = None
     concurrency_limit: int | None = None
     capabilities: list[str] | None = None
+    pool_id: str | None = None
 
 
 class AgentInstanceOut(BaseModel):
@@ -34,6 +37,7 @@ class AgentInstanceOut(BaseModel):
     status: str
     concurrency_limit: int
     resource_key: str
+    pool_id: str | None = None
     capabilities: list[str] = []
     consecutive_failures: int = 0
     circuit_open_at: datetime | None = None
@@ -71,6 +75,7 @@ class AgentInstanceOut(BaseModel):
                 "status": data.status,
                 "concurrency_limit": data.concurrency_limit,
                 "resource_key": data.resource_key,
+                "pool_id": getattr(data, "pool_id", None),
                 "capabilities": parsed_caps,
                 "consecutive_failures": getattr(data, "consecutive_failures", 0) or 0,
                 "circuit_open_at": getattr(data, "circuit_open_at", None),

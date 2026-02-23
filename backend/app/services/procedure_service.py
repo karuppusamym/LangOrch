@@ -43,12 +43,26 @@ async def list_procedures(
     status: str | None = None,
     tags: list[str] | None = None,
     search: str | None = None,
+    metadata_search: str | None = None,
 ) -> list[Procedure]:
     stmt = select(Procedure).order_by(Procedure.created_at.desc())
     if project_id:
         stmt = stmt.where(Procedure.project_id == project_id)
     if status:
         stmt = stmt.where(Procedure.status == status)
+    if metadata_search:
+        # SQL LIKE filter directly on the JSON text column — fast path for
+        # metadata-based discovery without loading all rows into Python.
+        # Escape LIKE-special characters in user input to prevent wildcard injection.
+        _escaped = (
+            metadata_search
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        stmt = stmt.where(
+            Procedure.retrieval_metadata_json.ilike(f"%{_escaped}%", escape="\\")
+        )
     result = await db.execute(stmt)
     procs = list(result.scalars().all())
     if tags:
@@ -103,7 +117,8 @@ async def list_procedures(
 
 async def get_procedure(db: AsyncSession, procedure_id: str, version: str | None = None) -> Procedure | None:
     stmt = select(Procedure).where(Procedure.procedure_id == procedure_id)
-    if version:
+    # Treat "latest" (or empty) as "return the newest version"
+    if version and version.lower() != "latest":
         stmt = stmt.where(Procedure.version == version)
     else:
         stmt = stmt.order_by(Procedure.created_at.desc())
@@ -159,3 +174,40 @@ async def delete_procedure_version(db: AsyncSession, procedure_id: str, version:
     await db.delete(proc)
     await db.flush()
     return True
+
+
+_VALID_STATUSES = frozenset({"draft", "active", "deprecated", "archived"})
+
+
+async def patch_procedure_status(
+    db: AsyncSession,
+    procedure_id: str,
+    version: str,
+    new_status: str,
+) -> Procedure | None:
+    """Transition a procedure version's status without replacing the full CKP JSON.
+
+    Valid values: ``draft``, ``active``, ``deprecated``, ``archived``.
+    Returns the updated :class:`Procedure` or ``None`` if not found.
+    Raises :class:`ValueError` for invalid status values.
+    """
+    if new_status not in _VALID_STATUSES:
+        raise ValueError(
+            f"Invalid status {new_status!r}. Must be one of: {sorted(_VALID_STATUSES)}"
+        )
+    proc = await get_procedure(db, procedure_id, version)
+    if not proc:
+        return None
+    if proc.status == new_status:
+        return proc  # idempotent — nothing to do
+    proc.status = new_status
+    # Mirror the status into the stored CKP JSON so the document stays consistent.
+    try:
+        ckp = json.loads(proc.ckp_json) if proc.ckp_json else {}
+        ckp["status"] = new_status
+        proc.ckp_json = json.dumps(ckp)
+    except Exception:
+        pass  # malformed JSON — leave ckp_json unchanged; status column is authoritative
+    await db.flush()
+    await db.refresh(proc)
+    return proc

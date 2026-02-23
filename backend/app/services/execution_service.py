@@ -19,7 +19,7 @@ from app.runtime.graph_builder import build_graph
 from app.runtime.state import OrchestratorState
 from app.db.models import RunEvent
 from app.services import approval_service, run_service
-from app.services.secrets_service import get_secrets_manager, configure_secrets_provider, EnvironmentSecretsProvider, VaultSecretsProvider
+from app.services.secrets_service import get_secrets_manager, configure_secrets_provider, EnvironmentSecretsProvider, VaultSecretsProvider, invalidate_secrets_cache, provider_from_config
 from app.utils.metrics import record_run_started, record_run_completed
 from app.utils.run_cancel import RunCancelledError, register as _cancel_register, deregister as _cancel_deregister
 
@@ -307,7 +307,18 @@ async def execute_run(run_id: str, db_factory) -> None:
             # Mark running
             await run_service.update_run_status(db, run_id, "running")
             await db.commit()
-            
+
+            # Flush secrets cache when rotation check is enabled — forces fresh
+            # reads from the underlying provider on this run's first secret access.
+            if settings.SECRETS_ROTATION_CHECK:
+                invalidated = invalidate_secrets_cache()
+                if invalidated:
+                    await run_service.emit_event(
+                        db, run_id, "secrets_cache_invalidated",
+                        payload={"message": "Secrets cache flushed before run execution"},
+                    )
+                    await db.commit()
+
             # Record metrics
             run_start_time = datetime.now(timezone.utc)
             record_run_started()
@@ -425,20 +436,13 @@ async def execute_run(run_id: str, db_factory) -> None:
             provider_type = secrets_config.get("provider", "env_vars")
             
             try:
-                # Configure secrets provider based on CKP config
-                if provider_type == "hashicorp_vault":
-                    vault_url = secrets_config.get("vault_url")
-                    if vault_url:
-                        provider = VaultSecretsProvider(vault_url=vault_url)
-                        configure_secrets_provider(provider)
-                        logger.info("Configured Vault secrets provider: %s", vault_url)
-                elif provider_type in ["azure_keyvault", "aws_secrets"]:
-                    logger.warning("Secrets provider '%s' not yet implemented, falling back to env_vars", provider_type)
-                    # Fallback to environment variables
-                    configure_secrets_provider(EnvironmentSecretsProvider())
-                else:
-                    # Default to environment variables
-                    configure_secrets_provider(EnvironmentSecretsProvider())
+                # Configure secrets provider based on CKP global_config.secrets_config.
+                # provider_from_config() supports all four provider types:
+                # env / hashicorp_vault / aws_secrets_manager / azure_key_vault
+                # and wraps with CachingSecretsProvider when cache_ttl > 0.
+                _provider = provider_from_config(secrets_config)
+                configure_secrets_provider(_provider)
+                logger.info("Configured secrets provider: type=%s", provider_type)
                 
                 # Load secrets referenced in CKP
                 secret_references = secrets_config.get("secret_references", {})

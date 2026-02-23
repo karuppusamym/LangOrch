@@ -687,7 +687,7 @@ export default function RunDetailPage() {
                                 <td className="py-1 pr-3 font-mono text-gray-400 max-w-[120px] truncate" title={e.idempotency_key ?? undefined}>{e.idempotency_key ?? "—"}</td>
                                 <td className="py-1 pr-3">{e.status}</td>
                                 <td className="py-1 pr-3">{e.has_cached_result ? <span className="rounded bg-green-50 px-1 text-green-600">cached</span> : <span className="text-gray-400">—</span>}</td>
-                                <td className="py-1 text-gray-400">{e.completed_at ? new Date(e.completed_at).toLocaleTimeString() : "—"}</td>
+                                <td className="py-1 text-gray-400">{e.updated_at ? new Date(e.updated_at).toLocaleTimeString() : "—"}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -895,7 +895,7 @@ function DiagCard({ label, value }: { label: string; value: string | number }) {
 function LlmUsageDetail({ payload }: { payload: Record<string, unknown> }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2 rounded-lg border border-purple-100 bg-purple-50 p-2">
-      {payload.model && (
+      {payload.model != null && (
         <span className="rounded-full bg-purple-100 px-2.5 py-0.5 text-[10px] font-medium text-purple-700">
           {String(payload.model)}
         </span>

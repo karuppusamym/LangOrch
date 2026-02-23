@@ -260,7 +260,7 @@ class AWSSecretsManagerProvider(SecretsProvider):
         The secret name stored in AWS is exactly ``key``.  If the stored
         value is JSON and ``secret_field`` is set, that field is returned.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             client = self._get_client()
             resp: dict[str, Any] = await loop.run_in_executor(
@@ -300,7 +300,7 @@ class AWSSecretsManagerProvider(SecretsProvider):
 
     async def list_secrets(self) -> list[str]:
         """List secret names from AWS Secrets Manager."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         names: list[str] = []
         try:
             client = self._get_client()
@@ -388,7 +388,7 @@ class AzureKeyVaultProvider(SecretsProvider):
 
     async def get_secret(self, key: str) -> str | None:
         normalised = self._normalise_key(key)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             client = self._get_client()
             secret = await loop.run_in_executor(None, lambda: client.get_secret(normalised))
@@ -403,7 +403,7 @@ class AzureKeyVaultProvider(SecretsProvider):
             return None
 
     async def list_secrets(self) -> list[str]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         names: list[str] = []
         try:
             client = self._get_client()
@@ -582,3 +582,29 @@ def configure_secrets_provider(provider: SecretsProvider) -> None:
 def configure_from_config(config: dict[str, Any]) -> None:
     """Build a provider from a secrets_config dict and set it as global."""
     configure_secrets_provider(provider_from_config(config))
+
+
+def invalidate_secrets_cache(key: str | None = None) -> bool:
+    """Invalidate the global secrets cache (when the provider is a ``CachingSecretsProvider``).
+
+    Parameters
+    ----------
+    key:
+        When ``None`` (default) the entire cache is flushed.
+        When provided, only that specific key is evicted.
+
+    Returns
+    -------
+    bool
+        ``True`` if the cache was invalidated; ``False`` if the global
+        provider is not a caching provider (no-op).
+    """
+    manager = get_secrets_manager()
+    if isinstance(manager.provider, CachingSecretsProvider):
+        manager.provider.invalidate(key)
+        logger.info(
+            "Secrets cache invalidated (%s)",
+            f"key='{key}'" if key else "full flush",
+        )
+        return True
+    return False

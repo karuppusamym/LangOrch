@@ -176,186 +176,156 @@ export default function ProceduresPage() {
   );
 
   return (
-    <div className="space-y-6">
-      {/* Breadcrumb when filtered by project */}
-      {activeProject && (
-        <div className="flex items-center gap-2 text-sm">
-          <button
-            onClick={() => changeProjectFilter("")}
-            className="text-gray-400 hover:text-gray-600 hover:underline"
-          >
-            All Procedures
-          </button>
-          <span className="text-gray-300">/</span>
-          <span className="font-medium text-gray-700">{activeProject.name}</span>
-          <span className="ml-1 rounded-full bg-primary-100 px-2 py-0.5 text-xs text-primary-700">
-            {procedures.length} procedure{procedures.length !== 1 ? "s" : ""}
-          </span>
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Procedures</h1>
+          <p className="text-neutral-500 dark:text-neutral-400 mt-1">
+            {activeProject ? `Showing procedures for: ${activeProject.name}` : "Manage and run your workflow procedures"}
+          </p>
         </div>
-      )}
+        <div className="flex items-center gap-2">
+          {activeProject && (
+            <button onClick={() => changeProjectFilter("")}
+              className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-3 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+              ← All Procedures
+            </button>
+          )}
+          <button onClick={() => setShowImport(true)}
+            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+            Import CKP
+          </button>
+        </div>
+      </div>
 
-      {/* Actions bar */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search procedures…"
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none w-52"
-          />
-          <select
-            aria-label="Filter by status"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
-          >
-            <option value="">All statuses</option>
+      {/* Filters */}
+      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[180px]">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search procedures…"
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+          </div>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter by status"
+            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
+            <option value="">All Statuses</option>
             <option value="active">Active</option>
             <option value="draft">Draft</option>
             <option value="deprecated">Deprecated</option>
             <option value="archived">Archived</option>
           </select>
-          <select
-            aria-label="Filter by project"
-            value={projectFilter}
-            onChange={(e) => changeProjectFilter(e.target.value)}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
-          >
-            <option value="">All projects</option>
-            {projects.map((p) => (
-              <option key={p.project_id} value={p.project_id}>{p.name}</option>
-            ))}
+          <select value={projectFilter} onChange={(e) => changeProjectFilter(e.target.value)} aria-label="Filter by project"
+            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
+            <option value="">All Projects</option>
+            {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
           </select>
-          <p className="text-sm text-gray-400">
-            {filtered.length}{filtered.length !== procedures.length ? ` of ${procedures.length}` : ""} procedure{procedures.length !== 1 ? "s" : ""}
-          </p>
+          <span className="text-xs text-neutral-400">{filtered.length}{filtered.length !== procedures.length ? ` of ${procedures.length}` : ""} procedure{procedures.length !== 1 ? "s" : ""}</span>
         </div>
-        <button
-          onClick={() => setShowImport(true)}
-          className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 shrink-0"
-        >
-          Import CKP
-        </button>
       </div>
 
-      {/* Import dialog */}
+      {/* Import form */}
       {showImport && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-3 text-sm font-semibold">Paste CKP JSON</h3>
-          <textarea
-            value={importJson}
-            onChange={(e) => setImportJson(e.target.value)}
-            className="h-48 w-full rounded-lg border border-gray-300 p-3 font-mono text-xs focus:border-primary-500 focus:outline-none"
-            placeholder='{"procedure_id": "...", "version": "...", ...}'
-          />
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-sm">
+          <h3 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Import CKP Procedure</h3>
+          <textarea value={importJson} onChange={(e) => setImportJson(e.target.value)}
+            className="h-48 w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 p-3 font-mono text-xs focus:border-blue-500 focus:outline-none"
+            placeholder='{"procedure_id": "...", "version": "...", ...}' />
           {projects.length > 0 && (
             <div className="mt-3">
-              <label className="mb-1 block text-xs text-gray-500">Assign to project (optional)</label>
-              <select
-                aria-label="Assign to project"
-                value={importProjectId}
-                onChange={(e) => setImportProjectId(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
-              >
+              <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">Assign to project (optional)</label>
+              <select value={importProjectId} onChange={(e) => setImportProjectId(e.target.value)} aria-label="Assign to project"
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
                 <option value="">— No project —</option>
-                {projects.map((p) => (
-                  <option key={p.project_id} value={p.project_id}>{p.name}</option>
-                ))}
+                {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
               </select>
             </div>
           )}
           {importError && <p className="mt-2 text-sm text-red-600">{importError}</p>}
           <div className="mt-3 flex gap-2">
-            <button
-              onClick={handleImport}
-              className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
-            >
-              Import
-            </button>
-            <button
-              onClick={() => { setShowImport(false); setImportError(""); setImportProjectId(""); }}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
+            <button onClick={handleImport} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Import</button>
+            <button onClick={() => { setShowImport(false); setImportError(""); setImportProjectId(""); }}
+              className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
               Cancel
             </button>
           </div>
         </div>
       )}
 
-      {/* Procedure list */}
+      {/* Procedure table */}
       {loading ? (
-        <p className="text-gray-500">Loading...</p>
+        <div className="flex items-center justify-center py-16">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+        </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-gray-300 p-12 text-center text-gray-400">
-          {procedures.length === 0
-            ? 'No procedures imported yet. Click "Import CKP" to get started.'
-            : "No procedures match your current filters."}
+        <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
+          {procedures.length === 0 ? 'No procedures yet. Click "Import CKP" to get started.' : "No procedures match your current filters."}
         </div>
       ) : (
-        <div className="grid gap-3">
-          {filtered.map((proc) => {
-            const key = `${proc.procedure_id}:${proc.version}`;
-            const href = `/procedures/${encodeURIComponent(proc.procedure_id)}/${encodeURIComponent(proc.version)}`;
-            const projName = projects.find((p) => p.project_id === proc.project_id)?.name;
-            const isRunning = runningId === key;
-
-            return (
-              <div
-                key={key}
-                className="flex items-stretch rounded-xl border border-gray-200 bg-white shadow-sm transition hover:shadow-md"
-              >
-                {/* Main content — click through to detail */}
-                <Link href={href} className="flex min-w-0 flex-1 flex-col justify-center gap-1 px-5 py-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-medium text-gray-900">{proc.name}</h3>
-                    <StatusBadge status={proc.status} />
-                    {projName && (
-                      <span className="rounded-full border border-primary-200 bg-primary-50 px-2 py-0.5 text-xs text-primary-700">
-                        {projName}
-                      </span>
-                    )}
-                  </div>
-                  {proc.description && (
-                    <p className="truncate text-sm text-gray-500">{proc.description}</p>
-                  )}
-                  <p className="text-xs text-gray-400">
-                    {proc.procedure_id} · v{proc.version}
-                    {proc.effective_date && <span className="ml-2">· Effective: {proc.effective_date}</span>}
-                  </p>
-                </Link>
-
-                {/* Action buttons — stop propagation so they don't navigate */}
-                <div className="flex shrink-0 items-center gap-2 border-l border-gray-100 px-4">
-                  <button
-                    onClick={(e) => void handleQuickRun(proc, e)}
-                    disabled={isRunning || proc.status === "archived" || proc.status === "deprecated"}
-                    title={isRunning ? "Starting…" : "Run this procedure"}
-                    className="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-                  >
-                    {isRunning ? "Starting…" : "▶ Run"}
-                  </button>
-                  <Link
-                    href={`${href}?tab=graph`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 whitespace-nowrap"
-                  >
-                    Graph
-                  </Link>
-                  <Link
-                    href={`${href}?tab=explain`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 whitespace-nowrap"
-                  >
-                    Analyze
-                  </Link>
-                  <span className="hidden text-xs text-gray-300 xl:block">
-                    {new Date(proc.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
+              <tr className="text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
+                <th className="px-5 py-3">Name</th>
+                <th className="px-5 py-3">Version</th>
+                <th className="px-5 py-3">Project</th>
+                <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Created</th>
+                <th className="px-5 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              {filtered.map((proc) => {
+                const key = `${proc.procedure_id}:${proc.version}`;
+                const href = `/procedures/${encodeURIComponent(proc.procedure_id)}/${encodeURIComponent(proc.version)}`;
+                const projName = projects.find((p) => p.project_id === proc.project_id)?.name;
+                const isRunning = runningId === key;
+                return (
+                  <tr key={key} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors">
+                    <td className="px-5 py-3">
+                      <Link href={href} className="font-medium text-neutral-900 dark:text-neutral-100 hover:text-blue-600 dark:hover:text-blue-400">
+                        {proc.name}
+                      </Link>
+                      {proc.description && <p className="text-xs text-neutral-400 mt-0.5 truncate max-w-[250px]">{proc.description}</p>}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className="rounded-md bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-xs font-mono text-neutral-600 dark:text-neutral-400">v{proc.version}</span>
+                    </td>
+                    <td className="px-5 py-3">
+                      {projName ? (
+                        <span className="rounded-full bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-400">{projName}</span>
+                      ) : (
+                        <span className="text-xs text-neutral-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3">
+                      <StatusBadge status={proc.status} />
+                    </td>
+                    <td className="px-5 py-3 text-xs text-neutral-400">{new Date(proc.created_at).toLocaleDateString()}</td>
+                    <td className="px-5 py-3">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={(e) => void handleQuickRun(proc, e)}
+                          disabled={isRunning || proc.status === "archived" || proc.status === "deprecated"}
+                          className="flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                          {isRunning ? "Starting…" : "Run"}
+                        </button>
+                        <Link href={`${href}?tab=graph`} onClick={(e) => e.stopPropagation()}
+                          className="rounded-md border border-neutral-200 dark:border-neutral-700 px-2.5 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                          Graph
+                        </Link>
+                        <Link href={`${href}?tab=explain`} onClick={(e) => e.stopPropagation()}
+                          className="rounded-md border border-neutral-200 dark:border-neutral-700 px-2.5 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                          Analyze
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 

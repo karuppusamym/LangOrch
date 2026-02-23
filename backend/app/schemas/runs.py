@@ -97,6 +97,9 @@ class ArtifactOut(BaseModel):
     step_id: str | None = None
     kind: str
     uri: str
+    name: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

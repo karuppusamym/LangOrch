@@ -243,19 +243,13 @@ CKP JSON → parser.py → raw dict
 
 ---
 
-## What's NOT covered yet (called out)
+## Current gaps / deferred scope
 
-1. **Workflow Builder UI (React Flow editor)** — Read-only graph viewer exists; editable node properties not started.
-2. **Observer/O2A** — Deferred; no screen capture → CKP generation yet.
-3. **Enterprise RBAC** — No multi-tenant auth; single-user for now.
-4. **Scheduled triggers** — CKP supports cron triggers but the scheduler service is not in scope for initial build.
-5. **MCP server hosting** — We build MCP *client* connectors; MCP servers are external.
-6. **Agent worker processes** — We define the protocol; actual agent workers (Playwright, WinAppDriver, etc.) need separate implementation.
-7. **AWS/Azure Secrets** — Provider stubs exist with env fallback; full adapters deferred.
-8. **Frontend e2e tests / CI pipeline** — Not started.
+1. **Workflow Builder UI (React Flow editor)** — Read-only graph viewer exists; editable node authoring is not started.
+2. **Observer/O2A capture pipeline** — Deferred; no screen capture → CKP generation flow yet.
+3. **Enterprise AuthN/AuthZ + tenancy (RBAC)** — Not implemented; APIs are still open in current scope.
+4. **Event-bus trigger adapters** — Cron, webhook, and file-watch triggers exist; queue/topic-native adapters are deferred.
+5. **MCP server hosting** — LangOrch implements MCP *client* connectors; MCP servers remain external.
+6. **Production-grade agent fleet** — Protocol + registration are implemented, but full managed worker products (Playwright, WinAppDriver, etc.) remain external deployments.
 
-These are explicitly deferred, not forgotten.
-7. **AWS/Azure Secrets** — Provider stubs exist with env fallback; full adapters deferred.
-8. **Frontend e2e tests / CI pipeline** — Not started.
-
-These are explicitly deferred, not forgotten.
+Implemented after initial draft: scheduled triggers, AWS/Azure secrets providers, frontend e2e coverage, and CI pipeline.

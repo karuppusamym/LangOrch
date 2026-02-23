@@ -237,6 +237,8 @@ def _parse_llm_action(d: dict) -> IRLlmActionPayload:
         retry=d.get("retry"),
         outputs=d.get("outputs", {}),
         next_node_id=d.get("next_node"),
+        orchestration_mode=bool(d.get("orchestration_mode", False)),
+        branches=list(d.get("branches", [])),
     )
 
 

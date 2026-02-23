@@ -1,8 +1,29 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-21 (Batch 28: `_build_template_vars()` injects `{{run_id}}` / `{{procedure_id}}` as built-in template variables; artifact files stored under `artifacts/{run_id}/` — run-scoped, no cross-run collisions; 613 tests passing)
+Last updated: 2026-02-22 (Batch 34: 4 enhancements —
+**Enhancement 1** Artifact metadata: `name` / `mime_type` / `size_bytes` columns added to `artifacts` table, `ArtifactOut` schema, `create_artifact()` signature, and SQLite idempotent migrations — artifact UI can show original filename, type, and size;
+**Enhancement 2** `GET /api/queue`: job queue visibility endpoint — grouped counts by status, total pending/running/done/failed, next 20 pending jobs with priority and availability timestamp;
+**Enhancement 3** `GET /api/agents/pools`: per-pool stats — agent count, status breakdown, aggregate concurrency limit, active lease count, available capacity, circuit-open agent count;
+**Enhancement 4** WorkflowBuilder 3-tier node architecture: palette reorganised into Deterministic (Blue) / Intelligent (Purple) / Control (Orange) category groups with color-coded section headers; each node card shows a category badge; color scheme updated to category-consistent shades; 3 workflow templates added: Invoice Processing, Customer Support, Contract Review — one-click load into the canvas)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
+
+---
+
+## Canonical remaining gaps (single source of truth)
+
+Use this section as the authoritative snapshot of what is still missing. If any later section conflicts with this list, this list wins.
+
+| Gap | Current state | Priority |
+|-----|---------------|----------|
+| External observability backend | Prometheus endpoint + Pushgateway push are implemented; Prometheus text format with proper label syntax now correct; full OpenTelemetry traces/log shipping/correlation backend is pending | P0 |
+| Event-bus trigger adapters | Cron/webhook/file-watch/manual are implemented; Kafka/SQS-style consumer adapters are pending | P1 |
+| Multi-tenant isolation | Single-tenant model; no tenant-scoped data partitioning and policy enforcement | P1 |
+| Procedure promotion/canary/rollback | Versioning + status lifecycle (PATCH `/status` endpoint) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |
+| LLM fallback-model routing | Hard budget abort (`max_cost_usd`) now implemented; fallback-model routing policy (cost-based model selection) is pending | P1 |
+| Compliance controls | No PII tokenization pre-LLM, GDPR erase flow, or policy-as-code compile checks | P2 |
+| Agent pool capacity signals | `pool_id` + round-robin + `GET /api/agents/pools` stats (agent count, active leases, available capacity, circuit-open count) done (**Batch 34**); `pool_saturated` event emission and autoscale hint are pending | P2 |
+| Test hardening breadth | Strong unit coverage + core Playwright flows; broader load/soak and failure-path e2e coverage are pending | P2 |
 
 ---
 
@@ -18,6 +39,147 @@ LangOrch is considered **production-ready** when all items below are true:
 - **Quality gates**: CI blocks regressions (lint, type-check, tests, build) and core UI flows have e2e coverage
 
 See **Production readiness checklist (P0/P1)** below for concrete deliverables.
+
+---
+
+## Architectural Philosophy — Hybrid Automation
+
+### Core premise
+
+Most real-world processes are neither fully automatable by rules nor fully delegatable to AI. They contain **predictable structural components** (look up a record, call an API, write a file) and **ambiguous judgment components** (interpret unstructured text, assess risk, draft a response). LangOrch is built on the premise that the right architecture **explicitly models both** and lets them compose cleanly — rather than forcing every step through an LLM or hard-coding every action into rule logic.
+
+The central design goal: **reliable orchestration that escalates to intelligence only where intelligence is needed,** and falls back to humans only where neither algorithm nor model is sufficient.
+
+---
+
+### The three-tier node model
+
+Every CKP node belongs to exactly one of three tiers. The tier is not cosmetic — it determines execution semantics, failure modes, cost profile, and how the platform routes and monitors the step.
+
+#### 🔵 Deterministic tier (Blue)
+> *Fast, reliable, auditable. Same input always produces the same output.*
+
+| Node type | Role |
+|-----------|------|
+| `sequence` | Ordered API call, HTTP request, or external system integration |
+| `processing` | Structured data validation, transformation, computation |
+| `transform` | Pure state rewrite — filter, map, reshape JSON without I/O |
+| `subflow` | Invoke another CKP procedure as a composable unit |
+
+**Properties:**
+- **Predictable cost** — no token spend, no variable latency from model inference
+- **Testable** — input/output pairs can be captured and replayed in CI
+- **Safe to retry** without concern for idempotency at the LLM level
+- **Auditability is complete** — every step produces a structured event with full inputs and outputs recorded
+
+**When to use:** Any step where the correct logic is fully known, expressible as code or an API call, and must behave identically every time. This is the default choice — reach for a deterministic node first.
+
+---
+
+#### 🟣 Intelligent tier (Purple)
+> *Adaptive, reasoning-capable. Output varies based on context and model judgment.*
+
+| Node type | Role |
+|-----------|------|
+| `llm_action` | LLM call with prompt template, model selection, structured output, and cost tracking |
+
+**Properties:**
+- **Context-sensitive** — the same template can produce different outputs for different inputs; this is intentional and desirable
+- **Costly** — token spend is tracked per run; `global_config.max_cost_usd` hard-aborts the run before overspend
+- **Non-deterministic** — temperature/sampling means outputs vary; use structured output schemas and verification nodes to constrain variance
+- **Can reason across unstructured data** — classify text, extract entities, summarise documents, generate drafts
+- **Requires guardrails** — should be followed by a `verification` or `logic` node whenever the output drives a consequential branch
+
+**When to use:** Steps involving unstructured or ambiguous input, natural language understanding, content generation, semantic classification, or anything where the correct answer cannot be expressed as a deterministic rule. Use sparingly and always account for cost and latency.
+
+---
+
+#### 🟠 Control tier (Orange)
+> *Orchestration logic. Routes execution, manages concurrency, enforces governance.*
+
+| Node type | Role |
+|-----------|------|
+| `logic` | Conditional branching on workflow state (`on_true` / `on_false` / rules list) |
+| `loop` | Iterate over a collection or repeat until a condition is met (`loop_body`) |
+| `parallel` | Fan-out — execute multiple branches concurrently and join results |
+| `verification` | Assert that a previous step's output meets a schema or constraint (`on_pass` / `on_fail`) |
+| `human_approval` | Pause execution pending a decision from a named approver (`on_approve` / `on_reject` / `on_timeout`) |
+| `terminate` | Explicitly end the run with a declared terminal status |
+
+**Properties:**
+- **Stateless logic** — control nodes operate on workflow state already present; they do not call external services
+- **Zero cost** — no token spend; fast
+- **Composable governance** — `verification` and `human_approval` are the enforcement layer between tiers; they catch errors from either deterministic or intelligent steps before they propagate
+- **Human-in-the-loop boundary** — `human_approval` is the explicit handoff point where the system acknowledges it cannot proceed autonomously
+
+**When to use:** Wherever the workflow needs to branch, iterate, run things in parallel, validate results, or wait for a human decision. Control nodes are the connective tissue of the graph — they are not doing work themselves, they are directing where work goes next.
+
+---
+
+### How the tiers compose
+
+Effective workflows follow a pattern: **deterministic nodes gather and prepare data → intelligent nodes reason over it → control nodes validate and route the result → deterministic nodes act on the decision.**
+
+```
+[sequence: fetch invoice]
+        │
+[llm_action: extract fields]        ← intelligent: parse unstructured PDF
+        │
+[verification: validate schema]     ← control: enforce required fields present
+        │              │
+     (pass)         (fail)
+        │              └──[sequence: flag for manual review]
+[logic: amount > $10k?]             ← control: deterministic rule
+        │              │
+     (true)         (false)
+        │              └──[sequence: auto-approve + log]
+[human_approval: manager sign-off]  ← control: governance gate
+        │              │
+    (approve)      (reject)
+        │              └──[sequence: notify requester]
+[sequence: post to ERP]             ← deterministic: reliable write
+        │
+[terminate: success]
+```
+
+This pattern delivers three compound properties that neither pure-rule nor pure-LLM systems achieve alone:
+
+| Property | How it is achieved |
+|----------|--------------------|
+| **Reliability** | Structural steps (API calls, writes) use deterministic nodes — no model variance in consequential I/O |
+| **Adaptability** | Intelligent nodes handle the steps where rules would be brittle — unstructured input, natural language, ambiguous classification |
+| **Accountability** | Verification and human_approval nodes create explicit checkpoints; every decision has a recorded event in the run timeline |
+
+---
+
+### Design rules derived from this philosophy
+
+1. **Default to deterministic.** If a step can be expressed as an API call or a data transformation, it should be a `sequence`, `processing`, or `transform` node — not an `llm_action`. LLMs are expensive, slow, and non-deterministic.
+
+2. **Isolate intelligence.** `llm_action` nodes should have a single, focused responsibility (extract, classify, summarise, draft). A node that both extracts *and* decides *and* writes is a smell — split it into a deterministic extraction, an intelligent interpretation, and a deterministic write.
+
+3. **Always verify model output before routing.** Any `llm_action` whose output drives a `logic` branch or a write to an external system should be followed by a `verification` node. This is the primary mechanism for catching model errors before they cause downstream damage.
+
+4. **Make the human boundary explicit.** `human_approval` nodes are not a fallback — they are a deliberate governance policy decision. If a workflow requires human sign-off for values above a threshold or for a specific action class, that constraint should be visible in the graph, not buried in application code.
+
+5. **Cost is a first-class concern.** Set `global_config.max_cost_usd` on every production procedure that contains `llm_action` nodes. The platform will hard-abort the run with a `budget_exceeded` event before overspend occurs.
+
+6. **Compose horizontally, not vertically.** A `subflow` node that calls a focused sub-procedure is better than one monolithic graph. Sub-procedures can be versioned, tested, and reused independently.
+
+---
+
+### Operational properties of the hybrid model
+
+| Concern | Deterministic nodes | Intelligent nodes | Control nodes |
+|---------|--------------------|--------------------|---------------|
+| Latency | Low (bound by external API) | High (model inference) | Near-zero |
+| Cost | Zero token spend | Per-token billing | Zero token spend |
+| Retry safety | Safe (idempotency key controls dedup) | Caution — same prompt may produce different output | Safe — no side effects |
+| Observability | Full structured I/O in run events | Prompt + completion recorded; token counts tracked | Branch decision recorded in run events |
+| Failure mode | Network/API errors — well-understood | Hallucination, schema violation, token limit — needs verification guard | Evaluation error on state shape |
+| Test strategy | Unit test with fixed fixtures | Snapshot test prompt+schema; integration test with live model | Logic unit test with state fixtures |
+
+---
 
 ## Current implementation baseline (what is already done)
 
@@ -44,7 +206,10 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - **Workflow graph viewer (frontend)**: interactive React Flow with custom CKP nodes, color-coding, minimap, zoom/pan
 - **549 backend tests** — all passing (current baseline)
 - **Durable worker model**: `app/worker/` package with `loop.py` (poll/claim/execute/stall-reclaim), `heartbeat.py` (lock renewal + cancel bridge), `worker_main.py` (standalone entrypoint), `enqueue_run` (new runs) + `requeue_run` (approval-resume + retry, SELECT-UPDATE-or-INSERT avoiding UNIQUE constraint violation on `run_jobs.run_id`); embedded in server via `asyncio.create_task`; SQLite optimistic-locking and PostgreSQL `FOR UPDATE SKIP LOCKED` dialects both implemented
-- **613 backend tests** — all passing after Batch 27
+- **HA-safe scheduling** (`app/runtime/leader.py`): DB-backed `LeaderElection` class; `SchedulerLeaderLease` table; INSERT-wins / UPDATE-steal / renewal (TTL 60s, renew 15s); APScheduler sync, `_fire_scheduled_trigger`, `_file_watch_trigger_loop`, and `_approval_expiry_loop` all skip when not leader — no double-fire under multiple replicas
+- **Artifact retention/TTL** (`ARTIFACT_RETENTION_DAYS=30`): `_artifact_retention_loop()` background sweep (leader-gated, hourly) deletes `artifacts/{run_id}/` folders for terminal runs older than the configured threshold; orphaned folders pruned by mtime; `POST /api/artifacts-admin/cleanup` manual trigger + `GET /api/artifacts-admin/stats` for disk usage
+- **Frontend e2e tests**: 26 Playwright e2e tests across 4 spec files (`navigation.spec.ts`, `procedures.spec.ts`, `runs.spec.ts`, `approvals.spec.ts`) — page-load smoke tests, UI import flow, run creation, timeline verification, approval approve/reject flow; `playwright.config.ts` auto-starts dev server; fixtures + shared helpers
+- **681 backend tests** — all passing after Batch 30
 - 12-route frontend: Dashboard, Procedures (list/detail/edit/version-diff), Runs (list/detail/timeline/bulk-ops), Approvals (inbox/detail/SSE-live), Agents, Projects, Leases
 - **Dark mode**: system-preference-aware toggle in header, persisted to localStorage
 - **Retry with modified inputs**: run detail retry button opens variables editor pre-filled with original inputs
@@ -56,16 +221,13 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 
 ### Partially implemented
 - Telemetry fields: `track_duration` and `track_retries` emitted in step events; `custom_metrics` recorded; not yet exported to external backends
-- Approval flow exists, but no role-based approver governance (AuthN/AuthZ parked)
-- Agent pool model: channel-based shuffle distribution done; `pool_id` + deterministic fair round-robin not yet implemented
+- AuthN/AuthZ is implemented as opt-in (`AUTH_ENABLED`) and guards mutating endpoints; remaining hardening is enabling-by-default in production with centralized identity provider integration (OIDC/SSO) and stricter scope governance
+- Agent pool model is implemented with `pool_id` and deterministic per-pool round-robin; remaining work is capacity/saturation signaling and advanced routing policies
 
 ### Not yet implemented (high impact gaps)
-- **AuthN/AuthZ** — all 35+ API endpoints are open; no identity, no roles, no audit attribution
-- **HA-safe scheduling** — APScheduler cron worker fires triggers but will double-fire under multiple replicas; no leader election
-- **Artifact retention/TTL** — run-scoped paths (`artifacts/{run_id}/`) prevent collision but old folders are never purged
-- **Visual workflow builder/editor** — read-only React Flow graph viewer exists; editable authoring not started
-- **Metrics export to external backend** — Prometheus `/api/metrics` endpoint exists but nothing ships to Grafana/OTel remote write
-- **Frontend tests** — no Playwright e2e or unit tests (0%)
+- **External observability stack** — Prometheus endpoint and Pushgateway push are implemented, but full OpenTelemetry traces/log shipping/correlation backend is still pending
+- **Event-bus trigger adapters** — cron/webhook/file-watch are implemented; Kafka/SQS-style consumer adapters are still pending
+- **Multi-tenant governance** — project-level operations are implemented, but tenant-scoped isolation and policy enforcement are not yet implemented
 
 ---
 
@@ -98,20 +260,20 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - ✅ **[Batch 10]** `asyncio.sleep(wait_ms)` / `asyncio.sleep(wait_after_ms)` enforced per step
 
 ## 2) Automation and orchestration triggers
-### Current — UPDATED 2026-02-20 (Batch 20 + Batch 22)
+### Current — UPDATED 2026-02-21 (Batch 20 + Batch 22 + Batch 29)
 - ✅ Trigger registry model + APIs
 - ✅ Cron scheduler worker (APScheduler) for scheduled triggers
 - ✅ Webhook trigger API with HMAC verification + dedupe window + max_concurrent_runs
 - ✅ File-watch trigger loop
 - ✅ Trigger provenance on runs (`trigger_type`, `triggered_by`) visible in UI
+- ✅ **HA-safe scheduling (Batch 29)** — `LeaderElection` class in `app/runtime/leader.py`; DB row (`scheduler_leader_leases`) with INSERT-wins / UPDATE-steal / renewal; TTL 60s, renew every 15s; APScheduler sync loop + `_fire_scheduled_trigger` + `_file_watch_trigger_loop` + `_approval_expiry_loop` all skip execution when not leader; `SchedulerLeaderLease` ORM model; Alembic migration updated; 18 new tests
 
 ### Remaining gaps
-- Distributed scheduler semantics (avoid double-fire when running multiple orchestrator replicas)
 - Event-driven triggers beyond webhook/file-watch (if adopting external event bus)
 - Trigger operational tooling: pause/resume per trigger, per-trigger backoff/retry visibility, dead-lettering
 
 ### Next implementation items
-- Make scheduler HA-safe (leader election or external scheduler)
+- ~~Make scheduler HA-safe (leader election or external scheduler)~~ → ✅ Done (Batch 29)
 - Add event trigger adapter (e.g., queue/topic consumer) with the same dedupe/concurrency controls
 - Add trigger-run audit dashboard + export
 
@@ -121,12 +283,12 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 - ✅ Event redaction: recursive sensitive field sanitization active in all event emission paths
 
 ### Remaining gaps
-- No platform AuthN/AuthZ — all 26 endpoints are open
-- No role-based approval governance (any caller can submit approval decisions)
+- Auth is currently opt-in (`AUTH_ENABLED=false` default), so production deployments must enforce enablement and secret/key rotation policy
+- Role model is global; project-scoped RBAC and enterprise IdP integration remain pending
 - ~~Redaction policy is hardcoded key-name patterns~~ — ✅ Configurable via `build_patterns(extra_fields)` + `emit_event(extra_redacted_fields=...)`
 
 ### Next implementation items
-- Add auth middleware and role model (`operator`, `approver`, `admin`)
+- Harden auth for production rollout (enable-by-default profiles, OIDC integration, project-scoped RBAC)
 - ~~Implement AWS Secrets Manager and Azure Key Vault provider adapters~~ → ✅ Done (Batch 21)
 - ~~Make redaction field list configurable from `global_config.audit_config`~~ — ✅ Implemented via `build_patterns()` + `emit_event(extra_redacted_fields=...)`
 
@@ -194,6 +356,7 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
   ✅ **549 backend tests** (Batch 25): estimated_cost_usd on run detail UI; agent dispatch shuffles eligible agents per channel; confirmed mock/test_data_overrides/dry_run/screenshot_on_fail/checkpoint_retention_loop all wired
 - ✅ **582 backend tests** (Batch 26): SQLite/PG dual-dialect engine; Alembic setup + `v001_initial_schema` migration; `RunJob` ORM; `cancellation_requested` on `Run`; dialect-aware checkpointer
 - ✅ **613 backend tests** (Batch 27): Full durable worker model — `app/worker/` package; `enqueue_run` + `requeue_run`; embedded worker; stall recovery; heartbeat; DB-level cancellation bridge; approval-resume UNIQUE constraint bug fixed
+- ✅ **668 backend tests** (Batch 29): HA-safe scheduling — `LeaderElection` class; 18 new tests covering INSERT/renew/steal/lost-election/guard paths
 
 ### Remaining gaps
 - Backend integration tests are limited (18 API tests) — complex flows like parallel/subflow, checkpoint-retry, approval-resume not tested end-to-end
@@ -417,7 +580,7 @@ See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 ### Deliverables
 - ~~Rich artifact viewer~~ → ✅ Inline preview + download
 - ~~Advanced timeline controls and retry-path visualization~~ → ✅ Retry-with-inputs modal + timeline SSE
-- Workflow builder foundation (graph read/edit MVP) — read-only done, editable pending
+- ~~Workflow builder foundation (graph read/edit MVP)~~ → ✅ Visual workflow builder/editor shipped (Batch 33)
 
 ### Acceptance criteria
 - Operators can debug runs faster with less raw JSON inspection
@@ -443,9 +606,8 @@ This is the minimum set of work to call the system production-ready. Items marke
   - Deliverables: auth middleware, identity propagation, RBAC checks on approvals/runs/admin endpoints
   - Acceptance: every mutating endpoint requires auth; approval decisions restricted to approvers; every run/approval action is attributable to an identity
 - **HA-safe triggers + execution** (multi-replica correctness)
-  - Current: triggers exist (cron/webhook/file_watch), but HA semantics are not defined for multiple orchestrator replicas
-  - Deliverables: leader election or external scheduler; idempotent trigger firing; strong dedupe under concurrency
-  - Acceptance: two orchestrator replicas can run without double-firing schedules or creating duplicate runs
+  - ✅ **DONE (Batch 29)**: DB-level leader election via `LeaderElection` class (`app/runtime/leader.py`); `SchedulerLeaderLease` row in DB; INSERT-wins / UPDATE-steal / renewal algorithm (TTL 60s, renew 15s); APScheduler sync + `_fire_scheduled_trigger` + `_file_watch_trigger_loop` + `_approval_expiry_loop` all check `leader_election.is_leader` before executing; trigger-service dedupe guard (`TriggerDedupeRecord`) provides belt-and-suspenders protection at the run-creation layer
+  - Acceptance: ✅ two orchestrator replicas can run without double-firing schedules or creating duplicate runs
 - **Durable worker model** (survive restarts, scale out)
   - ✅ **DONE (Batch 27)**: `app/worker/` package: poll-and-claim loop (`loop.py`), heartbeat/lock renewal (`heartbeat.py`), standalone entrypoint (`worker_main.py`); `enqueue_run` for new runs; `requeue_run` (SELECT-UPDATE-or-INSERT) for approval-resume and retry; SQLite + PostgreSQL claim dialects; embedded worker in server process via `asyncio.create_task`; stalled-job recovery; DB-level `cancellation_requested` flag bridges cancel signal across restarts
   - Remaining: external worker process at scale (run `worker_main.py` separately), horizontal worker scaling, worker count/concurrency tuning docs
@@ -483,12 +645,10 @@ Goal: ship the minimum **safe deployment baseline** (security + HA correctness +
   - run/procedure mutation endpoints (operator/admin)
 - Acceptance: unauthenticated requests are rejected; audit fields show who triggered runs/approvals
 
-2) **HA-safe triggers (no double-fire)**
-- Choose one HA approach:
-  - leader election (DB row lock/lease) for the scheduler loop, or
-  - external scheduler (preferred when available)
-- Ensure dedupe/concurrency controls apply identically across replicas
-- Acceptance: two backend replicas running simultaneously do not double-create scheduled runs
+2) ~~**HA-safe triggers (no double-fire)**~~ ✅ **DONE (Batch 29)**
+- DB-level leader election: `LeaderElection` in `app/runtime/leader.py`; `SchedulerLeaderLease` table; INSERT-wins / UPDATE-steal / renewal (TTL 60s, renew 15s)
+- APScheduler + file-watch + approval-expiry loops all skip when `leader_election.is_leader` is False
+- Belt-and-suspenders: trigger-service dedupe guard (`TriggerDedupeRecord`) prevents duplicate run creation even in edge cases
 
 3) ~~**Durable worker model (API/worker split)**~~ ✅ **DONE (Batch 27)**
 - `app/worker/` package: `enqueue_run` (new runs) + `requeue_run` (approval-resume/retry); poll-and-claim loop with SQLite optimistic lock + PostgreSQL `FOR UPDATE SKIP LOCKED`; heartbeat task renews lock + bridges `cancellation_requested` DB flag to in-process `asyncio.Event`; stall recovery requeues jobs with expired locks; embedded in server process; `worker_main.py` for standalone deployment
@@ -501,7 +661,7 @@ Goal: ship the minimum **safe deployment baseline** (security + HA correctness +
 - Add at least 1 “smoke” integration test that runs a minimal procedure end-to-end (create → run → events)
 - Acceptance: CI remains green; smoke test fails if critical wiring breaks
 
-Non-goals for this sprint (explicitly deferred): multi-tenancy, editable workflow builder, external metrics backend, autoscaling, advanced pool capacity model.
+Non-goals for this sprint (explicitly deferred): multi-tenancy, full external observability backend (OTel traces/log pipelines), autoscaling, advanced pool capacity model.
 
 ---
 
@@ -609,7 +769,7 @@ Non-goals for this sprint (explicitly deferred): multi-tenancy, editable workflo
 - ✅ SSE-based live approvals
 
 **Still missing**:
-- Visual workflow builder/editor (editable properties, not just read-only)
+- ~~Visual workflow builder/editor (editable properties, not just read-only)~~ → ✅ Done (Batch 33: `WorkflowBuilder.tsx` — node palette, inspector, round-robin edges, CKP export/import; "Builder ✏" tab on Procedure Version page)
 - ~~Frontend: `estimated_cost_usd` cost display on run detail page~~ → ✅ Done (Batch 25: shown in LLM tokens bar alongside prompt/completion/total)
 
 ---
@@ -646,15 +806,19 @@ Non-goals for this sprint (explicitly deferred): multi-tenancy, editable workflo
 3. ~~Implement webhook trigger endpoint with request signing verification~~ → ✅ HMAC-SHA256 in POST /api/triggers/webhook/{id}
 4. ~~Add trigger audit trail and dedupe window logic~~ → ✅ TriggerDedupeRecord table + check_dedupe() + concurrency guard
 
-### Sprint 6: Security and governance
-1. Add AuthN/AuthZ middleware + role model (`operator`, `approver`, `admin`)
-2. Implement AWS Secrets Manager and Azure Key Vault provider adapters
-3. ~~Make redaction field list configurable from `global_config.audit_config`~~ → ✅ Batch 17
-4. Add role-based check on approval decision submission
+### Sprint 6: Security and governance ← ✅ COMPLETE (Batch 32)
+1. ✅ **AuthN/AuthZ middleware** — JWT/OIDC `Authorization: Bearer` + `X-API-Key` via `app/auth/deps.py`; `get_current_user` FastAPI dependency; `AUTH_ENABLED=false` (default) means zero-breaking rollout
+2. ✅ **Role model** — `admin`, `operator`, `approver`, `viewer`; `require_role()` dependency factory in `app/auth/roles.py`; wired to all mutating endpoints
+3. ✅ **Approval RBAC guard** — `POST /api/approvals/{id}/decision` requires `approver` role; `decided_by` set from authenticated `principal.identity` as fallback
+4. ✅ **API key support** — `X-API-Key` header grants `operator` role; keys in `settings.API_KEYS`
+5. ✅ **Secret rotation cache flush** — `invalidate_secrets_cache()` + `SECRETS_ROTATION_CHECK=true` calls it before each run execution
+6. ✅ **Metrics Pushgateway remote export** — `METRICS_PUSH_URL` + `METRICS_PUSH_INTERVAL_SECONDS` background push task
+7. ✅ **Agent round-robin** — `pool_id` column on `AgentInstance`; `_find_capable_agent` uses per-pool monotonic counter (v003 migration)
+8. ✅ **Metadata search SQL LIKE** — `GET /api/procedures?metadata_search=<query>` adds DB-level LIKE filter on `retrieval_metadata_json`
 
 ### Sprint 7: Testing and CI hardening
 1. Add backend integration tests for: parallel branch execution, checkpoint resume, approval decision flow, subflow
-2. Add frontend e2e tests with Playwright for primary operator paths
+2. Expand frontend e2e tests beyond core flows (edge/error/retry scenarios)
 3. Add GitHub Actions CI pipeline: ruff + pyright + pytest + next build
 4. Add backend performance/concurrency tests for lease management
 
@@ -670,21 +834,22 @@ Non-goals for this sprint (explicitly deferred): multi-tenancy, editable workflo
 
 | Domain | Current State | Gap Level |
 |---|---|---|
-| Identity & Governance (AuthN/AuthZ) | 0% — all endpoints open | CRITICAL |
+| Identity & Governance (AuthN/AuthZ) | **100% — Batch 32: `AUTH_ENABLED` opt-in; JWT Bearer + X-API-Key; role guards on mutations; `/api/auth/token`** | **COMPLETE** |
 | Trigger Automation (cron/webhook/event/file_watch) | 100% — Batch 20 + Batch 22 | COMPLETE |
+| **HA-safe Scheduling (Leader Election)** | **100% — Batch 29: `LeaderElection` DB-row lease; all singleton loops leader-gated** | **COMPLETE** |
 | **Durable Worker Model** | **100% — Batch 27: RunJob queue, poll/claim/execute, heartbeat, stall recovery, embedded + standalone modes** | **COMPLETE** |
 | **Production DB + Migrations (Alembic)** | **85% — Batch 26: Alembic + v001 migration + PostgreSQL asyncpg; indexes and backup/restore docs still needed** | **LOW** |
 | **CI/CD Pipeline** | **100% — Batch 22: GitHub Actions (ruff + pytest + tsc + next build)** | **COMPLETE** |
 | Multi-tenancy | 0% — single tenant DB | HIGH |
 | **LLM Cost Visibility** | **100% — Batch 23: token tracking + estimated_cost_usd + project cost-summary API; Batch 25: run detail UI** | **COMPLETE** |
-| Agent Pool / Circuit Breaker | circuit breaker wired (Batch 23); shuffle-based load distribution (Batch 25); pool_id + fair RR remaining | MEDIUM |
+| Agent Pool / Circuit Breaker | **100% — Batch 32: `pool_id` + v003 migration; per-pool round-robin counter replaces random shuffle; circuit breaker wired (Batch 23)** | **COMPLETE** |
 | Procedure Environment Promotion | no dev→staging→prod path | HIGH |
-| Frontend E2E Tests | 0% | HIGH |
+| Frontend E2E Tests | 35% — Batch 30: 26 Playwright tests across navigation/procedures/runs/approvals | MEDIUM |
 | **AWS/Azure Secrets Adapters** | **100% — Batch 21: AWS Secrets Manager (boto3) + Azure Key Vault (DefaultAzureCredential) fully implemented** | **COMPLETE** |
 | PII Masking before external LLM calls | not present | MEDIUM |
 | Data Residency / Compliance Labels | not present | MEDIUM |
-| Approval RBAC governance | any caller can approve | MEDIUM |
-| Secret Rotation Detection | reads once, no invalidation | MEDIUM |
+| Approval RBAC governance | **100% — Batch 32: `require_role("approver")` on decision endpoint; `decided_by` auto-set from JWT identity** | **COMPLETE** |
+| Secret Rotation Detection | **100% — Batch 32: `SECRETS_ROTATION_CHECK` flushes `CachingSecretsProvider` before each run; `invalidate_secrets_cache()` helper** | **COMPLETE** |
 | Workflow Canary / Blue-Green | not present | MEDIUM |
 
 ---
@@ -702,8 +867,7 @@ The first question any enterprise buyer asks: "who can do what, and can you prov
 - **API Key management**: service accounts for agents to authenticate back to the orchestrator — not just open HTTP
 - **Secret rotation detection**: vault integration should watch for TTL expiry and re-fetch; invalidate cached secret mid-run with `secret_rotated` event
 - **Full audit attribution**: every run, approval, deletion, and agent registration records the principal identity — not just timestamp
-- **AWS Secrets Manager adapter**: implement `AWSSecretsProvider` (boto3 `get_secret_value`), replace env fallback
-- **Azure Key Vault adapter**: implement `AzureKeyVaultProvider` (azure-keyvault-secrets), replace env fallback
+- **Secret rotation + cache invalidation**: detect TTL/rotation and refresh provider caches without restart
 
 ### Acceptance criteria
 - No endpoint is accessible without a valid identity token
@@ -895,7 +1059,7 @@ For regulated industries — enforce at compile time, not audit time:
 
 ---
 
-## Prioritised Next-Sprint Picks (post-Batch 28)
+## Prioritised Next-Sprint Picks (post-Batch 29)
 
 Ordered by enterprise value vs implementation cost:
 
@@ -905,6 +1069,7 @@ Ordered by enterprise value vs implementation cost:
 | P0 | AuthN/AuthZ + role model | 2 sprints | Multi-user deployment |
 | P0 | Durable worker model | Large | ✅ Done (Batch 27) |
 | P0 | Production DB + migrations | ✅ Done (Batch 26) | Alembic + PostgreSQL |
+| P0 | HA-safe scheduling (leader election) | Small | ✅ Done (Batch 29) |
 | P1 | CI/CD pipeline (GitHub Actions) | 0.5 sprint | ✅ Done (Batch 22) |
 | P1 | Frontend e2e tests (Playwright) | 1 sprint | Enterprise buyer checklist |
 | P1 | LLM token tracking + cost dashboard | 1 sprint | ✅ Done (Batch 23) |

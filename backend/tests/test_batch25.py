@@ -142,38 +142,49 @@ class TestEstimatedCostSchema:
 
 
 # ===========================================================================
-# 2. Agent round-robin (shuffle)
+# 2. Agent round-robin (deterministic pool counters, Batch 32)
 # ===========================================================================
 
 class TestAgentRoundRobin:
-    """executor_dispatch._find_capable_agent should shuffle agents for load spread."""
+    """executor_dispatch._find_capable_agent uses deterministic round-robin."""
 
-    def test_random_imported_in_dispatch(self):
+    def test_pool_counters_in_dispatch(self):
+        """_pool_counters defaultdict must be present (replaces random.shuffle)."""
         import app.runtime.executor_dispatch as mod
-        assert "random" in dir(mod) or hasattr(mod, "random"), \
-            "random module not imported in executor_dispatch"
+        assert hasattr(mod, "_pool_counters"), \
+            "_pool_counters not found in executor_dispatch"
 
-    def test_shuffle_present_in_source(self):
+    def test_round_robin_in_source(self):
+        """Round-robin via _pool_counters must appear in source; no random.shuffle."""
         import app.runtime.executor_dispatch as mod
         src = inspect.getsource(mod)
-        assert "random.shuffle" in src, "random.shuffle not found in executor_dispatch"
+        assert "_pool_counters" in src, "_pool_counters not found in executor_dispatch"
+        assert "random.shuffle" not in src, \
+            "random.shuffle still present – should have been replaced by round-robin"
 
-    def test_shuffle_called_during_find(self):
-        """_find_capable_agent must call random.shuffle on the agents list."""
+    def test_round_robin_cycles_agents(self):
+        """Successive calls should cycle through agents deterministically."""
         import app.runtime.executor_dispatch as mod
 
-        agents = [_make_agent("a1"), _make_agent("a2"), _make_agent("a3")]
+        agents = [_make_agent(f"a{i}", capabilities="click") for i in range(3)]
 
         async def _run():
+            # Reset counters to get deterministic results
+            mod._pool_counters.clear()
             db_mock = MagicMock()
             scalars_mock = MagicMock()
-            scalars_mock.all.return_value = agents
+            scalars_mock.all.return_value = list(agents)
             db_mock.execute = AsyncMock(
                 return_value=MagicMock(scalars=MagicMock(return_value=scalars_mock))
             )
-            with patch.object(mod.random, "shuffle", wraps=mod.random.shuffle) as mock_shuf:
-                await mod._find_capable_agent(db_mock, "web", "click")
-                mock_shuf.assert_called_once()
+            results = []
+            for _ in range(6):
+                scalars_mock.all.return_value = list(agents)
+                a = await mod._find_capable_agent(db_mock, "web", "click")
+                assert a is not None
+                results.append(a.agent_id)
+            # 6 calls across 3 agents → each visited at least once
+            assert len(set(results)) >= 2, "round-robin should distribute across agents"
 
         asyncio.run(_run())
 
@@ -192,16 +203,16 @@ class TestAgentRoundRobin:
             )
             results = set()
             for _ in range(10):
+                scalars_mock.all.return_value = list(agents)
                 a = await mod._find_capable_agent(db_mock, "web", "click")
                 assert a is not None
                 results.add(a.agent_id)
-            # With shuffle there's randomness — just confirm an agent was returned
             assert len(results) >= 1
 
         asyncio.run(_run())
 
     def test_circuit_open_agents_skipped(self):
-        """Circuit-open agents must still be skipped regardless of shuffle order."""
+        """Circuit-open agents must be skipped by the round-robin logic."""
         import app.runtime.executor_dispatch as mod
         from datetime import datetime, timezone
 
@@ -216,9 +227,7 @@ class TestAgentRoundRobin:
             db_mock.execute = AsyncMock(
                 return_value=MagicMock(scalars=MagicMock(return_value=scalars_mock))
             )
-            # Force bad always first  
-            with patch.object(mod.random, "shuffle", lambda lst: None):
-                result = await mod._find_capable_agent(db_mock, "web", "click")
+            result = await mod._find_capable_agent(db_mock, "web", "click")
             assert result is not None
             assert result.agent_id == "good"
 

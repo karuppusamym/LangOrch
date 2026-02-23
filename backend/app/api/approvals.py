@@ -13,6 +13,8 @@ from app.db.engine import async_session, get_db
 from app.schemas.approvals import ApprovalDecision, ApprovalOut
 from app.services import approval_service, run_service
 from app.worker.enqueue import requeue_run
+from app.auth import require_role
+from app.auth.deps import Principal
 
 router = APIRouter()
 
@@ -72,9 +74,12 @@ async def submit_decision(
     approval_id: str,
     body: ApprovalDecision,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("approver")),
 ):
+    # Use authenticated principal as fallback decided_by
+    decided_by = body.decided_by or principal.identity
     approval = await approval_service.submit_decision(
-        db, approval_id, body.resolved_decision, body.decided_by, body.payload
+        db, approval_id, body.resolved_decision, decided_by, body.payload
     )
     if not approval:
         raise HTTPException(status_code=404, detail="Approval not found or already decided")

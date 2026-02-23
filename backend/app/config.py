@@ -73,9 +73,12 @@ class Settings(BaseSettings):
     ARTIFACTS_DIR: str = "./artifacts"
 
     # ── Retention ───────────────────────────────────────────────
-    # Run events / artifacts older than this many days will be pruned by the
-    # background retention loop (0 = disabled).
+    # Run events older than this many days will be pruned by the background
+    # retention loop (0 = disabled).
     CHECKPOINT_RETENTION_DAYS: int = 30
+    # Artifact folders at ARTIFACTS_DIR/<run_id>/ older than this many days
+    # will be deleted by the background artifact-retention loop (0 = disabled).
+    ARTIFACT_RETENTION_DAYS: int = 30
     # ── Worker (durable job queue) ─────────────────────────────
     # WORKER_EMBEDDED=true  → worker runs as an asyncio.Task inside the API
     #                         process (default for SQLite dev mode).
@@ -104,6 +107,42 @@ class Settings(BaseSettings):
     # Delay (seconds) before a failed job becomes eligible for retry.
     # Multiplied by attempt number for linear backoff.
     WORKER_RETRY_DELAY_SECONDS: float = 10.0
+
+    # ── Authentication ───────────────────────────────────────────
+    # Set AUTH_ENABLED=true to require JWT Bearer or X-API-Key on all mutating
+    # endpoints.  When false (default) every request is treated as an
+    # authenticated admin, so all existing tests pass unchanged.
+    AUTH_ENABLED: bool = False
+
+    # Secret key used to sign / verify JWT tokens (HS256).
+    # MUST be changed in production: AUTH_SECRET_KEY=<random-256-bit-hex>
+    AUTH_SECRET_KEY: str = "change-me-in-production-please"
+
+    # JWT token lifetime in minutes.
+    AUTH_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # Comma-separated static API keys for machine-to-machine access.
+    # Each key grants "operator" role.
+    # Example: API_KEYS="key-abc123 key-def456" (space or comma separated)
+    API_KEYS: list[str] = []
+
+    # ── Metrics remote export ────────────────────────────────────
+    # When set, metrics are pushed to a Prometheus Pushgateway on a background
+    # interval using the push API (PUT /metrics/job/<job>).
+    METRICS_PUSH_URL: str | None = None
+
+    # How often (seconds) to push metrics to the Pushgateway.
+    METRICS_PUSH_INTERVAL_SECONDS: int = 30
+
+    # Job label used in Pushgateway push URL.
+    METRICS_PUSH_JOB: str = "langorch"
+
+    # ── Secrets rotation ─────────────────────────────────────────
+    # When True, the in-memory secrets cache is invalidated before each run
+    # starts, forcing fresh reads from the underlying secrets provider on the
+    # first access.  Safe to enable; adds one round-trip per secret per run.
+    SECRETS_ROTATION_CHECK: bool = False
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     # ── Computed helpers (not env vars) ────────────────────────

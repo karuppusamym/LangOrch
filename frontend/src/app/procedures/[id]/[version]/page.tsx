@@ -58,6 +58,11 @@ const WorkflowGraph = dynamic(
   { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading graph...</p> }
 );
 
+const WorkflowBuilder = dynamic(
+  () => import("@/components/WorkflowBuilderWrapper"),
+  { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading builder...</p> }
+);
+
 export default function ProcedureVersionDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -68,12 +73,13 @@ export default function ProcedureVersionDetailPage() {
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain" | "runs" | "trigger">(
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "builder" | "ckp" | "versions" | "explain" | "runs" | "trigger">(
     () => {
       const t = searchParams.get("tab");
-      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain" || t === "runs" || t === "trigger") ? t : "overview";
+      return (t === "graph" || t === "builder" || t === "ckp" || t === "versions" || t === "explain" || t === "runs" || t === "trigger") ? t : "overview";
     }
   );
+  const [builderSaving, setBuilderSaving] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [explainResult, setExplainResult] = useState<ExplainReport | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
@@ -83,6 +89,13 @@ export default function ProcedureVersionDetailPage() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
+
+  const NODE_TYPE_BG: Record<string, string> = {
+    sequence: "#3B82F6", processing: "#2563EB", transform: "#1D4ED8", subflow: "#60A5FA",
+    llm_action: "#7C3AED", loop: "#F97316", parallel: "#EA580C",
+    logic: "#F59E0B", verification: "#D97706", human_approval: "#EF4444", terminate: "#6B7280",
+  };
+
   // Trigger state
   const [triggerReg, setTriggerReg] = useState<TriggerRegistration | null>(null);
   const [triggerLoading, setTriggerLoading] = useState(false);
@@ -312,6 +325,28 @@ export default function ProcedureVersionDetailPage() {
     }
   }
 
+  async function handleBuilderSave(workflowGraph: Record<string, unknown>) {
+    if (!procedure) return;
+    setBuilderSaving(true);
+    try {
+      const updatedCkp = {
+        ...(procedure.ckp_json as Record<string, unknown>),
+        workflow_graph: workflowGraph,
+      };
+      await updateProcedure(procedure.procedure_id, procedure.version, updatedCkp);
+      const refreshed = await getProcedure(procedure.procedure_id, procedure.version);
+      setProcedure(refreshed);
+      setCkpText(JSON.stringify(refreshed.ckp_json, null, 2));
+      setGraphData(null); // invalidate cached graph so graph tab reloads
+      toast("Workflow saved successfully", "success");
+    } catch (err) {
+      console.error(err);
+      toast(err instanceof Error ? err.message : "Failed to save workflow", "error");
+    } finally {
+      setBuilderSaving(false);
+    }
+  }
+
   async function handleDeleteVersion() {
     if (!procedure) return;
     setConfirmDelete(true);
@@ -398,7 +433,7 @@ export default function ProcedureVersionDetailPage() {
       </div>
 
       <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "graph", "explain", "ckp", "versions", "runs", "trigger"] as const).map((tab) => (
+        {(["overview", "graph", "builder", "explain", "ckp", "versions", "runs", "trigger"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => {
@@ -461,7 +496,7 @@ export default function ProcedureVersionDetailPage() {
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "explain" ? "Explain" : tab === "trigger" ? "Trigger" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "builder" ? "Builder ✏" : tab === "explain" ? "Explain" : tab === "trigger" ? "Trigger" : tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
         ))}
       </div>
@@ -472,7 +507,7 @@ export default function ProcedureVersionDetailPage() {
           <div className="space-y-3">
             {nodeEntries.map(([nodeId, node]: [string, any]) => (
               <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
-                <span className="badge badge-info">{node.type}</span>
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white" style={{ background: NODE_TYPE_BG[node.type as string] ?? "#6B7280" }}>{node.type}</span>
                 <div>
                   <p className="text-sm font-medium">{nodeId}</p>
                   {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
@@ -516,6 +551,22 @@ export default function ProcedureVersionDetailPage() {
           {!graphLoading && !graphData && (
             <p className="text-sm text-gray-400">No graph data available.</p>
           )}
+        </div>
+      )}
+
+      {activeTab === "builder" && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-gray-500">
+              Visual workflow editor — drag nodes from the palette, connect them, click to inspect and edit properties.
+              Saving overwrites the <code className="font-mono text-xs">workflow_graph</code> field of the CKP document.
+            </p>
+          </div>
+          <WorkflowBuilder
+            initialWorkflowGraph={(procedure.ckp_json as any)?.workflow_graph ?? null}
+            onSave={handleBuilderSave}
+            saving={builderSaving}
+          />
         </div>
       )}
 

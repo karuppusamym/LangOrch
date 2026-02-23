@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph, END
 from app.utils.token_bucket import acquire_rate_limit
 from app.compiler.ir import (
     IRHumanApprovalPayload,
+    IRLlmActionPayload,
     IRLogicPayload,
     IRLoopPayload,
     IRNode,
@@ -246,6 +247,10 @@ def build_graph(
         elif ir_node.type == "loop":
             _add_conditional_routing(graph, nid, ir_node, ir)
 
+        elif ir_node.type == "llm_action" and isinstance(ir_node.payload, IRLlmActionPayload) and ir_node.payload.orchestration_mode:
+            # Orchestration-mode llm_action: runtime picks next node from LLM output
+            _add_conditional_routing(graph, nid, ir_node, ir)
+
         else:
             # Simple edge to next_node or END
             if ir_node.next_node_id and ir_node.next_node_id in ir.nodes:
@@ -289,6 +294,12 @@ def _add_conditional_routing(
             destinations[ir_node.payload.body_node_id] = ir_node.payload.body_node_id
         if ir_node.payload.next_node_id:
             destinations[ir_node.payload.next_node_id] = ir_node.payload.next_node_id
+
+    elif ir_node.type == "llm_action" and isinstance(ir_node.payload, IRLlmActionPayload):
+        # Orchestration-mode: all declared branches are valid destinations
+        for branch in ir_node.payload.branches:
+            if branch:
+                destinations[branch] = branch
 
     else:
         # Generic: next_node_id or payload.next_node_id

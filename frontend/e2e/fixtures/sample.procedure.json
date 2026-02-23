@@ -1,0 +1,35 @@
+{
+  "procedure_id": "e2e_test_procedure",
+  "version": "1.0.0",
+  "global_config": {
+    "max_retries": 1,
+    "retry_delay_ms": 100
+  },
+  "variables_schema": {
+    "greeting": {
+      "type": "string",
+      "default": "hello e2e"
+    }
+  },
+  "workflow_graph": {
+    "start_node": "start",
+    "nodes": {
+      "start": {
+        "type": "sequence",
+        "description": "e2e test node",
+        "next_node": "end",
+        "steps": [
+          {
+            "step_id": "log_msg",
+            "action": "log",
+            "message": "e2e test run: {{greeting}}"
+          }
+        ]
+      },
+      "end": {
+        "type": "terminate",
+        "status": "success"
+      }
+    }
+  }
+}

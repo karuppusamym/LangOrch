@@ -25,6 +25,11 @@ from app.api.catalog import router as catalog_router
 from app.api.leases import router as leases_router
 from app.api.projects import router as projects_router
 from app.api.triggers import router as triggers_router
+from app.api.artifacts import router as artifacts_router
+from app.api.auth import router as auth_router
+from app.api.users import router as users_router
+from app.api.secrets import router as secrets_router
+from app.api.config import router as config_router
 
 logger = logging.getLogger("langorch.main")
 
@@ -103,11 +108,19 @@ async def _agent_health_loop() -> None:
 
 
 async def _approval_expiry_loop() -> None:
-    """Background task: auto-timeout expired pending approvals."""
+    """Background task: auto-timeout expired pending approvals.
+
+    Only the current scheduler leader runs this loop.  Under multi-replica
+    deployments non-leaders skip each cycle to avoid double-timeouts.
+    """
+    from app.runtime.leader import leader_election
     from app.services.approval_service import get_expired_approvals, submit_decision
 
     while True:
         await asyncio.sleep(_EXPIRY_POLL_INTERVAL)
+        if not leader_election.is_leader:
+            logger.debug("approval_expiry_loop: not leader — skipping")
+            continue
         try:
             async with async_session() as db:
                 expired = await get_expired_approvals(db)
@@ -163,17 +176,118 @@ async def _checkpoint_retention_loop() -> None:
             logger.exception("Error in checkpoint retention loop")
 
 
+async def _artifact_retention_loop() -> None:
+    """Background task: delete artifact folders for terminal runs older than ARTIFACT_RETENTION_DAYS.
+
+    Layout: ARTIFACTS_DIR/<run_id>/  (created by Batch 28 run-scoped paths)
+    Only the scheduler leader runs this loop to prevent concurrent deletes.
+
+    Strategy:
+    1. Stat each sub-directory in ARTIFACTS_DIR.
+    2. If the directory name looks like a run_id, check the corresponding Run row.
+    3. If the Run is terminal (completed/failed/canceled) AND created_at < cutoff → delete.
+    4. If no Run row found AND folder is older than cutoff by mtime → delete (orphan cleanup).
+    """
+    import os
+    import shutil
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select
+    from app.db.models import Run
+    from app.runtime.leader import leader_election
+
+    while True:
+        await asyncio.sleep(_RETENTION_POLL_INTERVAL)
+        if not leader_election.is_leader:
+            logger.debug("artifact_retention_loop: not leader — skipping")
+            continue
+        retention_days = settings.ARTIFACT_RETENTION_DAYS
+        if not retention_days or retention_days <= 0:
+            continue
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        artifacts_dir = os.path.abspath(settings.ARTIFACTS_DIR)
+        if not os.path.isdir(artifacts_dir):
+            continue
+        deleted_dirs: list[str] = []
+        freed_bytes: int = 0
+        try:
+            with os.scandir(artifacts_dir) as it:
+                entries = [e for e in it if e.is_dir(follow_symlinks=False)]
+        except Exception:
+            logger.exception("artifact_retention_loop: cannot scan %s", artifacts_dir)
+            continue
+
+        for entry in entries:
+            run_id = entry.name
+            try:
+                async with async_session() as db:
+                    result = await db.execute(
+                        select(Run).where(Run.run_id == run_id)
+                    )
+                    run = result.scalar_one_or_none()
+
+                should_delete = False
+                if run is not None:
+                    if run.status not in ("completed", "failed", "canceled"):
+                        continue  # active run — never delete
+                    run_ts = run.created_at
+                    if run_ts is not None and run_ts.tzinfo is None:
+                        run_ts = run_ts.replace(tzinfo=timezone.utc)
+                    if run_ts is not None and run_ts < cutoff:
+                        should_delete = True
+                else:
+                    # Orphan folder (no DB row) — fall back to folder mtime
+                    folder_mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
+                    if folder_mtime < cutoff:
+                        should_delete = True
+
+                if should_delete:
+                    # Measure size before deleting
+                    folder_path = entry.path
+                    size = sum(
+                        f.stat().st_size
+                        for f in os.scandir(folder_path)
+                        if f.is_file()
+                    )
+                    shutil.rmtree(folder_path, ignore_errors=True)
+                    deleted_dirs.append(run_id)
+                    freed_bytes += size
+                    logger.info(
+                        "artifact_retention: deleted %s (%d bytes)", run_id, size
+                    )
+            except Exception:
+                logger.exception(
+                    "artifact_retention_loop: error processing folder %s", run_id
+                )
+
+        if deleted_dirs:
+            logger.info(
+                "Artifact retention: removed %d folder(s), freed ~%d bytes",
+                len(deleted_dirs), freed_bytes,
+            )
+
+
 async def _file_watch_trigger_loop() -> None:
-    """Background task: poll file_watch trigger registrations and fire runs when files change."""
+    """Background task: poll file_watch trigger registrations and fire runs when files change.
+
+    Only the current scheduler leader runs this loop.  Non-leaders skip each
+    poll cycle; once leadership is acquired the baseline mtime is recorded on
+    the next cycle so no spurious fires occur.
+    """
     import os
     from sqlalchemy import select
     from app.db.models import TriggerRegistration
+    from app.runtime.leader import leader_election
 
     # Track last-seen mtime per trigger registration id
     _last_mtime: dict[int, float] = {}
 
     while True:
         await asyncio.sleep(_FILE_WATCH_POLL_INTERVAL)
+        if not leader_election.is_leader:
+            logger.debug("file_watch_trigger_loop: not leader — skipping")
+            # Clear cached mtimes so the new leader re-baselines on first cycle
+            _last_mtime.clear()
+            continue
         try:
             async with async_session() as db:
                 result = await db.execute(
@@ -231,6 +345,40 @@ async def _file_watch_trigger_loop() -> None:
             logger.exception("Error in file_watch trigger loop")
 
 
+async def _metrics_push_loop() -> None:
+    """Background task: push Prometheus metrics to a Pushgateway on a fixed interval.
+
+    Only runs when ``settings.METRICS_PUSH_URL`` is configured.
+    Uses the Prometheus Pushgateway PUT API:
+    ``PUT <METRICS_PUSH_URL>/metrics/job/<METRICS_PUSH_JOB>``
+    """
+    import httpx
+    from app.utils.metrics import to_prometheus_text
+
+    push_url = settings.METRICS_PUSH_URL
+    if not push_url:
+        return  # disabled
+    target = f"{push_url.rstrip('/')}/metrics/job/{settings.METRICS_PUSH_JOB}"
+    logger.info("Metrics push loop started — target: %s interval: %ds", target, settings.METRICS_PUSH_INTERVAL_SECONDS)
+
+    while True:
+        await asyncio.sleep(settings.METRICS_PUSH_INTERVAL_SECONDS)
+        try:
+            payload = to_prometheus_text()
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(
+                    target,
+                    content=payload.encode(),
+                    headers={"Content-Type": "text/plain; version=0.0.4"},
+                )
+                if resp.status_code not in (200, 202, 204):
+                    logger.warning("Metrics push returned HTTP %s", resp.status_code)
+                else:
+                    logger.debug("Metrics pushed to Pushgateway (%d bytes)", len(payload))
+        except Exception as exc:
+            logger.warning("Metrics push failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
@@ -253,7 +401,21 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE runs ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
             "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
+            "ALTER TABLE agent_instances ADD COLUMN pool_id VARCHAR(128)",
             "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
+            # Batch 34: artifact metadata columns
+            "ALTER TABLE artifacts ADD COLUMN name VARCHAR(512)",
+            "ALTER TABLE artifacts ADD COLUMN mime_type VARCHAR(128)",
+            "ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER",
+            # Batch 29: scheduler_leader_leases table (CREATE TABLE IF NOT EXISTS)
+            (
+                "CREATE TABLE IF NOT EXISTS scheduler_leader_leases ("
+                "  name VARCHAR(64) PRIMARY KEY, "
+                "  leader_id VARCHAR(256) NOT NULL, "
+                "  acquired_at DATETIME NOT NULL, "
+                "  expires_at DATETIME NOT NULL"
+                ")"
+            ),
         ]
         async with engine.begin() as conn:
             for stmt in _new_cols:
@@ -261,10 +423,26 @@ async def lifespan(app: FastAPI):
                     await conn.execute(__import__("sqlalchemy").text(stmt))
                 except Exception:
                     pass  # column already exists — ignore
+    # Seed default admin user if users table is empty
+    try:
+        from app.db.engine import async_session as _asm_users
+        from app.services.user_service import ensure_default_admin as _seed_admin
+        async with _asm_users() as _db_users:
+            await _seed_admin(_db_users)
+    except Exception:
+        logger.exception("Default admin seeding failed")
+    # Start leader election — must be running before any singleton loops check is_leader
+    from app.runtime.leader import leader_election as _leader_election
+    _leader_election.start()
+    # Give the first election attempt a head-start before loop tasks fire
+    # (small sleep; SQLite will acquire immediately; PG may need one cycle)
+    await asyncio.sleep(0.1)
     _expiry_task = asyncio.create_task(_approval_expiry_loop())
     _health_task = asyncio.create_task(_agent_health_loop())
     _retention_task = asyncio.create_task(_checkpoint_retention_loop())
+    _artifact_retention_task = asyncio.create_task(_artifact_retention_loop())
     _file_watch_task = asyncio.create_task(_file_watch_trigger_loop())
+    _metrics_push_task = asyncio.create_task(_metrics_push_loop())
     # Start trigger scheduler
     from app.runtime.scheduler import scheduler as _trigger_scheduler
     _trigger_scheduler.start()
@@ -295,8 +473,11 @@ async def lifespan(app: FastAPI):
         _expiry_task.cancel()
         _health_task.cancel()
         _retention_task.cancel()
+        _artifact_retention_task.cancel()
         _file_watch_task.cancel()
+        _metrics_push_task.cancel()
         _trigger_scheduler.stop()
+        _leader_election.stop()
         if _worker_task is not None:
             _worker_task.cancel()
         await engine.dispose()
@@ -328,6 +509,11 @@ app.include_router(catalog_router, prefix="/api", tags=["catalog"])
 app.include_router(leases_router, prefix="/api/leases", tags=["leases"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(triggers_router, prefix="/api/triggers", tags=["triggers"])
+app.include_router(artifacts_router, prefix="/api/artifacts-admin", tags=["artifacts"])
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(users_router, prefix="/api/users", tags=["users"])
+app.include_router(secrets_router, prefix="/api/secrets", tags=["secrets"])
+app.include_router(config_router, tags=["config"])
 
 # ── Serve local artifacts as static files ──────────────────────────────────
 # Agents write artifacts to ARTIFACTS_DIR and return URIs like
@@ -355,25 +541,5 @@ async def prometheus_metrics():
     so a Prometheus scraper or Grafana agent can ingest them directly.
     Example line: ``langorch_run_started_total 42``
     """
-    from app.utils.metrics import get_metrics_summary
-    summary = get_metrics_summary()
-    lines: list[str] = []
-    for key, val in summary.get("counters", {}).items():
-        prom_key = "langorch_" + key.replace("{", "").replace("}", "").replace(",", "_").replace("=", "_").replace('"', "")
-        lines.append(f"# TYPE {prom_key} counter")
-        lines.append(f"{prom_key} {val}")
-    for key, stats in summary.get("histograms", {}).items():
-        prom_key = "langorch_" + key.replace("{", "").replace("}", "").replace(",", "_").replace("=", "_").replace('"', "")
-        lines.append(f"# TYPE {prom_key} summary")
-        if isinstance(stats, dict):
-            if stats.get("count") is not None:
-                lines.append(f"{prom_key}_count {stats['count']}")
-            if stats.get("sum") is not None:
-                lines.append(f"{prom_key}_sum {stats['sum']:.6f}")
-            if stats.get("avg") is not None:
-                lines.append(f'{prom_key}{{quantile="0.5"}} {stats["avg"]:.6f}')
-            if stats.get("p95") is not None:
-                lines.append(f'{prom_key}{{quantile="0.95"}} {stats["p95"]:.6f}')
-            if stats.get("max") is not None:
-                lines.append(f'{prom_key}{{quantile="1.0"}} {stats["max"]:.6f}')
-    return "\n".join(lines) + "\n"
+    from app.utils.metrics import to_prometheus_text
+    return to_prometheus_text()

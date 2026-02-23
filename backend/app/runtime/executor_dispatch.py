@@ -19,7 +19,7 @@ The compiler/binder only tags internal actions — everything else lands here.
 from __future__ import annotations
 
 import logging
-import random
+from collections import defaultdict
 from typing import Any
 
 from sqlalchemy import select
@@ -37,6 +37,11 @@ from app.db.models import AgentInstance
 _CIRCUIT_RESET_SECONDS: int = 300
 
 logger = logging.getLogger("langorch.runtime.dispatch")
+
+# ── Round-robin counters — keyed by "{channel}:{pool_id}" ─────────────────────
+# Monotonically increasing; mod-selected against live agent list each dispatch.
+# Module-level so they survive across requests within a process.
+_pool_counters: dict[str, int] = defaultdict(int)
 
 
 class NoExecutorError(Exception):
@@ -97,38 +102,68 @@ async def resolve_executor(
 async def _find_capable_agent(
     db: AsyncSession, channel: str, action: str
 ) -> AgentInstance | None:
-    """Find an online agent whose channel matches and capabilities include the action."""
+    """Find an online agent whose channel matches and capabilities include the action.
+
+    Selection strategy
+    ------------------
+    * Agents are first grouped by ``pool_id``.
+    * Within a pool the *next* agent is chosen via a monotonic round-robin
+      counter (``_pool_counters["{channel}:{pool_id}"]``).
+    * Agents without a ``pool_id`` form their own implicit pool keyed by
+      ``{channel}:standalone``.
+    * Circuit-open agents are skipped; the counter does NOT advance for them
+      so the next healthy agent in the pool is tried.
+    """
     stmt = (
         select(AgentInstance)
         .where(AgentInstance.channel == channel)
         .where(AgentInstance.status == "online")
+        .order_by(AgentInstance.pool_id.nulls_last(), AgentInstance.agent_id)
     )
     result = await db.execute(stmt)
     agents = list(result.scalars().all())
-    # Shuffle to distribute load evenly across equally-capable agents (round-robin effect)
-    random.shuffle(agents)
 
     now = datetime.now(timezone.utc)
-    for agent in agents:
-        # Skip agents whose circuit is currently open (too many recent failures)
-        if agent.circuit_open_at is not None:
-            # SQLite returns naive datetimes — treat as UTC for comparison
-            circuit_ts = agent.circuit_open_at
-            if circuit_ts.tzinfo is None:
-                circuit_ts = circuit_ts.replace(tzinfo=timezone.utc)
-            elapsed = (now - circuit_ts).total_seconds()
-            if elapsed < _CIRCUIT_RESET_SECONDS:
-                logger.debug(
-                    "Skipping circuit-open agent %s (open for %.0fs / %ds reset)",
-                    agent.agent_id, elapsed, _CIRCUIT_RESET_SECONDS,
-                )
-                continue
-        caps = agent.capabilities.split(",") if agent.capabilities else []
-        # Empty capabilities or "*" means the agent handles ALL actions for its channel
-        if not caps or "*" in caps or action in caps:
-            return agent
 
-    return None
+    def _is_healthy(agent: AgentInstance) -> bool:
+        """Return True if the agent's circuit breaker is not open."""
+        if agent.circuit_open_at is None:
+            return True
+        circuit_ts = agent.circuit_open_at
+        if circuit_ts.tzinfo is None:
+            circuit_ts = circuit_ts.replace(tzinfo=timezone.utc)
+        elapsed = (now - circuit_ts).total_seconds()
+        if elapsed < _CIRCUIT_RESET_SECONDS:
+            logger.debug(
+                "Skipping circuit-open agent %s (open for %.0fs / %ds reset)",
+                agent.agent_id, elapsed, _CIRCUIT_RESET_SECONDS,
+            )
+            return False
+        return True
+
+    def _has_capability(agent: AgentInstance) -> bool:
+        caps = [c.strip() for c in agent.capabilities.split(",") if c.strip()] if agent.capabilities else []
+        return not caps or "*" in caps or action in caps
+
+    # Group capable, healthy agents by pool key
+    pools: dict[str, list[AgentInstance]] = defaultdict(list)
+    for agent in agents:
+        if _is_healthy(agent) and _has_capability(agent):
+            pool_key = f"{channel}:{agent.pool_id or 'standalone'}"
+            pools[pool_key].append(agent)
+
+    if not pools:
+        return None
+
+    # Use the first (sorted) pool that has agents.
+    # When agents share a pool_id they will all end up in the same list.
+    pool_key = sorted(pools.keys())[0]
+    pool_agents = pools[pool_key]
+
+    # Round-robin within the pool
+    idx = _pool_counters[pool_key] % len(pool_agents)
+    _pool_counters[pool_key] += 1
+    return pool_agents[idx]
 
 
 async def dispatch_to_agent(

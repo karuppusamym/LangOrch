@@ -6,10 +6,10 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Approval, Artifact, ResourceLease, Run, RunEvent, StepIdempotency
+from app.db.models import Approval, Artifact, ResourceLease, Run, RunEvent, RunJob, StepIdempotency
 from app.utils.redaction import redact_sensitive_data, build_patterns
 
 
@@ -162,6 +162,9 @@ async def create_artifact(
     uri: str,
     node_id: str | None = None,
     step_id: str | None = None,
+    name: str | None = None,
+    mime_type: str | None = None,
+    size_bytes: int | None = None,
 ) -> Artifact:
     """Persist an artifact record.
 
@@ -197,6 +200,9 @@ async def create_artifact(
         step_id=step_id,
         kind=kind,
         uri=_normalize(uri),
+        name=name,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
     )
     db.add(artifact)
     await db.flush()
@@ -224,6 +230,7 @@ async def delete_run(db: AsyncSession, run_id: str) -> bool:
     await db.execute(delete(Artifact).where(Artifact.run_id == run_id))
     await db.execute(delete(ResourceLease).where(ResourceLease.run_id == run_id))
     await db.execute(delete(StepIdempotency).where(StepIdempotency.run_id == run_id))
+    await db.execute(delete(RunJob).where(RunJob.run_id == run_id))
     await db.delete(run)
     await db.flush()
     return True
@@ -248,6 +255,7 @@ async def cleanup_runs_before(
     await db.execute(delete(Artifact).where(Artifact.run_id.in_(run_ids)))
     await db.execute(delete(ResourceLease).where(ResourceLease.run_id.in_(run_ids)))
     await db.execute(delete(StepIdempotency).where(StepIdempotency.run_id.in_(run_ids)))
+    await db.execute(delete(RunJob).where(RunJob.run_id.in_(run_ids)))
     await db.execute(delete(Run).where(Run.run_id.in_(run_ids)))
     await db.flush()
     return len(run_ids)
@@ -284,7 +292,10 @@ async def get_run_diagnostics(db: AsyncSession, run_id: str) -> dict:
     ]
 
     # Get lease information
-    lease_stmt = select(ResourceLease).where(ResourceLease.run_id == run_id)
+    lease_stmt = select(ResourceLease).where(
+        ResourceLease.run_id == run_id,
+        ResourceLease.released_at.is_(None),
+    )
     lease_result = await db.execute(lease_stmt)
     lease_entries = [
         {
@@ -295,21 +306,22 @@ async def get_run_diagnostics(db: AsyncSession, run_id: str) -> dict:
             "acquired_at": row.acquired_at,
             "expires_at": row.expires_at,
             "released_at": row.released_at,
-            "is_active": row.released_at is None,
+            "is_active": True,
         }
         for row in lease_result.scalars().all()
     ]
 
     # Event counts
-    total_events_stmt = select(RunEvent).where(RunEvent.run_id == run_id)
-    total_events = len((await db.execute(total_events_stmt)).scalars().all())
+    total_events_stmt = select(func.count()).select_from(RunEvent).where(RunEvent.run_id == run_id)
+    total_events = int((await db.execute(total_events_stmt)).scalar() or 0)
 
     error_events_stmt = (
-        select(RunEvent)
+        select(func.count())
+        .select_from(RunEvent)
         .where(RunEvent.run_id == run_id)
         .where(RunEvent.event_type.in_(["error", "run_failed"]))
     )
-    error_events = len((await db.execute(error_events_stmt)).scalars().all())
+    error_events = int((await db.execute(error_events_stmt)).scalar() or 0)
 
     return {
         "run_id": run.run_id,

@@ -72,6 +72,11 @@ class Procedure(Base):
 
 class Run(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        Index("ix_runs_status_created_at", "status", "created_at"),
+        Index("ix_runs_project_created_at", "project_id", "created_at"),
+        Index("ix_runs_procedure_created_at", "procedure_id", "created_at"),
+    )
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     procedure_id: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -99,7 +104,9 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
-    events: Mapped[list[RunEvent]] = relationship(back_populates="run", lazy="selectin")
+    # NOTE: lazy="noload" prevents automatic event loading on every Run query.
+    # RunOut never exposes events — use run_service.list_events(db, run_id) explicitly.
+    events: Mapped[list[RunEvent]] = relationship(back_populates="run", lazy="noload")
 
 
 # ── Run events (append-only timeline) ──────────────────────────
@@ -168,6 +175,9 @@ class Artifact(Base):
     step_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     uri: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(512), nullable=True)       # original filename
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)  # e.g. "image/png"
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)     # file size in bytes
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -185,6 +195,10 @@ class AgentInstance(Base):
     status: Mapped[str] = mapped_column(String(32), default="online")
     concurrency_limit: Mapped[int] = mapped_column(Integer, default=1)
     resource_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    # pool_id groups agents into a named pool for fair round-robin dispatch.
+    # Agents with the same pool_id + channel receive requests in rotation.
+    # Leave None (default) for standalone / single-instance agents.
+    pool_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     circuit_open_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -292,3 +306,74 @@ class RunJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+# ── Users (local identity store) ───────────────────────────────
+
+
+class User(Base):
+    """Platform user with bcrypt-hashed password and RBAC role.
+
+    Role hierarchy: viewer < approver < operator < manager < admin
+    """
+
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), default="viewer", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Optional: SSO subject claim (OIDC/Azure AD/LDAP)
+    sso_subject: Mapped[str | None] = mapped_column(String(512), nullable=True, unique=True)
+    sso_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)  # azure_ad | ldap | local
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+# ── Secrets store (database-backed KV for dev; Vault/AWS in prod) ─────────────
+
+
+class SecretEntry(Base):
+    """Named secret stored with simple symmetric encryption.
+
+    For production, configure SECRETS_PROVIDER=vault|aws|azure in .env instead
+    of storing secrets in the database.  This table is used as the 'db' provider
+    back-end, giving the platform a usable UI without requiring external services.
+    """
+
+    __tablename__ = "secret_entries"
+
+    secret_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
+    # Fernet-encrypted value; base64url encoded.  If encryption key is none, stored as plaintext (dev only).
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_hint: Mapped[str] = mapped_column(String(32), default="db", nullable=False)  # db | vault | aws | azure | env
+    tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of tag strings
+    created_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+# ── Scheduler leader lease (HA singleton election) ─────────────
+
+
+class SchedulerLeaderLease(Base):
+    """Single-row table used for distributed leader election.
+
+    Multiple orchestrator replicas compete for the ``name='scheduler'`` row.
+    Only the current holder (``leader_id``) runs APScheduler and background
+    singleton loops.  The lease is renewed every ``RENEW_INTERVAL`` seconds;
+    if a replica dies another will steal the expired row.
+    """
+
+    __tablename__ = "scheduler_leader_leases"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)  # always "scheduler"
+    leader_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

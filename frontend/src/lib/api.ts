@@ -15,16 +15,27 @@ import type {
   CheckpointState,
   ExplainReport,
   TriggerRegistration,
+  User,
+  Secret,
 } from "./types";
+import { getToken } from "./auth";
 
 const API_BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
+  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...authHeader, ...init?.headers },
     ...init,
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      // Token expired or invalid — redirect to login
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+    }
     const body = await res.text();
     throw new Error(`API ${res.status}: ${body}`);
   }
@@ -372,4 +383,102 @@ export async function fireTrigger(
     `/triggers/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}/fire`,
     { method: "POST" }
   );
+}
+
+/* ── Auth ───────────────────────────────────────────────────── */
+
+export async function authLogin(username: string, password: string): Promise<{
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  identity: string;
+  roles: string[];
+}> {
+  return request("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function authMe(): Promise<{
+  identity: string;
+  roles: string[];
+  user_id?: string;
+  email?: string;
+  full_name?: string;
+  role?: string;
+}> {
+  return request("/auth/me");
+}
+
+/* ── Users ──────────────────────────────────────────────────── */
+
+export async function listUsers(): Promise<User[]> {
+  return request("/users");
+}
+
+export async function createUser(data: {
+  username: string;
+  email: string;
+  password: string;
+  full_name?: string;
+  role?: string;
+}): Promise<User> {
+  return request("/users", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateUser(
+  userId: string,
+  data: { full_name?: string; email?: string; role?: string; is_active?: boolean; password?: string }
+): Promise<User> {
+  return request(`/users/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteUser(userId: string): Promise<void> {
+  await request(`/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+}
+
+/* ── Secrets ────────────────────────────────────────────────── */
+
+export async function listSecrets(): Promise<Secret[]> {
+  return request("/secrets");
+}
+
+export async function createSecret(data: {
+  name: string;
+  value: string;
+  description?: string;
+  provider_hint?: string;
+  tags?: string[];
+}): Promise<Secret> {
+  return request("/secrets", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateSecret(
+  name: string,
+  data: { value?: string; description?: string; tags?: string[]; provider_hint?: string }
+): Promise<Secret> {
+  return request(`/secrets/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteSecret(name: string): Promise<void> {
+  await request(`/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+/* ── Platform Config ────────────────────────────────────────── */
+
+export async function getConfig(): Promise<import("./types").PlatformConfig> {
+  return request("/config");
+}
+
+export async function patchConfig(
+  data: Partial<import("./types").PlatformConfig>
+): Promise<import("./types").PlatformConfig> {
+  return request("/config", { method: "PATCH", body: JSON.stringify(data) });
 }

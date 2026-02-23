@@ -6,15 +6,20 @@ import { listApprovals, submitApprovalDecision } from "@/lib/api";
 import { subscribeToApprovalUpdates } from "@/lib/sse";
 import { ApprovalStatusBadge } from "@/components/shared/ApprovalStatusBadge";
 import { useToast } from "@/components/Toast";
+import { getUser } from "@/lib/auth";
 import type { Approval } from "@/lib/types";
 
 export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "pending">("pending");
-  const [approverName, setApproverName] = useState(() =>
-    typeof window !== "undefined" ? (localStorage.getItem("approver_name") ?? "") : ""
-  );
+  const [approverName, setApproverName] = useState(() => {
+    // Prefer authenticated user identity; fall back to any stored preference
+    const user = getUser();
+    if (user?.identity) return user.identity;
+    if (typeof window !== "undefined") return localStorage.getItem("approver_name") ?? "";
+    return "";
+  });
   const { toast } = useToast();
 
   async function loadApprovals() {
@@ -69,135 +74,108 @@ export default function ApprovalsPage() {
   const pendingCount = approvals.filter((a) => a.status === "pending").length;
 
   return (
-    <div className="space-y-6">
-      {/* Pending pulse indicator */}
-      {pendingCount > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800">
-          <span className="relative flex h-3 w-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75" />
-            <span className="relative inline-flex h-3 w-3 rounded-full bg-yellow-500" />
-          </span>
-          {pendingCount} approval{pendingCount > 1 ? "s" : ""} waiting
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Approvals</h1>
+          <p className="text-neutral-500 dark:text-neutral-400 mt-1">Review and action pending workflow approvals</p>
         </div>
-      )}
-
-      {/* Filter */}
-      <div className="flex items-center gap-4">
-        <button
-          onClick={() => setFilter("pending")}
-          className={`rounded-full px-3 py-1 text-xs font-medium ${
-            filter === "pending"
-              ? "bg-yellow-100 text-yellow-800"
-              : "bg-gray-100 text-gray-600"
-          }`}
-        >
-          Pending ({pendingCount})
-        </button>
-        <button
-          onClick={() => setFilter("all")}
-          className={`rounded-full px-3 py-1 text-xs font-medium ${
-            filter === "all"
-              ? "bg-primary-100 text-primary-800"
-              : "bg-gray-100 text-gray-600"
-          }`}
-        >
-          All ({approvals.length})
-        </button>
-        <span className="ml-auto text-[10px] text-gray-400">Live (SSE)</span>
+        <div className="flex items-center gap-3">
+          {pendingCount > 0 && (
+            <span className="flex items-center gap-2 rounded-full bg-amber-100 dark:bg-amber-950/50 px-3 py-1.5 text-sm font-medium text-amber-700 dark:text-amber-400">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+              </span>
+              {pendingCount} pending
+            </span>
+          )}
+          <span className="text-xs text-neutral-400">Live (SSE)</span>
+        </div>
       </div>
 
-      {/* Approver name */}
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-gray-500 shrink-0">Your name:</label>
-        <input
-          value={approverName}
-          onChange={(e) => saveApproverName(e.target.value)}
-          placeholder="approver name (persisted)"
-          className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-primary-400 focus:outline-none w-56"
-        />
+      {/* Approver name + filter */}
+      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400 shrink-0">Your name:</label>
+            <input value={approverName} onChange={(e) => saveApproverName(e.target.value)} placeholder="approver name"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-1.5 text-sm text-neutral-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none w-48" />
+          </div>
+          <div className="flex items-center gap-2 ml-auto">
+            <button onClick={() => setFilter("pending")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${filter === "pending" ? "bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400" : "text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>
+              Pending ({pendingCount})
+            </button>
+            <button onClick={() => setFilter("all")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${filter === "all" ? "bg-blue-100 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400" : "text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>
+              All ({approvals.length})
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Approval list */}
+      {/* Pending approvals */}
       {loading ? (
-        <p className="text-gray-500">Loading approvals...</p>
+        <div className="flex items-center justify-center py-16">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+        </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-gray-300 p-12 text-center text-gray-400">
-          {filter === "pending"
-            ? "No pending approvals — all caught up!"
-            : "No approvals found."}
+        <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
+          <svg className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-700" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          {filter === "pending" ? "No pending approvals — all caught up!" : "No approvals found."}
         </div>
       ) : (
         <div className="space-y-4">
           {filtered.map((approval) => {
-            const overdue =
-              approval.status === "pending" &&
-              !!approval.expires_at &&
-              new Date(approval.expires_at) < new Date();
+            const overdue = approval.status === "pending" && !!approval.expires_at && new Date(approval.expires_at) < new Date();
+            const isPending = approval.status === "pending";
             return (
-            <div
-              key={approval.approval_id}
-              className={`rounded-xl border p-6 shadow-sm ${
-                overdue
-                  ? "border-red-300 bg-red-50"
-                  : "border-gray-200 bg-white"
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <ApprovalStatusBadge status={approval.status} />
-                    <span className="text-xs text-gray-400">
-                      Node: {approval.node_id}
-                    </span>
-                    {approval.expires_at && approval.status === "pending" && (
-                      <CountdownBadge expiresAt={approval.expires_at} />
-                    )}
-                    {overdue && (
-                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-600 animate-pulse">
-                        ⚠ OVERDUE
-                      </span>
+              <div key={approval.approval_id} className={`rounded-xl border p-5 shadow-sm transition-shadow hover:shadow-md ${overdue ? "border-red-300 bg-red-50 dark:bg-red-950/20" : isPending ? "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20" : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900"}`}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ApprovalStatusBadge status={approval.status} />
+                      <span className="text-xs text-neutral-500 dark:text-neutral-400">Node: {approval.node_id}</span>
+                      {approval.expires_at && approval.status === "pending" && (
+                        <CountdownBadge expiresAt={approval.expires_at} />
+                      )}
+                      {overdue && (
+                        <span className="rounded-full bg-red-100 dark:bg-red-950 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:text-red-400 animate-pulse">⚠ OVERDUE</span>
+                      )}
+                    </div>
+                    <p className="mt-2 text-sm font-medium text-neutral-900 dark:text-neutral-100">{approval.prompt}</p>
+                    <p className="mt-1 text-xs text-neutral-400">
+                      Run:{" "}
+                      <Link href={`/runs/${approval.run_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
+                        {approval.run_id.slice(0, 8)}…
+                      </Link>
+                      {" · "}
+                      {new Date(approval.created_at).toLocaleString()}
+                    </p>
+                    {approval.decided_by && (
+                      <p className="mt-1 text-xs text-neutral-400">
+                        Decided by: {approval.decided_by} {approval.decided_at ? `at ${new Date(approval.decided_at).toLocaleString()}` : ""}
+                      </p>
                     )}
                   </div>
-                  <p className="mt-2 text-sm text-gray-900">{approval.prompt}</p>
-                  <p className="mt-1 text-xs text-gray-400">
-                    Run:{" "}
-                    <Link
-                      href={`/runs/${approval.run_id}`}
-                      className="text-primary-600 hover:underline"
-                    >
-                      {approval.run_id.slice(0, 8)}…
-                    </Link>
-                    {" · "}
-                    {new Date(approval.created_at).toLocaleString()}
-                  </p>
-                  {approval.decided_by && (
-                    <p className="mt-1 text-xs text-gray-400">
-                      Decided by: {approval.decided_by} at{" "}
-                      {approval.decided_at
-                        ? new Date(approval.decided_at).toLocaleString()
-                        : "—"}
-                    </p>
+                  {approval.status === "pending" && (
+                    <div className="flex shrink-0 gap-2">
+                      <button onClick={() => handleDecision(approval.approval_id, "approved")}
+                        className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                        Approve
+                      </button>
+                      <button onClick={() => handleDecision(approval.approval_id, "rejected")}
+                        className="flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                        Reject
+                      </button>
+                    </div>
                   )}
                 </div>
-
-                {approval.status === "pending" && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleDecision(approval.approval_id, "approved")}
-                      className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => handleDecision(approval.approval_id, "rejected")}
-                      className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-                    >
-                      Reject
-                    </button>
-                  </div>
-                )}
               </div>
-            </div>
             );
           })}
         </div>

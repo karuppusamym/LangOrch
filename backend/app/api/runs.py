@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db, async_session
+from app.db.models import RunJob
 from app.schemas.runs import ArtifactOut, RunCreate, RunDiagnostics, RunOut, CheckpointMetadata, CheckpointState
 from app.services import procedure_service, run_service
 from app.services import checkpoint_service
@@ -15,12 +17,14 @@ from app.utils.metrics import get_metrics_summary
 from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled, mark_cancelled_db as _mark_run_cancelled_db
 from app.utils.input_vars import validate_input_vars
 from app.worker.enqueue import enqueue_run, requeue_run
+from app.auth import require_role
+from app.auth.deps import Principal
 
 router = APIRouter()
 
 
 @router.post("", response_model=RunOut, status_code=201)
-async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
+async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     # Resolve procedure
     proc = await procedure_service.get_procedure(db, body.procedure_id, body.procedure_version)
     if not proc:
@@ -84,6 +88,43 @@ async def get_metrics():
     return get_metrics_summary()
 
 
+@router.get("/queue")
+async def get_queue_stats(db: AsyncSession = Depends(get_db)):
+    """Return job queue depth by status plus the next pending jobs (max 20)."""
+    counts_result = await db.execute(
+        select(RunJob.status, func.count().label("count")).group_by(RunJob.status)
+    )
+    depth_by_status: dict[str, int] = {row.status: row.count for row in counts_result}
+
+    pending_result = await db.execute(
+        select(RunJob)
+        .where(RunJob.status.in_(["queued", "retrying"]))
+        .order_by(RunJob.priority.desc(), RunJob.available_at.asc())
+        .limit(20)
+    )
+    next_jobs = [
+        {
+            "job_id": j.job_id,
+            "run_id": j.run_id,
+            "status": j.status,
+            "priority": j.priority,
+            "attempts": j.attempts,
+            "max_attempts": j.max_attempts,
+            "available_at": j.available_at.isoformat() if j.available_at else None,
+            "locked_by": j.locked_by,
+        }
+        for j in pending_result.scalars()
+    ]
+    return {
+        "depth_by_status": depth_by_status,
+        "total_pending": depth_by_status.get("queued", 0) + depth_by_status.get("retrying", 0),
+        "total_running": depth_by_status.get("running", 0),
+        "total_done": depth_by_status.get("done", 0),
+        "total_failed": depth_by_status.get("failed", 0),
+        "next_jobs": next_jobs,
+    }
+
+
 @router.get("/{run_id}", response_model=RunOut)
 async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await run_service.get_run(db, run_id)
@@ -135,7 +176,7 @@ async def get_checkpoint_state(run_id: str, checkpoint_id: str, db: AsyncSession
 
 
 @router.post("/{run_id}/cancel", response_model=RunOut)
-async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
+async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     # Set DB-level flag (works across processes / between worker heartbeats)
     await _mark_run_cancelled_db(run_id, db)
     # Also signal in-process event for immediate effect in embedded mode
@@ -147,7 +188,7 @@ async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{run_id}/retry", response_model=RunOut)
-async def retry_run(run_id: str, db: AsyncSession = Depends(get_db)):
+async def retry_run(run_id: str, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     existing = await run_service.get_run(db, run_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -169,6 +210,7 @@ async def cleanup_runs(
     before: datetime,
     status: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _principal: Principal = Depends(require_role("admin")),
 ):
     deleted_count = await run_service.cleanup_runs_before(db, before=before, status=status)
     await db.commit()
@@ -176,7 +218,7 @@ async def cleanup_runs(
 
 
 @router.delete("/{run_id}")
-async def delete_run(run_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_run(run_id: str, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     deleted = await run_service.delete_run(db, run_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Run not found")

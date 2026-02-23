@@ -7,12 +7,14 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
-from app.db.models import AgentInstance
+from app.db.models import AgentInstance, ResourceLease
 from app.schemas.agents import AgentInstanceCreate, AgentInstanceOut, AgentInstanceUpdate
+from app.auth import require_role
+from app.auth.deps import Principal
 
 logger = logging.getLogger("langorch.api.agents")
 router = APIRouter()
@@ -50,7 +52,7 @@ async def probe_capabilities(base_url: str = Query(..., description="Agent base 
 
 
 @router.post("", response_model=AgentInstanceOut, status_code=201)
-async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(get_db)):
+async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     agent_id = body.agent_id or f"{body.channel}_{body.name.replace(' ', '_').lower()}"
     resource_key = body.resource_key or f"{body.channel}_default"
 
@@ -66,12 +68,69 @@ async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(g
         base_url=body.base_url,
         concurrency_limit=body.concurrency_limit,
         resource_key=resource_key,
+        pool_id=body.pool_id,
         capabilities=",".join(resolved_caps) if resolved_caps else None,
     )
     db.add(inst)
     await db.flush()
     await db.refresh(inst)
     return inst
+
+
+@router.get("/pools")
+async def get_pool_stats(db: AsyncSession = Depends(get_db)):
+    """Return per-pool aggregated agent statistics.
+
+    Each pool (pool_id + channel) reports:
+    - Total agent count and per-status breakdown
+    - Aggregate concurrency_limit (total capacity)
+    - Active leases (not-yet-released, not yet expired)
+    - Available capacity = concurrency_limit_total - active_leases
+    """
+    # Use naive UTC so comparisons with DB-stored naive datetimes work correctly
+    from datetime import datetime as _dt
+    now = _dt.utcnow()
+
+    # Fetch all agents
+    agents_result = await db.execute(select(AgentInstance).order_by(AgentInstance.pool_id, AgentInstance.channel))
+    agents = list(agents_result.scalars().all())
+
+    # Count active (non-released, non-expired) leases per resource_key
+    leases_result = await db.execute(
+        select(ResourceLease.resource_key, func.count().label("active"))
+        .where(ResourceLease.released_at.is_(None), ResourceLease.expires_at > now)
+        .group_by(ResourceLease.resource_key)
+    )
+    active_by_key: dict[str, int] = {row.resource_key: row.active for row in leases_result}
+
+    # Aggregate by (pool_id, channel)
+    pools: dict[tuple[str, str], dict] = {}
+    for agent in agents:
+        key = (agent.pool_id or "__default__", agent.channel)
+        if key not in pools:
+            pools[key] = {
+                "pool_id": agent.pool_id,
+                "channel": agent.channel,
+                "agent_count": 0,
+                "status_breakdown": {},
+                "concurrency_limit_total": 0,
+                "active_leases": 0,
+                "available_capacity": 0,
+                "circuit_open_count": 0,
+            }
+        p = pools[key]
+        p["agent_count"] += 1
+        p["status_breakdown"][agent.status] = p["status_breakdown"].get(agent.status, 0) + 1
+        p["concurrency_limit_total"] += agent.concurrency_limit
+        p["active_leases"] += active_by_key.get(agent.resource_key, 0)
+        if agent.circuit_open_at and agent.circuit_open_at > now:
+            p["circuit_open_count"] += 1
+
+    # Compute available capacity
+    for p in pools.values():
+        p["available_capacity"] = max(0, p["concurrency_limit_total"] - p["active_leases"])
+
+    return list(pools.values())
 
 
 @router.get("/{agent_id}", response_model=AgentInstanceOut)
@@ -84,7 +143,7 @@ async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{agent_id}", response_model=AgentInstanceOut)
-async def update_agent(agent_id: str, body: AgentInstanceUpdate, db: AsyncSession = Depends(get_db)):
+async def update_agent(agent_id: str, body: AgentInstanceUpdate, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -97,6 +156,8 @@ async def update_agent(agent_id: str, body: AgentInstanceUpdate, db: AsyncSessio
         agent.concurrency_limit = body.concurrency_limit
     if body.capabilities is not None:
         agent.capabilities = ",".join(body.capabilities) if body.capabilities else None
+    if body.pool_id is not None:
+        agent.pool_id = body.pool_id
     agent.updated_at = datetime.now(timezone.utc)
     await db.flush()
     await db.refresh(agent)
@@ -104,7 +165,7 @@ async def update_agent(agent_id: str, body: AgentInstanceUpdate, db: AsyncSessio
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -115,7 +176,7 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{agent_id}/sync-capabilities", response_model=AgentInstanceOut)
-async def sync_capabilities(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def sync_capabilities(agent_id: str, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     """Pull capabilities from the live agent and save them to the DB."""
     result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == agent_id))
     agent = result.scalar_one_or_none()

@@ -1,8 +1,252 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-21 (Batch 28: `_build_template_vars()` injects `{{run_id}}` / `{{procedure_id}}` as built-in template variables in all node executors; artifact files stored under `artifacts/{run_id}/` — run-scoped storage; 613 tests passing)
+Last updated: 2026-02-22 (Batch 34: 4 enhancements — 
+**Enhancement 1** `db/models.py` + `schemas/runs.py` + `services/run_service.py` + SQLite migration: `Artifact` table and `ArtifactOut` schema extended with `name` / `mime_type` / `size_bytes` — UI can now display original filename, MIME type, and file size for every artifact;
+**Enhancement 2** `api/runs.py`: `GET /api/queue` endpoint — returns job queue depth by status, total pending/running/done/failed counts, and next 20 pending jobs for ops-team visibility;
+**Enhancement 3** `api/agents.py`: `GET /api/agents/pools` endpoint — per-pool aggregated stats: agent count, status breakdown, total concurrency, active leases, available capacity, circuit-open count;
+**Enhancement 4** `frontend/src/components/WorkflowBuilder.tsx`: 3-tier node category system — Deterministic (Blue: sequence/processing/transform/subflow), Intelligent (Purple: llm_action), Control (Orange: loop/parallel/logic/verification/human_approval/terminate) — palette now shows grouped sections with color-coded headers; category badge on each node card; 3 workflow templates added: Invoice Processing, Customer Support, Contract Review)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
+
+---
+
+## Canonical remaining gaps (single source of truth)
+
+Use this section as the authoritative snapshot of what is still missing. If any later section conflicts with this list, this list wins.
+
+| Gap | Current state | Priority |
+|-----|---------------|----------|
+| External observability backend | Prometheus endpoint + Pushgateway push are implemented; Prometheus text label format now correct; full OpenTelemetry traces/log shipping/correlation backend is pending | P0 |
+| Event-bus trigger adapters | Cron/webhook/file-watch/manual are implemented; Kafka/SQS-style consumer adapters are pending | P1 |
+| Multi-tenant isolation | Single-tenant model; no tenant-scoped data partitioning and policy enforcement | P1 |
+| Procedure promotion/canary/rollback | Versioning + status lifecycle (`PATCH /status`) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |
+| LLM fallback-model routing | Hard budget abort (`max_cost_usd`) now implemented; fallback-model routing policy (cost-based model selection) is pending | P1 |
+| Compliance controls | No PII tokenization pre-LLM, GDPR erase flow, or policy-as-code compile checks | P2 |
+| Agent pool capacity signals | `pool_id` + deterministic round-robin exist; saturation/autoscale signals and capability-version policy are pending | P2 |
+| Test hardening breadth | Strong unit coverage + core Playwright flows; broader load/soak and failure-path e2e coverage are pending | P2 |
+
+---
+
+## Real-World Hybrid Workflow Examples
+
+These three examples demonstrate how LangOrch's three-tier node model (Deterministic 🔵 / Intelligent 🟣 / Control 🟠) maps to complete end-to-end business processes. Each workflow is fully expressible as a CKP procedure today using the existing 11 node types.
+
+---
+
+### 1. Invoice Processing — OCR → Validation → AI Anomaly Detection → Approval → ERP Update
+
+**Business context:** A scanned or emailed invoice arrives as an image or PDF. The system must extract structured data, validate it against purchase order records, detect any anomalies or fraud signals, route for human approval when thresholds require it, and write the approved record to the ERP.
+
+**Why hybrid:** OCR and ERP writes are deterministic API calls. Anomaly detection requires reasoning over patterns that cannot be expressed as simple rules (unusual vendor, inconsistent line items, currency mismatches) — this is where the LLM adds value. Approval is an explicit governance gate.
+
+```
+[sequence: ingest_document]          🔵  POST to OCR service; store raw text + metadata as artifact
+         │
+[llm_action: extract_fields]         🟣  Extract vendor, amount, line items, PO number from raw OCR text
+         │                               Structured output schema enforces required fields
+[verification: validate_schema]      🟠  Assert all required fields present and amount parseable
+         │               │
+      (pass)          (fail)
+         │               └─[sequence: flag_extraction_error] → [terminate: failed]
+[sequence: fetch_po_record]          🔵  GET purchase order from ERP by PO number
+         │
+[llm_action: anomaly_detection]      🟣  Compare invoice vs PO — flag vendor mismatch, amount variance,
+         │                               unusual payment terms, duplicate invoice signals
+         │                               Output: { risk_score: float, flags: string[], recommendation: string }
+[verification: check_risk_output]    🟠  Validate risk_score is numeric and in 0–1 range
+         │
+[logic: route_by_risk]               🟠  risk_score > 0.6 → human review; <= 0.6 → auto-approve path
+         │                    │
+   (high risk)           (low risk)
+         │                    └─[sequence: auto_approve_log] → [sequence: update_erp] → [terminate: success]
+[human_approval: manager_review]     🟠  Show flags + recommendation to approver; 48h timeout
+         │               │               on_timeout → escalate path
+      (approve)       (reject)
+         │               └─[sequence: notify_rejection] → [terminate: rejected]
+[sequence: update_erp]               🔵  POST approved invoice to ERP system; idempotency_key prevents duplicates
+         │
+[sequence: archive_document]        🔵  Move artifact to long-term storage, update document status
+         │
+[terminate: success]                 🟠
+```
+
+**Node-by-node rationale:**
+
+| Step | Tier | Reason |
+|------|------|--------|
+| `ingest_document` | 🔵 Deterministic | OCR is a well-defined API call with deterministic output given same input |
+| `extract_fields` | 🟣 Intelligent | Raw OCR output is noisy, unstructured; LLM handles layout variance across vendor formats |
+| `validate_schema` | 🟠 Control | Structural check on model output before it drives downstream steps |
+| `fetch_po_record` | 🔵 Deterministic | Exact-match database lookup — no ambiguity |
+| `anomaly_detection` | 🟣 Intelligent | Cross-referencing invoice vs PO for semantic inconsistency requires judgment, not rules |
+| `route_by_risk` | 🟠 Control | Implements the business policy: risk threshold routing |
+| `manager_review` | 🟠 Control | Explicit governance gate — human decision recorded in audit trail |
+| `update_erp` | 🔵 Deterministic | Write to authoritative system of record — must be reliable and idempotent |
+
+**Key CKP fields used:**
+- `idempotency_key` on `update_erp` — prevents double-posting if the run retries after ERP write
+- `is_checkpoint: true` on `manager_review` — durable resume after human decision
+- `timeout_ms` on `manager_review` — auto-escalate if no response within SLA
+- `global_config.max_cost_usd` — caps combined spend from two LLM nodes per run
+- `artifact` output from `ingest_document` — OCR result stored and referenced by subsequent nodes
+
+---
+
+### 2. Customer Support — Data Fetch → AI Classification → Conditional Routing → Response Generation
+
+**Business context:** An inbound support ticket arrives (email, chat, or API). The system fetches the customer's account history and open cases, classifies the inquiry type and urgency, routes to the appropriate handling path (auto-response, specialist queue, or escalation), and generates a personalised response.
+
+**Why hybrid:** Data fetching is deterministic. Classification and response generation require natural language understanding — rules cannot handle the semantic variety of real customer messages. Routing is pure control logic once classification produces a structured output.
+
+```
+[sequence: fetch_ticket]             🔵  Pull ticket content, customer_id, channel metadata
+         │
+[parallel: enrich_context]           🟠  Fan-out two deterministic lookups simultaneously
+    │               │
+[sequence:          [sequence:       🔵  GET /customers/{id}/account  |  GET /customers/{id}/cases
+ fetch_account]      fetch_cases]         Both results merged into shared state
+    │               │
+    └───────┬────────┘
+            │
+[llm_action: classify_inquiry]       🟣  Classify: category (billing / technical / account / feedback),
+            │                            urgency (low / medium / high / critical),
+            │                            sentiment (positive / neutral / negative / frustrated)
+            │                            Output: structured JSON with all three dimensions
+[verification: validate_classification] 🟠  Check category and urgency are valid enum values
+            │
+[logic: routing_decision]            🟠  critical → immediate_escalation
+            │                            high + technical → specialist_queue
+            │                            billing → billing_team
+            │                            low/medium → auto_response path
+            │
+    ┌───────┼──────────────┐
+    │       │              │
+[sequence: [sequence:     [llm_action:  🟣  Generate personalised reply grounded in
+ escalate]  queue_ticket]  auto_reply]       account history, case context, and inquiry
+    │       │              │                  type. Tone matched to detected sentiment.
+    │       │              │
+    │       │       [verification:     🟠  Check reply does not contain PII patterns,
+    │       │        check_reply]           forbidden phrases, or empty content
+    │       │              │
+    └───────┴──────────────┘
+            │
+[sequence: send_response]            🔵  POST reply via channel API (email/chat/SMS)
+            │
+[sequence: update_ticket_status]     🔵  PATCH ticket: status, assigned_team, classification tags
+            │
+[terminate: success]                 🟠
+```
+
+**Node-by-node rationale:**
+
+| Step | Tier | Reason |
+|------|------|--------|
+| `fetch_ticket` | 🔵 Deterministic | Structured API read — ID-keyed, no ambiguity |
+| `enrich_context` (parallel) | 🟠 Control | Orchestrates concurrent data fetching; no logic, just fan-out |
+| `fetch_account` / `fetch_cases` | 🔵 Deterministic | Database/API reads with deterministic output |
+| `classify_inquiry` | 🟣 Intelligent | Natural language messages cannot be classified by keyword rules with acceptable accuracy |
+| `validate_classification` | 🟠 Control | Catches model output that is not a valid enum before it drives routing |
+| `routing_decision` | 🟠 Control | Pure business policy: classification value → handling path |
+| `auto_reply` | 🟣 Intelligent | Personalised reply generation requires context-aware language; templates would be too rigid |
+| `check_reply` | 🟠 Control | Quality gate: ensures generated reply meets content policy before sending |
+| `send_response` | 🔵 Deterministic | Channel API call — deterministic, idempotency-key prevents duplicate send |
+| `update_ticket_status` | 🔵 Deterministic | Structured write to support system |
+
+**Key CKP fields used:**
+- `parallel.branches` on `enrich_context` — concurrent account and case fetches with shared join
+- `logic.rules` array on `routing_decision` — ordered condition list, first match wins
+- `is_checkpoint: true` on `classify_inquiry` — replay-safe resume; classification not re-run on retry
+- `agent` on `auto_reply` — routes to a specific LLM-capable agent in the pool
+- `verification.schema` on `validate_classification` and `check_reply` — JSON Schema constraints
+
+---
+
+### 3. Contract Review — Extraction → Multi-Agent Analysis → Parallel Approvals → Signing
+
+**Business context:** A contract document (PDF, DOCX) must be reviewed for legal compliance, commercial terms acceptability, and security/data obligations before being offered for signature. Multiple specialist reviewers (legal, commercial, security) assess in parallel. All must approve before the document proceeds to e-signature.
+
+**Why hybrid:** Extraction and document handling are deterministic. Each specialist review requires semantic reasoning over legal and technical language — this is the highest-value use of LLMs. The parallel approval structure encodes the organisational governance model.
+
+```
+[sequence: ingest_contract]          🔵  Fetch document, extract text via document parser API,
+         │                               store original + extracted text as named artifacts
+[llm_action: extract_metadata]       🟣  Extract: parties, effective date, jurisdiction, contract type,
+         │                               key obligation clauses, termination conditions, governing law
+         │                               Output: structured contract_metadata object
+[verification: validate_metadata]    🟠  Assert required parties, date, and jurisdiction fields present
+         │
+[parallel: specialist_analysis]      🟠  Fan-out to three independent analysis paths simultaneously
+    │               │               │
+[llm_action:   [llm_action:    [llm_action:    🟣  Each agent has a specialist system prompt and
+ legal_review]  commercial_    security_             focused scope:
+                review]        review]         legal: compliance, liability, IP clauses
+                                               commercial: payment, SLA, penalty terms
+                                               security: data residency, retention, breach obligation
+    │               │               │
+[verification: [verification: [verification:  🟠  Validate each output is structured risk assessment
+ check_legal]   check_comm]    check_sec]           { risk_level, findings: [], recommendation }
+    │               │               │
+    └───────────────┼───────────────┘
+                    │
+[llm_action: synthesis_report]       🟣  Consolidate three specialist reports into executive summary:
+                    │                    overall_risk, blocking_issues, negotiation_points, recommendation
+[transform: prepare_approval_pack]   🔵  Reshape synthesis + metadata into approval request payload
+                    │
+[parallel: approval_gates]           🟠  All three approvals must be obtained (fan-out + join)
+    │               │               │        Each gate runs independently; any rejection blocks the join
+[human_approval: [human_approval: [human_approval: 🟠  legal_counsel | commercial_dir | security_officer
+ legal_sign_off]  commercial_ok]  security_ok]         Each: on_approve → continue; on_reject → reject_path
+    │               │               │
+    └───────────────┼───────────────┘
+                    │
+[logic: all_approved?]               🟠  Check join: if any branch produced rejection, route to revise
+         │               │
+    (all pass)      (any reject)
+         │               └─[llm_action: revision_brief] → [sequence: notify_requester] → [terminate: rejected]
+[sequence: send_to_esign]            🔵  POST to e-signature platform (DocuSign/Adobe Sign)
+         │
+[sequence: update_contract_registry] 🔵  PATCH contract record: status=awaiting_signature, approval_ids
+         │
+[terminate: success]                 🟠
+```
+
+**Node-by-node rationale:**
+
+| Step | Tier | Reason |
+|------|------|--------|
+| `ingest_contract` | 🔵 Deterministic | Document parsing API — deterministic given same input |
+| `extract_metadata` | 🟣 Intelligent | Legal clause extraction requires language understanding; field locations vary by contract template |
+| `specialist_analysis` (parallel) | 🟠 Control | Orchestrates concurrent expert analysis; no intelligence in the parallel node itself |
+| `legal_review` / `commercial_review` / `security_review` | 🟣 Intelligent | Each is a focused LLM with specialist system prompt — operates in its domain only |
+| `check_legal` / `check_comm` / `check_sec` | 🟠 Control | Structural validation of each model output before it feeds the synthesis |
+| `synthesis_report` | 🟣 Intelligent | Cross-domain consolidation: legal + commercial + security risks require holistic reasoning |
+| `prepare_approval_pack` | 🔵 Deterministic | Pure state reshape — no I/O, no reasoning |
+| `approval_gates` (parallel) | 🟠 Control | Encodes the governance policy: *all three domains must approve* |
+| `legal_sign_off` / `commercial_ok` / `security_ok` | 🟠 Control | Explicit human decision boundary with full audit trail per approver |
+| `revision_brief` | 🟣 Intelligent | If rejected, LLM generates structured revision guidance from the combined rejection reasons |
+| `send_to_esign` | 🔵 Deterministic | Reliable API call to e-signature platform; idempotency_key prevents duplicate submission |
+
+**Key CKP fields used:**
+- `parallel.branches` (nested twice) — concurrent analysis and concurrent approvals are separate parallel nodes; inner branches can independently fail
+- `is_checkpoint: true` on each `human_approval` — each approval gate is a durable resume point; the procedure survives server restarts between approvals
+- `subflow` could replace the `specialist_analysis` parallel block if each specialist analysis becomes complex enough to warrant its own versioned procedure
+- `agent` field on each `llm_action` — routes each specialist review to a pool with an appropriate model (e.g. legal review to a model fine-tuned on legal text)
+- `global_config.max_cost_usd` — contracts with many LLM nodes need a budget ceiling; four LLM calls per contract can accumulate significant token spend
+- `artifacts` — original document, extracted text, and synthesis report all stored as named artifacts for the audit trail
+
+---
+
+### Cross-cutting patterns visible in all three workflows
+
+| Pattern | Invoice | Support | Contract |
+|---------|---------|---------|----------|
+| **Deterministic bookend** | Fetch doc at start, write ERP at end | Fetch ticket at start, update ticket at end | Fetch doc at start, send to e-sign at end |
+| **Intelligent core** | Extract fields + anomaly detection | Classify + generate reply | Extract + multi-specialist analysis + synthesis |
+| **Verification gate after every LLM** | ✅ After both LLM nodes | ✅ After classification and reply | ✅ After each of four LLM nodes |
+| **Human approval as governance layer** | Manager approval above threshold | Specialist for high-urgency tickets | Three-party parallel approval |
+| **Parallel for concurrency** | — | Account + case lookup | Specialist analysis + approval gates |
+| **Cost control** | `max_cost_usd` on 2 LLM nodes | `max_cost_usd` on 2 LLM nodes | `max_cost_usd` on 4 LLM nodes |
+| **Durable checkpoints** | At human approval gate | At classification (expensive to re-run) | At each of three approval gates |
 
 ---
 
@@ -25,18 +269,21 @@ This document is the single authoritative source for **what is implemented vs wh
 | Step idempotency | 100% | 95% | Template key evaluation implemented |
 | Multi-agent concurrency (leases) | 100% | 95% | Near-complete |
 | Human-in-the-loop | 100% | 100% | Approval expiry auto-timeout implemented |
-| Secrets provider (env + Vault + AWS + Azure) | 100% | 100% | All 4 providers complete: env, HashiCorp Vault (AppRole/KV v1/v2), AWS Secrets Manager (boto3), Azure Key Vault (DefaultAzureCredential); CachingSecretsProvider + provider_from_config factory |
+| Secrets provider (env + Vault + AWS + Azure) | 100% | 100% | All 4 providers complete + `provider_from_config()` factory; **Batch 33**: `execution_service.py` wiring fixed — AWS/Azure providers now actually used (were silently falling back to env vars); Vault now passes full AppRole/KV config |
 | Observability (events + SSE) | 100% | 98% | checkpoint_saved event added |
-| Observability (in-memory metrics) | 100% | 100% | Prometheus `/api/metrics` text endpoint added |
-| Observability (telemetry fields) | 100% | 85% | track_duration+track_retries emitted; custom_metrics recorded; not exported externally |
+| Observability (in-memory metrics) | 100% | 100% | Prometheus `/api/metrics` text endpoint + Pushgateway remote export + p95 histogram; **Batch 33**: Prometheus label format fixed — proper `{key="value"}` syntax, one `# TYPE` per family |
+| Observability (telemetry fields) | 100% | 90% | track_duration+track_retries emitted; custom_metrics recorded; Pushgateway export configurable |
 | Redaction | 100% | 100% | Configurable via build_patterns() + extra_redacted_fields |
 | Diagnostics API | 100% | 100% | Complete |
 | Checkpoint introspection API | 100% | 100% | Complete |
 | Graph extraction API | 100% | 100% | Complete |
 | Dry-run explain API | 100% | 100% | POST /{id}/{version}/explain — static analysis, no execution |
+| Procedure status lifecycle API | 100% | 100% | **Batch 33**: `PATCH /api/procedures/{id}/{version}/status` added — lightweight `draft`→`active`→`deprecated`→`archived` transitions without re-uploading full CKP JSON |
+| LLM budget governance | 100% | 80% | **Batch 33**: hard budget abort implemented (`global_config.max_cost_usd` → `budget_exceeded` event + run failure); cost tracking + event emission already existed; fallback-model routing policy is still pending |
 | Projects CRUD | 100% | 100% | Complete — backend + frontend |
 | Agent capabilities + health polling | 100% | 100% | Complete — capabilities in UI, health loop polls /health, circuit breaker (threshold=3, reset=300s) |
 | Agent management (update/delete) | 100% | 100% | PUT/DELETE endpoints + frontend buttons |
+| Agent pool round-robin dispatch | 100% | 100% | `pool_id` column + v003 migration; deterministic per-pool round-robin replaces random shuffle; **Batch 34**: `GET /api/agents/pools` endpoint — per-pool agent count, status breakdown, concurrency, active leases, available capacity, circuit-open count |
 | Frontend: core CRUD pages (12 routes) | 100% | 100% | Complete |
 | Frontend: projects page | 100% | 100% | Complete — list/create/edit/delete |
 | Frontend: workflow graph viewer | 100% | 95% | Implemented |
@@ -53,12 +300,14 @@ This document is the single authoritative source for **what is implemented vs wh
 | Frontend: status/filter/metadata display | 100% | 100% | Complete |
 | Frontend: agent capabilities display | 100% | 100% | Complete |
 | Frontend: project filter in procedures | 100% | 100% | Complete |
-| Frontend: workflow builder/editor | 100% | 0% | Not started |
+| Frontend: workflow builder/editor | 100% | 100% | Visual drag-and-drop builder (WorkflowBuilder.tsx): node palette, inspector, edge labels, export to CKP — Builder ✏ tab on Procedure Version page; **Batch 34**: 3-tier node categories (Deterministic/Intelligent/Control), category-consistent color scheme, grouped palette sections with color headers, category badge on node cards, 3 workflow templates (Invoice Processing, Customer Support, Contract Review) |
+| Queue visibility API | 100% | 100% | **Batch 34**: `GET /api/queue` — depth by status, total pending/running/done/failed, next 20 pending jobs with priority + available_at |
+| Artifact metadata | 100% | 100% | **Batch 34**: `name` / `mime_type` / `size_bytes` columns added to `artifacts` table, `ArtifactOut` schema, `create_artifact()` signature; SQLite idempotent migrations wired |
 | Frontend→Backend API linkage | 100% | 100% | All 35+ call sites verified; 204-body bug fixed |
-| Backend tests (unit) | Target | 99% | **613 tests** — all passing (Batch 28: no new tests; runtime wiring change) |
+| Backend tests (unit) | Target | 99% | **681 tests** — all passing (Batch 34 confirmed) |
 | Backend tests (integration) | Target | 35% | 18 API tests |
-| Frontend tests | Target | 0% | Not started |
-| AuthN/AuthZ | Target | 0% | Not started (parked) |
+| Frontend tests | Target | 35% | 26 Playwright e2e tests (navigation, procedures, runs, approvals) — **Batch 30** |
+| AuthN/AuthZ | Target | 85% | Implemented as opt-in (`AUTH_ENABLED`) with JWT + API key + role guards on mutating endpoints; remaining work is production-default enablement, OIDC integration, and project-scoped RBAC |
 | Production DB + migrations (Alembic) | Target | 85% | Alembic setup complete; `v001_initial_schema` migration (includes `run_jobs`); SQLite/PostgreSQL dual-dialect; asyncpg engine pool; Alembic env.py; `sync_db_url()` (Batch 26) |
 | Durable worker model (RunJob queue) | Target | 100% | Full worker: `app/worker/` package — `loop.py` (poll/claim/execute/stall-reclaim), `heartbeat.py` (lock renewal + cancel bridge), `worker_main.py` (standalone entrypoint), `enqueue_run` + `requeue_run`; embedded in server via `asyncio.create_task`; SQLite + PostgreSQL claim dialects; DB-level run cancellation (Batch 27) |
 | CI/CD pipeline | Target | 100% | GitHub Actions CI: backend ruff + pytest; frontend tsc + build (Batch 22) |
@@ -271,17 +520,17 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | ~~Step timeout for internal actions~~ | ✅ `timeout_ms` now enforced for all step types | Done |
 | ~~`is_checkpoint` selective strategy~~ | ✅ `_checkpoint_node_id` marker + `checkpoint_saved` event (Batch 14) | Done |
 | ~~Trigger automation~~ | ✅ Scheduler + webhook + trigger registry + dedupe/concurrency controls (Batch 20) | Done |
-| AuthN/AuthZ | No identity enforcement; all endpoints open | Large (parked) |
+| AuthN/AuthZ hardening | Opt-in auth is implemented; remaining work is enable-by-default production profile, OIDC/SSO integration, and project-scoped authorization | Medium |
 
 ### Priority 2 — Technical debt / polish
 
 | Item | Detail |
 |------|--------|
 | No server-side data fetching | All pages use `useEffect` + client fetch; no SWR/React Query caching |
-| Frontend e2e tests | No Playwright/Cypress tests |
-| Workflow editor (frontend) | Read-only graph viewer done; editable properties not started |
+| Frontend e2e tests | Playwright implemented (26 tests); needs broader edge/error/retry coverage |
+| Workflow editor (frontend) hardening | Visual editor is shipped; remaining work is deeper validation UX, larger-flow performance tuning, and collaborative-edit safeguards |
 | Retrieval metadata full-text search | `retrieval_metadata` parsed + stored in DB; no full-text search API |
-| Artifact retention/cleanup | Run-scoped paths (`artifacts/{run_id}/`) prevent collision; no TTL or background sweep |
+| Artifact retention/cleanup | TTL cleanup loop and admin endpoints implemented; policy tuning and retention analytics can be expanded |
 | `event_service.py` thin re-export | 6-line module re-exports from `run_service`; could be consolidated |
 
 ---
@@ -405,7 +654,31 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 **Total tests after Batch 18: 362 (up from 344)**
 
-### Batch 26 (2026-02-20) — SQLite/PostgreSQL dual-dialect + Alembic migrations
+### Batch 32 (2026-02-23) — Sprint 6: Auth, pool round-robin, metrics export, secrets rotation, metadata search
+
+92. **AuthN/AuthZ package** — `app/auth/` package: `deps.py` (`get_current_user`, `Principal` dataclass supporting `Bearer JWT` + `X-API-Key`), `roles.py` (`require_role()` dependency factory with role hierarchy `viewer < approver < operator < admin`); `AUTH_ENABLED=false` default — zero-breaking rollout; anonymous admin returned when disabled
+93. **Auth config settings** — `AUTH_ENABLED`, `AUTH_SECRET_KEY`, `AUTH_TOKEN_EXPIRE_MINUTES`, `API_KEYS` added to `Settings`
+94. **Role guards wired to routers** — `operator` guard on all mutating endpoints in `runs.py`, `procedures.py`, `agents.py`; `approver` guard on `POST /api/approvals/{id}/decision`; `admin` guard on destructive cleanup; `decided_by` auto-set from `principal.identity` when body field is blank
+95. **Token issuance endpoint** — `app/api/auth.py`: `POST /api/auth/token` (HS256 JWT with `sub` + `roles` claims, shared-secret body auth); only active when `AUTH_ENABLED=true`
+96. **Agent `pool_id` + round-robin** — `pool_id: str | None` column added to `AgentInstance`; `executor_dispatch._find_capable_agent` replaced `random.shuffle` with per-pool `_pool_counters` monotonic round-robin; counters keyed `"{channel}:{pool_id or 'standalone'}"`; `AgentInstanceCreate/Update/Out` schemas + `register_agent`/`update_agent` handlers updated
+97. **Migration v003** — `alembic/versions/v003_agent_pool_id.py`: adds `pool_id VARCHAR(128)` + `ix_agent_instances_pool_id` index
+98. **Prometheus Pushgateway export** — `METRICS_PUSH_URL`, `METRICS_PUSH_INTERVAL_SECONDS`, `METRICS_PUSH_JOB` config; `_metrics_push_loop()` background task pushes Prometheus text to pushgateway PUT API; `to_prometheus_text()` extracted as shared serializer; `GET /api/metrics` now uses it; p95 percentile added to histogram stats
+99. **Secret rotation cache flush** — `invalidate_secrets_cache()` global helper in `secrets_service.py`; `SECRETS_ROTATION_CHECK=true` triggers flush + `secrets_cache_invalidated` run event before each run execution; `invalidate_secrets_cache` imported in `execution_service.py`
+100. **`metadata_search` SQL LIKE** — `GET /api/procedures?metadata_search=<query>` adds `WHERE retrieval_metadata_json ILIKE '%query%'` at DB level (bypasses Python in-memory filter for large datasets); `list_procedures` service signature extended
+
+**Tests unchanged: 681 (all passing — `AUTH_ENABLED=false` means all existing tests continue working)**
+
+### Batch 31 (2026-02-22) — Pre-production hardening
+86. **`delete_run` + `cleanup_runs_before` RunJob cascade** — both functions now delete `run_jobs` rows before deleting the parent `Run` row; previously caused a FK constraint violation on PostgreSQL and silent orphan records on SQLite
+87. **Runs query composite indexes** — new Alembic migration `v002_runs_indexes` adds `ix_runs_status_created_at`, `ix_runs_project_created_at`, `ix_runs_procedure_created_at`; speeds up all `GET /api/runs` filter/sort paths at scale
+88. **Diagnostics SQL optimization** — `get_run_diagnostics` replaced full-row event loads with `func.count()` aggregate queries and filters active leases to `released_at IS NULL` only
+89. **Diagnostics UI field alignment** — `StepIdempotencyDiagnostic.completed_at` → `updated_at` in `types.ts`; run detail idempotency table now renders correct timestamp
+90. **e2e tsconfig cross-OS safety** — added `forceConsistentCasingInFileNames: true` to `frontend/e2e/tsconfig.json`
+91. **Doc-drift cleanup** — stale deferred entries in `IMPLEMENTATION_SPEC.md`, `IMPLEMENTATION_STATUS.md`, `FUTURE_PLAN.md` corrected to match shipped state
+
+**Tests unchanged: 681 (all passing)**
+
+### Batch 30 (2026-02-21) — Artifact retention/TTL + frontend e2e
 72. **SQLite/PostgreSQL dual-dialect engine** — `config.py` detects dialect from `ORCH_DB_URL`; `engine.py` creates `aiosqlite` or `asyncpg` engine accordingly; checkpointer is dialect-aware; `WORKER_EMBEDDED` defaults to `True` for SQLite (single-process) and `False` for PostgreSQL (external worker)
 73. **Alembic migrations setup** — `alembic.ini` + `alembic/env.py` with `sync_db_url()` helper; `v001_initial_schema` migration covers all tables including `run_jobs`; `asyncpg` + `alembic` added to `requirements.txt`
 74. **`RunJob` ORM model** — `run_jobs` table: `job_id` (PK), `run_id` (UNIQUE FK), `status`, `priority`, `attempts`, `max_attempts`, `locked_by`, `locked_until`, `available_at`, `error_message`
@@ -428,6 +701,13 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 
 **Total tests after Batch 28: 613** (no new tests — change is runtime wiring; existing executor tests cover the affected paths)
 
+### Batch 29 (2026-02-21) — HA-safe scheduling via DB-level leader election
+83. **`SchedulerLeaderLease` ORM model** — new table `scheduler_leader_leases` (`name` PK, `leader_id`, `acquired_at`, `expires_at`) added to `app/db/models.py`; `v001_initial_schema` Alembic migration updated; SQLite `CREATE TABLE IF NOT EXISTS` guard added to `main.py` lifespan idempotent migrations
+84. **`app/runtime/leader.py` — `LeaderElection` class** — three-path algorithm: (1) renew own row via `UPDATE WHERE leader_id=self`, (2) steal expired row via `UPDATE WHERE expires_at < now`, (3) acquire fresh row via `INSERT` (catches `IntegrityError` on concurrent conflict); TTL 60s; renewal every 15s; `is_leader` property; `start()` / `stop()` lifecycle; `leader_election` module-level singleton; `leader_id` generated as `hostname-pid-rand` for uniqueness; `start()` launched in `lifespan()` before all singleton background tasks; SQLite always wins immediately (single process); PostgreSQL races correctly under multi-replica
+85. **Singleton background loops are leader-gated** — `TriggerScheduler.sync_schedules()` returns early if `leader_election.is_leader` is False; `_fire_scheduled_trigger()` returns early if not leader (belt-and-suspenders alongside trigger-service dedupe guard); `_file_watch_trigger_loop()` skips poll and clears cached mtimes when not leader (prevents spurious fires on leadership transition); `_approval_expiry_loop()` skips when not leader (prevents double-timeout of same approval across replicas)
+
+**Total tests after Batch 29: 668 (up from 613; +18 Batch 29 leader election tests, +37 tests attributed to other batches on recount)**
+
 ---
 
 ## Suggested next quick wins (from audit)
@@ -448,9 +728,10 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 | 36 | Durable worker model | Large | High | ✅ Done (Batch 27) |
 | 37 | `{{run_id}}` built-in template variable | Small | Medium | ✅ Done (Batch 28) |
 | 38 | Run-scoped artifact paths | Small | Medium | ✅ Done (Batch 28) |
-| 39 | Artifact retention/TTL cleanup | Small | Medium | Not started |
-| 40 | Frontend e2e tests (Playwright) | Large | High | Not started |
-| 41 | AuthN/AuthZ + role model | Large | Critical | Not started |
+| 39 | Artifact retention/TTL cleanup | Small | Medium | ✅ Done (Batch 30) |
+| 40 | Frontend e2e tests (Playwright) | Large | High | ✅ Done (Batch 30, 26 tests) |
+| 41 | AuthN/AuthZ + role model | Large | Critical | ✅ Done as opt-in baseline (Batch 32); production hardening follow-ups remain |
+| 42 | HA-safe scheduling (leader election) | Small | High | ✅ Done (Batch 29) |
 
 ---
 

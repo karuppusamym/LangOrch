@@ -27,6 +27,12 @@ export default function ProcedureDetailPage() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
+
+  const NODE_TYPE_BG: Record<string, string> = {
+    sequence: "#3B82F6", processing: "#2563EB", transform: "#1D4ED8", subflow: "#60A5FA",
+    llm_action: "#7C3AED", loop: "#F97316", parallel: "#EA580C",
+    logic: "#F59E0B", verification: "#D97706", human_approval: "#EF4444", terminate: "#6B7280",
+  };
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
@@ -289,7 +295,7 @@ export default function ProcedureDetailPage() {
           <div className="space-y-3">
             {nodeEntries.map(([nodeId, node]: [string, any]) => (
               <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
-                <span className="badge badge-info">{node.type}</span>
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white" style={{ background: NODE_TYPE_BG[node.type as string] ?? "#6B7280" }}>{node.type}</span>
                 <div>
                   <p className="text-sm font-medium">{nodeId}</p>
                   {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
@@ -364,6 +370,49 @@ export default function ProcedureDetailPage() {
           )}
         </div>
       )}
+      {activeTab === "runs" && (
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <h3 className="mb-4 text-sm font-semibold text-gray-900">Runs for this procedure</h3>
+          {runsLoading ? (
+            <p className="text-sm text-gray-400">Loading runs…</p>
+          ) : procedureRuns.length === 0 ? (
+            <p className="text-sm text-gray-400">No runs yet.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-xs text-gray-500">
+                  <th className="py-2 text-left font-medium">Run ID</th>
+                  <th className="py-2 text-left font-medium">Status</th>
+                  <th className="py-2 text-left font-medium">Started</th>
+                  <th className="py-2 text-left font-medium">Duration</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {procedureRuns.map((r) => (
+                  <tr key={r.run_id} className="hover:bg-gray-50">
+                    <td className="py-2">
+                      <Link href={`/runs/${r.run_id}`} className="font-mono text-xs text-primary-600 hover:underline">
+                        {r.run_id.slice(0, 14)}…
+                      </Link>
+                    </td>
+                    <td className="py-2">
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        r.status === "completed" ? "bg-green-100 text-green-700" :
+                        r.status === "failed" ? "bg-red-100 text-red-700" :
+                        r.status === "running" ? "bg-blue-100 text-blue-700" :
+                        "bg-gray-100 text-gray-600"
+                      }`}>{r.status}</span>
+                    </td>
+                    <td className="py-2 text-xs text-gray-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
+                    <td className="py-2 text-xs text-gray-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       {/* Input Variables Modal */}
       {showVarsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">

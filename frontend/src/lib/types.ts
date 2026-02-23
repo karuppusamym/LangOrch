@@ -1,5 +1,30 @@
 /* TypeScript types matching backend Pydantic schemas */
 
+/* ── Users ── */
+export interface User {
+  user_id: string;
+  username: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  is_active: boolean;
+  sso_provider: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/* ── Secrets ── */
+export interface Secret {
+  secret_id: string;
+  name: string;
+  description: string | null;
+  provider_hint: string;
+  tags: string[];
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Procedure {
   procedure_id: string;
   version: string;
@@ -97,6 +122,7 @@ export interface AgentInstance {
   status: "online" | "offline" | "busy";
   resource_key: string;
   concurrency_limit: number;
+  pool_id: string | null;
   capabilities: string[];
   consecutive_failures: number;
   circuit_open_at: string | null;
@@ -113,7 +139,7 @@ export interface Project {
 export interface ResourceLeaseDiagnostic {
   lease_id: string;
   resource_key: string;
-  run_id: string;
+  run_id?: string;
   node_id: string | null;
   step_id: string | null;
   acquired_at: string;
@@ -128,7 +154,7 @@ export interface StepIdempotencyDiagnostic {
   idempotency_key: string | null;
   status: string;
   has_cached_result: boolean;
-  completed_at: string | null;
+  updated_at: string;
 }
 
 export interface RunDiagnostics {
@@ -231,4 +257,46 @@ export interface TriggerRegistration {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+/* ── Platform Config ─────────────────────────────── */
+
+export interface PlatformConfig {
+  // Server
+  host: string;
+  port: number;
+  debug: boolean;
+  cors_origins: string[];
+  // Database
+  db_dialect: string;
+  db_host: string | null;
+  db_port: number | null;
+  db_name: string | null;
+  db_pool_size: number;
+  db_max_overflow: number;
+  // Auth
+  auth_enabled: boolean;
+  auth_token_expire_minutes: number;
+  // Worker
+  worker_embedded: boolean;
+  worker_concurrency: number;
+  worker_poll_interval: number;
+  worker_max_attempts: number;
+  worker_retry_delay_seconds: number;
+  worker_lock_duration_seconds: number;
+  // LLM
+  llm_base_url: string | null;
+  llm_timeout_seconds: number;
+  llm_key_set: boolean;
+  // Retention
+  checkpoint_retention_days: number;
+  artifact_retention_days: number;
+  // Leases / metrics
+  lease_ttl_seconds: number;
+  metrics_push_url: string | null;
+  metrics_push_interval_seconds: number;
+  metrics_push_job: string;
+  // Alerts & limits
+  alert_webhook_url: string | null;
+  rate_limit_max_concurrent: number;
+  secrets_rotation_check: boolean;
 }

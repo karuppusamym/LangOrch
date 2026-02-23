@@ -17,6 +17,8 @@ from app.services.explain_service import explain_procedure
 from app.compiler.parser import parse_ckp
 from app.compiler.validator import validate_ir
 from app.compiler.binder import bind_executors
+from app.auth import require_role
+from app.auth.deps import Principal
 
 router = APIRouter()
 
@@ -27,7 +29,7 @@ class ExplainRequest(BaseModel):
 
 
 @router.post("", response_model=ProcedureOut, status_code=201)
-async def import_procedure(body: ProcedureCreate, db: AsyncSession = Depends(get_db)):
+async def import_procedure(body: ProcedureCreate, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     try:
         proc = await procedure_service.import_procedure(db, body.ckp_json, body.project_id)
     except ValueError as exc:
@@ -41,10 +43,13 @@ async def list_procedures(
     status: str | None = None,
     tags: str | None = None,
     search: str | None = None,
+    metadata_search: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    return await procedure_service.list_procedures(db, project_id, status=status, tags=tag_list, search=search)
+    return await procedure_service.list_procedures(
+        db, project_id, status=status, tags=tag_list, search=search, metadata_search=metadata_search
+    )
 
 
 @router.get("/{procedure_id}/versions", response_model=list[ProcedureOut])
@@ -55,7 +60,9 @@ async def list_versions(procedure_id: str, db: AsyncSession = Depends(get_db)):
 @router.get("/{procedure_id}/{version}/graph")
 async def get_procedure_graph(procedure_id: str, version: str, db: AsyncSession = Depends(get_db)):
     """Return the workflow graph topology (nodes + edges) for visualisation."""
-    proc = await procedure_service.get_procedure(db, procedure_id, version)
+    # Accept "latest" as a sentinel meaning "most recent version"
+    resolved_version = None if version.lower() == "latest" else version
+    proc = await procedure_service.get_procedure(db, procedure_id, resolved_version)
     if not proc:
         raise HTTPException(status_code=404, detail="Procedure not found")
     ckp = json.loads(proc.ckp_json)
@@ -105,6 +112,7 @@ async def update_procedure(
     version: str,
     body: ProcedureUpdate,
     db: AsyncSession = Depends(get_db),
+    _principal: Principal = Depends(require_role("operator")),
 ):
     try:
         proc = await procedure_service.update_procedure(db, procedure_id, version, body.ckp_json)
@@ -117,8 +125,32 @@ async def update_procedure(
 
 
 @router.delete("/{procedure_id}/{version}")
-async def delete_procedure_version(procedure_id: str, version: str, db: AsyncSession = Depends(get_db)):
+async def delete_procedure_version(procedure_id: str, version: str, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
     deleted = await procedure_service.delete_procedure_version(db, procedure_id, version)
     if not deleted:
         raise HTTPException(status_code=404, detail="Procedure not found")
     return {"deleted": True, "procedure_id": procedure_id, "version": version}
+
+
+class StatusPatch(BaseModel):
+    """Body for the PATCH /{id}/{version}/status endpoint."""
+    status: str  # draft | active | deprecated | archived
+
+
+@router.patch("/{procedure_id}/{version}/status", response_model=ProcedureOut)
+async def patch_procedure_status(
+    procedure_id: str,
+    version: str,
+    body: StatusPatch,
+    db: AsyncSession = Depends(get_db),
+    _principal: Principal = Depends(require_role("operator")),
+):
+    """Transition a procedure version's status (draft → active → deprecated → archived)
+    without re-uploading the full CKP JSON."""
+    try:
+        proc = await procedure_service.patch_procedure_status(db, procedure_id, version, body.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not proc:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+    return proc

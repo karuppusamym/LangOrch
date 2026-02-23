@@ -1,51 +1,89 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { listProcedures, listRuns, listApprovals, listAgents, listProjects, getMetricsSummary } from "@/lib/api";
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from "recharts";
+import { listProcedures, listRuns, listApprovals, listAgents, listProjects } from "@/lib/api";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import type { Procedure, Run, Approval, AgentInstance, MetricsSummary } from "@/lib/types";
+import type { Run, AgentInstance } from "@/lib/types";
+
+//  inline icon helper 
+const Icon = ({ path, path2, cls = "" }: { path: string; path2?: string; cls?: string }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75"
+    strokeLinecap="round" strokeLinejoin="round" className={`w-5 h-5 ${cls}`}>
+    <path d={path} />
+    {path2 && <path d={path2} />}
+  </svg>
+);
+
+// Build 24-hour chart data from a list of runs
+function buildChartData(runs: Run[]) {
+  // bucket runs by hour relative to now
+  const now = Date.now();
+  const hours: { time: string; runs: number }[] = [];
+  for (let i = 23; i >= 0; i--) {
+    const h = new Date(now - i * 3600_000);
+    hours.push({ time: `${h.getHours().toString().padStart(2, "0")}:00`, runs: 0 });
+  }
+  for (const r of runs) {
+    const ts = new Date(r.created_at).getTime();
+    const diffH = Math.floor((now - ts) / 3600_000);
+    if (diffH >= 0 && diffH < 24) {
+      hours[23 - diffH].runs++;
+    }
+  }
+  return hours;
+}
 
 interface Stats {
-  procedures: number;
-  runs: number;
+  totalRuns: number;
+  activeRuns: number;
+  failedRuns: number;
   pendingApprovals: number;
-  onlineAgents: number;
-  projects: number;
   recentRuns: Run[];
-  runsByStatus: Record<string, number>;
+  agents: AgentInstance[];
+  chartData: { time: string; runs: number }[];
+}
+
+function SkeletonDash() {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {[...Array(4)].map((_, i) => <div key={i} className="h-28 rounded-xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />)}
+      </div>
+      <div className="h-64 rounded-xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {[...Array(2)].map((_, i) => <div key={i} className="h-48 rounded-xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />)}
+      </div>
+    </div>
+  );
 }
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
-  const [metrics, setMetrics] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = async () => {
     try {
-      const [procs, runs, approvals, agents, projects] = await Promise.all([
+      const [procs, allRuns, approvals, agents, _projects] = await Promise.all([
         listProcedures(),
-        listRuns({ limit: 8 }),
+        listRuns({ limit: 100 }),
         listApprovals(),
         listAgents(),
         listProjects(),
       ]);
-      // Count runs by status
-      const runsByStatus: Record<string, number> = {};
-      for (const r of runs) {
-        runsByStatus[r.status] = (runsByStatus[r.status] ?? 0) + 1;
-      }
       setStats({
-        procedures: procs.length,
-        runs: runs.length,
+        totalRuns: allRuns.length,
+        activeRuns: allRuns.filter((r) => r.status === "running").length,
+        failedRuns: allRuns.filter((r) => r.status === "failed").length,
         pendingApprovals: approvals.filter((a) => a.status === "pending").length,
-        onlineAgents: agents.filter((a) => a.status === "online").length,
-        projects: projects.length,
-        recentRuns: runs,
-        runsByStatus,
+        recentRuns: allRuns.slice(0, 8),
+        agents,
+        chartData: buildChartData(allRuns),
       });
-      getMetricsSummary().then(setMetrics).catch(() => null);
     } catch (err) {
       console.error("Dashboard load error", err);
     } finally {
@@ -59,127 +97,198 @@ export default function DashboardPage() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
 
-  if (loading) return <div className="text-gray-500">Loading dashboard...</div>;
-  if (!stats) return <div className="text-red-500">Failed to load dashboard</div>;
+  if (loading) return <SkeletonDash />;
+  if (!stats) return (
+    <div className="flex h-64 flex-col items-center justify-center gap-3">
+      <Icon path="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" cls="w-10 h-10 text-red-400" />
+      <p className="text-sm text-neutral-500 dark:text-neutral-400">Failed to load dashboard data.</p>
+      <button onClick={load} className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors">Retry</button>
+    </div>
+  );
 
-  const cards = [
-    { label: "Projects", value: stats.projects, href: "/projects", color: "text-orange-600" },
-    { label: "Procedures", value: stats.procedures, href: "/procedures", color: "text-primary-600" },
-    { label: "Total Runs", value: stats.runs, href: "/runs", color: "text-green-600" },
-    { label: "Pending Approvals", value: stats.pendingApprovals, href: "/approvals", color: "text-yellow-600" },
-    { label: "Online Agents", value: stats.onlineAgents, href: "/agents", color: "text-purple-600" },
-  ];
+  const onlineAgents = stats.agents.filter((a) => a.status === "online");
+  const totalAgents = stats.agents.length || 1;
+  const capacityPct = Math.round((onlineAgents.length / totalAgents) * 100);
+
+  const agentDots = ["bg-green-500", "bg-blue-500", "bg-amber-500", "bg-purple-500", "bg-red-500"];
 
   return (
-    <div className="space-y-8">
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-5">
-        {cards.map((card) => (
-          <Link
-            key={card.label}
-            href={card.href}
-            className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition hover:shadow-md"
-          >
-            <p className="text-sm text-gray-500">{card.label}</p>
-            <p className={`mt-2 text-3xl font-bold ${card.color}`}>{card.value}</p>
-          </Link>
-        ))}
+    <div className="space-y-6 animate-fade-in">
+
+      {/* Page header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
+          <p className="mt-0.5 text-sm text-neutral-500 dark:text-neutral-400">Welcome back, Admin User</p>
+        </div>
+        <button onClick={load}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
+          <Icon path="M4 4v5h.582M20 20v-5h-.581M5.077 9A8.004 8.004 0 0112 4c2.618 0 4.952 1.26 6.41 3.2M18.923 15A8.004 8.004 0 0112 20a8 8 0 01-6.41-3.2" cls="w-3.5 h-3.5" />
+          Refresh
+        </button>
       </div>
 
-      {/* Metrics panel */}
-      {metrics && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {/* Counters */}
-          {metrics.counters && Object.keys(metrics.counters).length > 0 && (
-            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <h2 className="mb-4 text-base font-semibold text-gray-900">Counters</h2>
-              <div className="grid grid-cols-2 gap-3">
-                {Object.entries(metrics.counters).map(([key, val]) => (
-                  <div key={key} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
-                    <p className="text-[10px] text-gray-500 break-all">{key}</p>
-                    <p className="mt-1 text-sm font-bold text-gray-800">
-                      {typeof val === "number" ? val.toLocaleString() : typeof val === "object" && val !== null ? Object.entries(val).map(([k, v]) => `${k}: ${v}`).join(", ") : String(val)}
+      {/* 4 KPI cards */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {/* Total Runs */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">Total Runs</p>
+            <Icon path="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" path2="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" cls="w-5 h-5 text-neutral-400" />
+          </div>
+          <p className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{stats.totalRuns}</p>
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">All time</p>
+        </div>
+
+        {/* Active Runs */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">Active Runs</p>
+            <Icon path="M22 12h-4l-3 9L9 3l-3 9H2" cls="w-5 h-5 text-blue-500" />
+          </div>
+          <p className="text-3xl font-bold text-blue-600 dark:text-blue-400">{stats.activeRuns}</p>
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">Currently executing</p>
+        </div>
+
+        {/* Failed Runs */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">Failed Runs</p>
+            <Icon path="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" cls="w-5 h-5 text-red-500" />
+          </div>
+          <p className="text-3xl font-bold text-red-600 dark:text-red-400">{stats.failedRuns}</p>
+          <Link href="/runs?status=failed" className="mt-1 text-xs text-red-500 hover:underline">Review failures </Link>
+        </div>
+
+        {/* Pending Approvals */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">Pending Approvals</p>
+            <Icon path="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" cls="w-5 h-5 text-amber-500" />
+          </div>
+          <p className="text-3xl font-bold text-amber-600 dark:text-amber-400">{stats.pendingApprovals}</p>
+          <Link href="/approvals" className="mt-1 text-xs text-amber-500 hover:underline">Review approvals </Link>
+        </div>
+      </div>
+
+      {/* Charts row */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+        {/* Area chart */}
+        <div className="lg:col-span-2 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Run Activity (Last 24 Hours)</h2>
+          <ResponsiveContainer width="100%" height={200}>
+            <AreaChart data={stats.chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+              <defs>
+                <linearGradient id="runsGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#2563eb" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="time" tick={{ fontSize: 11, fill: "#9ca3af" }} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} tickLine={false} axisLine={false} allowDecimals={false} />
+              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }} />
+              <Area type="monotone" dataKey="runs" stroke="#2563eb" strokeWidth={2} fill="url(#runsGrad)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Agent Capacity */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 flex flex-col">
+          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Agent Capacity</h2>
+          <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-4">{onlineAgents.length} of {totalAgents} online</p>
+          {/* Progress bar */}
+          <div className="h-2 w-full rounded-full bg-neutral-100 dark:bg-neutral-700 mb-4">
+            <div
+              className="h-2 rounded-full bg-blue-600 transition-all duration-500"
+              style={{ width: `${capacityPct}%` }}
+            />
+          </div>
+          {/* Agent list */}
+          <ul className="flex-1 space-y-2 overflow-y-auto">
+            {stats.agents.slice(0, 5).map((agent, i) => (
+              <li key={agent.agent_id} className="flex items-center gap-2.5">
+                <span className={`h-2 w-2 rounded-full shrink-0 ${agentDots[i % agentDots.length]}`} />
+                <span className="flex-1 text-xs text-neutral-700 dark:text-neutral-300 truncate">{agent.agent_id.slice(0, 16)}</span>
+                <span className={`text-xs font-medium ${agent.status === "online" ? "text-green-600" : "text-neutral-400"}`}>
+                  {agent.status}
+                </span>
+              </li>
+            ))}
+            {stats.agents.length === 0 && (
+              <li className="text-xs text-neutral-400 py-2">No agents registered</li>
+            )}
+          </ul>
+          <Link href="/agents" className="mt-4 block text-center text-xs font-medium text-blue-600 hover:underline">
+            View All Agents 
+          </Link>
+        </div>
+      </div>
+
+      {/* Recent Activity */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+
+        {/* Recent Runs */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Recent Runs</h2>
+            <Link href="/runs" className="text-xs text-blue-600 hover:underline">View all </Link>
+          </div>
+          {stats.recentRuns.length === 0 ? (
+            <p className="text-sm text-neutral-400 py-4 text-center">No runs yet</p>
+          ) : (
+            <ul className="space-y-3">
+              {stats.recentRuns.map((run) => (
+                <li key={run.run_id} className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <Link href={`/runs/${run.run_id}`} className="text-sm font-medium text-neutral-900 dark:text-neutral-100 hover:underline truncate block">
+                      {run.procedure_id}
+                    </Link>
+                    <p className="text-xs text-neutral-400 tabular-nums">
+                      {new Date(run.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {/* Histograms */}
-          {metrics.histograms && Object.keys(metrics.histograms).length > 0 && (
-            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <h2 className="mb-4 text-base font-semibold text-gray-900">Histograms</h2>
-              <div className="space-y-3">
-                {Object.entries(metrics.histograms).map(([key, h]) => {
-                  const hist = h as { count: number; sum: number; min: number; max: number; avg: number };
-                  return (
-                    <div key={key} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
-                      <p className="text-[10px] text-gray-500 break-all mb-2">{key}</p>
-                      <div className="grid grid-cols-5 gap-2 text-center">
-                        {([["Count", hist.count, ""], ["Sum", hist.sum, "s"], ["Min", hist.min, "s"], ["Max", hist.max, "s"], ["Avg", hist.avg, "s"]] as const).map(([label, value, unit]) => (
-                          <div key={label}>
-                            <p className="text-[9px] text-gray-400">{label}</p>
-                            <p className="text-xs font-semibold text-gray-700">{typeof value === "number" ? value.toFixed(2) : value}{unit}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Run status breakdown */}
-      {stats.runsByStatus && Object.keys(stats.runsByStatus).length > 0 && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-base font-semibold text-gray-900">Runs by Status</h2>
-          <div className="flex flex-wrap gap-3">
-            {Object.entries(stats.runsByStatus).map(([status, count]) => (
-              <Link key={status} href={`/runs?status=${status}`} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-4 py-2 transition hover:shadow-sm">
-                <StatusBadge status={status} />
-                <span className="text-sm font-bold text-gray-800">{count}</span>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Recent runs */}
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h2 className="mb-4 text-base font-semibold text-gray-900">Recent Runs</h2>
-        {stats.recentRuns.length === 0 ? (
-          <p className="text-sm text-gray-400">No runs yet</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-gray-500">
-                <th className="pb-2">Run ID</th>
-                <th className="pb-2">Procedure</th>
-                <th className="pb-2">Status</th>
-                <th className="pb-2">Started</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.recentRuns.map((run) => (
-                <tr key={run.run_id} className="border-b last:border-0">
-                  <td className="py-2">
-                    <Link href={`/runs/${run.run_id}`} className="text-primary-600 hover:underline">
-                      {run.run_id.slice(0, 8)}…
-                    </Link>
-                  </td>
-                  <td className="py-2">{run.procedure_id}</td>
-                  <td className="py-2">
-                    <StatusBadge status={run.status} />
-                  </td>
-                  <td className="py-2 text-gray-400">{new Date(run.created_at).toLocaleString()}</td>
-                </tr>
+                  <StatusBadge status={run.status} />
+                </li>
               ))}
-            </tbody>
-          </table>
-        )}
+            </ul>
+          )}
+        </div>
+
+        {/* Recent Events (derived from runs) */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Recent Events</h2>
+          </div>
+          {stats.recentRuns.length === 0 ? (
+            <p className="text-sm text-neutral-400 py-4 text-center">No recent events</p>
+          ) : (
+            <ul className="space-y-3">
+              {stats.recentRuns.slice(0, 6).map((run, i) => {
+                const colors = ["bg-blue-100 text-blue-600", "bg-amber-100 text-amber-600", "bg-green-100 text-green-600", "bg-purple-100 text-purple-600"];
+                const cls = colors[i % colors.length];
+                const verbs: Record<string, string> = { completed: "completed", failed: "failed", running: "started", pending: "queued" };
+                const verb = verbs[run.status] ?? "updated";
+                return (
+                  <li key={run.run_id} className="flex items-start gap-3">
+                    <span className={`mt-0.5 h-7 w-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${cls}`}>
+                      {run.procedure_id.charAt(0).toUpperCase()}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-neutral-700 dark:text-neutral-300">
+                        Run <span className="font-medium">{run.run_id.slice(0, 8)}</span> {verb}
+                      </p>
+                      <p className="text-xs text-neutral-400">
+                        {new Date(run.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

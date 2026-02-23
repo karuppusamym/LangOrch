@@ -1,10 +1,16 @@
 """Trigger scheduler — manages APScheduler jobs for `type: scheduled` triggers.
 
 Runs as a background asyncio task. On each sync cycle it:
-  1. Loads all enabled TriggerRegistrations with trigger_type="scheduled"
-  2. Adds new APScheduler cron jobs for newly registered triggers
-  3. Removes stale jobs whose registrations are gone or disabled
-  4. Each job creates a Run via ``trigger_service.fire_trigger``
+  1. Checks whether this process holds the leader lease (HA safety).
+  2. Loads all enabled TriggerRegistrations with trigger_type="scheduled"
+  3. Adds new APScheduler cron jobs for newly registered triggers
+  4. Removes stale jobs whose registrations are gone or disabled
+  5. Each job creates a Run via ``trigger_service.fire_trigger``
+
+In single-process (SQLite/dev) mode the leader lease is always held, so
+behaviour is identical to the previous implementation.  In multi-replica
+(PostgreSQL/prod) mode only the elected leader runs APScheduler; all
+other replicas skip the sync loop until they win a future election.
 """
 
 from __future__ import annotations
@@ -52,7 +58,16 @@ class TriggerScheduler:
                 logger.exception("Error syncing trigger schedules")
 
     async def sync_schedules(self) -> None:
-        """Reconcile APScheduler jobs with the DB trigger registrations."""
+        """Reconcile APScheduler jobs with the DB trigger registrations.
+
+        Silently skips if this replica is not currently the scheduler leader.
+        """
+        from app.runtime.leader import leader_election
+
+        if not leader_election.is_leader:
+            logger.debug("TriggerScheduler.sync_schedules: not leader — skipping")
+            return
+
         from app.db.engine import async_session
         from app.services.trigger_service import list_trigger_registrations
 
@@ -128,7 +143,20 @@ def _parse_cron(cron_expr: str) -> dict[str, str]:
 
 
 async def _fire_scheduled_trigger(procedure_id: str, version: str) -> None:
-    """APScheduler job target — runs in asyncio event loop."""
+    """APScheduler job target — runs in asyncio event loop.
+
+    Double-checks leader status before creating a run so that a replica
+    which lost leadership between sync cycles cannot double-fire triggers
+    (belt-and-suspenders alongside the trigger-service dedupe guard).
+    """
+    from app.runtime.leader import leader_election
+
+    if not leader_election.is_leader:
+        logger.debug(
+            "Scheduled trigger skipped — not leader (proc=%s v=%s)", procedure_id, version
+        )
+        return
+
     from app.db.engine import async_session
     from app.services.trigger_service import fire_trigger
 
