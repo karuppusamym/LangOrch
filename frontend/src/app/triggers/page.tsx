@@ -47,6 +47,7 @@ export default function TriggersPage() {
   const [filterEnabled, setFilterEnabled] = useState<"all" | "enabled" | "disabled">("all");
   const [search, setSearch] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<TriggerRegistration | null>(null);
+  const [confirmFire, setConfirmFire] = useState<TriggerRegistration | null>(null);
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -62,7 +63,14 @@ export default function TriggersPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  async function handleFire(trigger: TriggerRegistration) {
+  function handleFire(trigger: TriggerRegistration) {
+    setConfirmFire(trigger);
+  }
+
+  async function performFire() {
+    if (!confirmFire) return;
+    const trigger = confirmFire;
+    setConfirmFire(null);
     const key = `${trigger.procedure_id}:${trigger.version}`;
     setFiring(key);
     try {
@@ -319,6 +327,16 @@ export default function TriggersPage() {
         danger={true}
         onConfirm={performDelete}
         onCancel={() => setConfirmDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmFire !== null}
+        title="Fire Trigger Manually"
+        message={`Are you sure you want to manually fire a run for ${confirmFire?.procedure_id}@${confirmFire?.version}?\n\nThis will immediately dispatch a new job to the orchestrated workers.`}
+        confirmLabel="Fire Now"
+        danger={false}
+        onConfirm={performFire}
+        onCancel={() => setConfirmFire(null)}
       />
     </div>
   );

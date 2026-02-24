@@ -13,6 +13,9 @@ export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "pending">("pending");
+  const [activeApproval, setActiveApproval] = useState<Approval | null>(null);
+  const [decisionType, setDecisionType] = useState<"approved" | "rejected" | null>(null);
+  const [comment, setComment] = useState("");
   const [approverName, setApproverName] = useState(() => {
     // Prefer authenticated user identity; fall back to any stored preference
     const user = getUser();
@@ -59,12 +62,16 @@ export default function ApprovalsPage() {
     decision: "approved" | "rejected"
   ) {
     try {
-      await submitApprovalDecision(approvalId, decision, approverName.trim() || "ui_user");
+      await submitApprovalDecision(approvalId, decision, approverName.trim() || "ui_user", comment || undefined);
       toast(`Approval ${decision}`, "success");
       loadApprovals();
     } catch (err) {
       console.error(err);
       toast("Decision failed", "error");
+    } finally {
+      setActiveApproval(null);
+      setDecisionType(null);
+      setComment("");
     }
   }
 
@@ -162,12 +169,12 @@ export default function ApprovalsPage() {
                   </div>
                   {approval.status === "pending" && (
                     <div className="flex shrink-0 gap-2">
-                      <button onClick={() => handleDecision(approval.approval_id, "approved")}
+                      <button onClick={() => { setActiveApproval(approval); setDecisionType("approved"); setComment(""); }}
                         className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
                         Approve
                       </button>
-                      <button onClick={() => handleDecision(approval.approval_id, "rejected")}
+                      <button onClick={() => { setActiveApproval(approval); setDecisionType("rejected"); setComment(""); }}
                         className="flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 transition-colors">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                         Reject
@@ -178,6 +185,65 @@ export default function ApprovalsPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Decision Modal */}
+      {activeApproval && decisionType && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white dark:bg-neutral-900 shadow-xl overflow-hidden">
+            <div className={`p-4 border-b ${decisionType === "approved" ? "border-green-100 dark:border-green-900/30 bg-green-50 dark:bg-green-950/20" : "border-red-100 dark:border-red-900/30 bg-red-50 dark:bg-red-950/20"}`}>
+              <h3 className={`text-lg font-semibold ${decisionType === "approved" ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
+                {decisionType === "approved" ? "Approve" : "Reject"} Task
+              </h3>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{activeApproval.prompt}</p>
+                <div className="flex flex-wrap gap-4 text-xs mt-2">
+                  <div>
+                    <span className="text-neutral-500">Run ID: </span>
+                    <span className="font-mono text-neutral-700 dark:text-neutral-300">{activeApproval.run_id.slice(0, 12)}…</span>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Node: </span>
+                    <span className="font-mono text-neutral-700 dark:text-neutral-300">{activeApproval.node_id}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                  Optional Comment
+                </label>
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Provide a reason for your decision..."
+                  autoFocus
+                  className="w-full rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                  rows={3}
+                />
+              </div>
+            </div>
+            <div className="border-t border-neutral-100 dark:border-neutral-800 p-4 bg-neutral-50/50 dark:bg-neutral-800/50 flex justify-end gap-3">
+              <button
+                onClick={() => { setActiveApproval(null); setDecisionType(null); }}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDecision(activeApproval.approval_id, decisionType)}
+                className={`rounded-lg px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors ${decisionType === "approved"
+                    ? "bg-green-600 hover:bg-green-700"
+                    : "bg-red-600 hover:bg-red-700"
+                  }`}
+              >
+                Confirm {decisionType === "approved" ? "Approval" : "Rejection"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
