@@ -1,10 +1,10 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-22 (Batch 34: 4 enhancements — 
-**Enhancement 1** `db/models.py` + `schemas/runs.py` + `services/run_service.py` + SQLite migration: `Artifact` table and `ArtifactOut` schema extended with `name` / `mime_type` / `size_bytes` — UI can now display original filename, MIME type, and file size for every artifact;
-**Enhancement 2** `api/runs.py`: `GET /api/queue` endpoint — returns job queue depth by status, total pending/running/done/failed counts, and next 20 pending jobs for ops-team visibility;
-**Enhancement 3** `api/agents.py`: `GET /api/agents/pools` endpoint — per-pool aggregated stats: agent count, status breakdown, total concurrency, active leases, available capacity, circuit-open count;
-**Enhancement 4** `frontend/src/components/WorkflowBuilder.tsx`: 3-tier node category system — Deterministic (Blue: sequence/processing/transform/subflow), Intelligent (Purple: llm_action), Control (Orange: loop/parallel/logic/verification/human_approval/terminate) — palette now shows grouped sections with color-coded headers; category badge on each node card; 3 workflow templates added: Invoice Processing, Customer Support, Contract Review)
+Last updated: 2026-02-23 (Batch 36: Config UI & Native Popup Replacements —
+**Enhancement 1** `frontend/src/app/triggers/page.tsx`: Replaced native browser `window.confirm` popups with application-consistent React `<ConfirmDialog>` modal for trigger deletion;
+**Enhancement 2** `backend/app/config.py` & `backend/app/api/config.py`: Added `LLM_DEFAULT_MODEL` and exposed `llm_default_model`, `llm_gateway_headers`, `llm_model_cost_json` and `llm_api_key` to the dynamic `ConfigPatch` API;
+**Enhancement 3** `frontend/src/app/settings/page.tsx`: Upgraded LLM Settings UI to allow live editing of API Key, Default Model, Gateway Headers, and Model Cost JSON overrides without environment variable restarts;
+**Enhancement 4** `FUTURE_PLAN.md`: Documented the Agent Pool Routing Strategy (round-robin logic) and marked completed items in the Production Definition of Done checklist)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 
@@ -20,7 +20,8 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 | Event-bus trigger adapters | Cron/webhook/file-watch/manual are implemented; Kafka/SQS-style consumer adapters are pending | P1 |
 | Multi-tenant isolation | Single-tenant model; no tenant-scoped data partitioning and policy enforcement | P1 |
 | Procedure promotion/canary/rollback | Versioning + status lifecycle (`PATCH /status`) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |
-| LLM fallback-model routing | Hard budget abort (`max_cost_usd`) now implemented; fallback-model routing policy (cost-based model selection) is pending | P1 |
+| LLM routing & gateway | Dynamic per-call LLM client, externalised cost table, circuit breaker on LLM + MCP all implemented (Batch 35); cost-based fallback model selection policy is pending | P1 |
+| API gateway integration | `LLM_GATEWAY_HEADERS` supports static header injection (Batch 35); full dynamic Apigee/Kong integration (rate-limiting, token exchange) is pending | P2 |
 | Compliance controls | No PII tokenization pre-LLM, GDPR erase flow, or policy-as-code compile checks | P2 |
 | Agent pool capacity signals | `pool_id` + deterministic round-robin exist; saturation/autoscale signals and capability-version policy are pending | P2 |
 | Test hardening breadth | Strong unit coverage + core Playwright flows; broader load/soak and failure-path e2e coverage are pending | P2 |

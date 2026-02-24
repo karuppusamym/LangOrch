@@ -92,9 +92,18 @@ async def login(
     """Authenticate with username + password. Always available regardless of AUTH_ENABLED."""
     from app.config import settings
     from app.services.user_service import authenticate
+    from app.api.audit import emit_audit
 
     user = await authenticate(db, body.username, body.password)
     if not user:
+        await emit_audit(
+            db,
+            category="auth",
+            action="login_failed",
+            actor=body.username or "anonymous",
+            description=f"Failed login attempt for username '{body.username}'",
+        )
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -103,6 +112,16 @@ async def login(
     expire = settings.AUTH_TOKEN_EXPIRE_MINUTES
     token = _issue_jwt(user.username, [user.role], expire, settings.AUTH_SECRET_KEY)
     logger.info("Login: user='%s' role='%s'", user.username, user.role)
+    await emit_audit(
+        db,
+        category="auth",
+        action="login",
+        actor=user.username,
+        description=f"User '{user.username}' logged in (role: {user.role})",
+        resource_type="user",
+        resource_id=user.username,
+    )
+    await db.commit()
     return TokenResponse(
         access_token=token,
         expires_in=expire * 60,

@@ -28,6 +28,7 @@ from app.auth.deps import Principal
 from app.auth.roles import require_role
 from app.db.engine import get_db
 from app.db.models import SecretEntry
+from app.api.audit import emit_audit
 
 logger = logging.getLogger("langorch.api.secrets")
 router = APIRouter(tags=["secrets"])
@@ -156,6 +157,15 @@ async def create_secret(
     db.add(entry)
     await db.flush()
     await db.refresh(entry)
+    await emit_audit(
+        db,
+        category="secret_mgmt",
+        action="create",
+        actor=principal.identity,
+        description=f"Created secret '{body.name}'",
+        resource_type="secret",
+        resource_id=body.name,
+    )
     await db.commit()
     return _to_out(entry)
 
@@ -193,6 +203,15 @@ async def update_secret(
     entry.updated_by = principal.identity
     await db.flush()
     await db.refresh(entry)
+    await emit_audit(
+        db,
+        category="secret_mgmt",
+        action="update",
+        actor=principal.identity,
+        description=f"Updated secret '{name}'",
+        resource_type="secret",
+        resource_id=name,
+    )
     await db.commit()
     return _to_out(entry)
 
@@ -201,11 +220,20 @@ async def update_secret(
 async def delete_secret(
     name: str,
     db: AsyncSession = Depends(get_db),
-    _: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ):
     result = await db.execute(select(SecretEntry).where(SecretEntry.name == name))
     entry = result.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail=f"Secret '{name}' not found")
     await db.delete(entry)
+    await emit_audit(
+        db,
+        category="secret_mgmt",
+        action="delete",
+        actor=principal.identity,
+        description=f"Deleted secret '{name}'",
+        resource_type="secret",
+        resource_id=name,
+    )
     await db.commit()

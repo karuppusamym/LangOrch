@@ -21,6 +21,7 @@ from app.auth.deps import Principal, get_current_user
 from app.auth.roles import require_role
 from app.db.engine import get_db
 from app.services import user_service
+from app.api.audit import emit_audit
 
 logger = logging.getLogger("langorch.api.users")
 router = APIRouter(tags=["users"])
@@ -89,7 +90,7 @@ async def list_users(
 async def create_user(
     body: CreateUserBody,
     db: AsyncSession = Depends(get_db),
-    _: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ):
     existing = await user_service.get_user_by_username(db, body.username)
     if existing:
@@ -102,6 +103,15 @@ async def create_user(
             password=body.password,
             role=body.role,
             full_name=body.full_name,
+        )
+        await emit_audit(
+            db,
+            category="user_mgmt",
+            action="create",
+            actor=principal.identity,
+            description=f"Created user '{body.username}' with role '{body.role}'",
+            resource_type="user",
+            resource_id=body.username,
         )
         await db.commit()
         return UserOut.from_orm_dt(user)
@@ -129,7 +139,7 @@ async def update_user(
     user_id: str,
     body: UpdateUserBody,
     db: AsyncSession = Depends(get_db),
-    _: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ):
     user = await user_service.get_user_by_id(db, user_id)
     if not user:
@@ -142,6 +152,17 @@ async def update_user(
             role=body.role,
             is_active=body.is_active,
             password=body.password,
+        )
+        changes = {k: v for k, v in body.model_dump(exclude_none=True).items() if k != "password"}
+        await emit_audit(
+            db,
+            category="user_mgmt",
+            action="update",
+            actor=principal.identity,
+            description=f"Updated user '{user.username}': {list(changes.keys())}",
+            resource_type="user",
+            resource_id=user.username,
+            meta=changes,
         )
         await db.commit()
         return UserOut.from_orm_dt(updated)
@@ -168,5 +189,15 @@ async def delete_user(
         count = result.scalar_one()
         if count <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+    username_snapshot = user.username
     await user_service.delete_user(db, user)
+    await emit_audit(
+        db,
+        category="user_mgmt",
+        action="delete",
+        actor=principal.identity,
+        description=f"Deleted user '{username_snapshot}'",
+        resource_type="user",
+        resource_id=username_snapshot,
+    )
     await db.commit()

@@ -375,10 +375,12 @@ class TestStepRetryConfig:
 
 class TestLlmActionRetry:
     @pytest.mark.asyncio
-    async def test_llm_retry_exhausted_returns_error(self):
-        """LLM call that always fails should exhaust retries and return error state."""
+    async def test_llm_retry_exhausted_raises_error(self):
+        """LLM call that always fails should exhaust retries and raise LLMCallError."""
+        import asyncio as _asyncio
         from app.runtime.node_executors import execute_llm_action
         from app.compiler.ir import IRLlmActionPayload, IRNode
+        from app.connectors.llm_client import LLMCallError
 
         node = IRNode(
             node_id="llm1",
@@ -391,21 +393,23 @@ class TestLlmActionRetry:
         )
         state = {"vars": {}, "run_id": "r1", "global_config": {}}
 
-        with patch("app.connectors.llm_client.LLMClient") as MockLLM:
-            from app.connectors.llm_client import LLMCallError
-            instance = MockLLM.return_value
-            instance.complete.side_effect = LLMCallError("API down")
+        async def _fail_to_thread(fn, *a, **kw):
+            raise LLMCallError("API down")
 
-            result = await execute_llm_action(node, state)
+        with patch("app.runtime.node_executors.asyncio") as mock_aio:
+            mock_aio.to_thread = _fail_to_thread
+            mock_aio.sleep = _asyncio.sleep
 
-        assert result.get("terminal_status") == "failed"
-        assert "API down" in result["error"]["message"]
+            with pytest.raises(LLMCallError, match="API down"):
+                await execute_llm_action(node, state)
 
     @pytest.mark.asyncio
     async def test_llm_retry_succeeds_on_second_attempt(self):
         """LLM call fails once then succeeds — error should not be in final state."""
+        import asyncio as _asyncio
         from app.runtime.node_executors import execute_llm_action
         from app.compiler.ir import IRLlmActionPayload, IRNode
+        from app.connectors.llm_client import LLMCallError
 
         node = IRNode(
             node_id="llm1",
@@ -419,10 +423,18 @@ class TestLlmActionRetry:
         )
         state = {"vars": {}, "run_id": "r1", "global_config": {}}
 
-        with patch("app.connectors.llm_client.LLMClient") as MockLLM:
-            from app.connectors.llm_client import LLMCallError
-            instance = MockLLM.return_value
-            instance.complete.side_effect = [LLMCallError("fail"), {"text": "Hello world"}]
+        call_count = 0
+
+        async def _to_thread(fn, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise LLMCallError("fail")
+            return {"text": "Hello world", "usage": {}}
+
+        with patch("app.runtime.node_executors.asyncio") as mock_aio:
+            mock_aio.to_thread = _to_thread
+            mock_aio.sleep = _asyncio.sleep
 
             result = await execute_llm_action(node, state)
 
@@ -433,8 +445,10 @@ class TestLlmActionRetry:
     @pytest.mark.asyncio
     async def test_llm_uses_payload_retry_over_global(self):
         """payload.retry.max_retries overrides global when smaller."""
+        import asyncio as _asyncio
         from app.runtime.node_executors import execute_llm_action
         from app.compiler.ir import IRLlmActionPayload, IRNode
+        from app.connectors.llm_client import LLMCallError
 
         node = IRNode(
             node_id="llm1",
@@ -449,21 +463,20 @@ class TestLlmActionRetry:
 
         call_count = 0
 
-        with patch("app.connectors.llm_client.LLMClient") as MockLLM:
-            from app.connectors.llm_client import LLMCallError
-            instance = MockLLM.return_value
+        async def _fail_to_thread(fn, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            raise LLMCallError("always fail")
 
-            def _fail(*a, **kw):
-                nonlocal call_count
-                call_count += 1
-                raise LLMCallError("always fail")
+        with patch("app.runtime.node_executors.asyncio") as mock_aio:
+            mock_aio.to_thread = _fail_to_thread
+            mock_aio.sleep = _asyncio.sleep
 
-            instance.complete.side_effect = _fail
-            result = await execute_llm_action(node, state)
+            with pytest.raises(LLMCallError, match="always fail"):
+                await execute_llm_action(node, state)
 
         # max_retries=1 means 1 initial + 1 retry = 2 total calls at most
         assert call_count <= 2
-        assert result.get("terminal_status") == "failed"
 
 
 # ---------------------------------------------------------------------------

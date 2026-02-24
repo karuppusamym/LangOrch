@@ -159,11 +159,10 @@ export default function SettingsPage() {
       <div className="flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
         {TABS.map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              tab === key
-                ? "border-blue-600 text-blue-600 dark:text-blue-400"
-                : "border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
-            }`}>
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === key
+              ? "border-blue-600 text-blue-600 dark:text-blue-400"
+              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+              }`}>
             {label}
           </button>
         ))}
@@ -343,13 +342,51 @@ export default function SettingsPage() {
               <Field label="Timeout (s)" help="Per-request timeout for LLM calls">
                 <NumInput value={val("llm_timeout_seconds")} onChange={(n) => patch("llm_timeout_seconds", n)} />
               </Field>
-              <Field label="API key">
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.llm_key_set ? "bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-500"}`}>
-                    {cfg.llm_key_set ? "Configured" : "Not set"}
-                  </span>
-                  <span className="text-xs text-neutral-400">Set via LLM_API_KEY environment variable</span>
+              <Field label="Default Model" help="Fallback model if none specified in the node">
+                <TextInput
+                  value={val("llm_default_model") ?? ""}
+                  onChange={(s) => patch("llm_default_model", s || "gpt-4o")}
+                  placeholder="gpt-4o"
+                />
+              </Field>
+              <Field label="API Key">
+                <div className="flex flex-col gap-2">
+                  <TextInput
+                    value={val("llm_api_key") ?? ""}
+                    onChange={(s) => patch("llm_api_key", (s || null) as any)}
+                    placeholder="Enter new API key to update..."
+                  />
+                  {cfg.llm_key_set && !val("llm_api_key") && (
+                    <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                      ✓ A key is currently configured
+                    </span>
+                  )}
                 </div>
+              </Field>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
+            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Enterprise Configuration</h2>
+            <p className="text-xs text-neutral-400 mb-5">Advanced configuration for API gateways and custom model costs.</p>
+            <div className="space-y-5">
+              <Field label="API Gateway Headers (JSON)" help="Extra headers injected on every LLM call (e.g. proxy auth, tenant ID)">
+                <textarea
+                  value={val("llm_gateway_headers") ?? ""}
+                  onChange={(e) => patch("llm_gateway_headers", e.target.value || null)}
+                  placeholder='{"X-Tenant-ID": "acme", "X-Proxy-Auth": "bearer..."}'
+                  rows={3}
+                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm font-mono focus:border-blue-500 focus:outline-none"
+                />
+              </Field>
+              <Field label="Model Cost Override (JSON)" help="Override default token costs per 1K tokens">
+                <textarea
+                  value={val("llm_model_cost_json") ?? ""}
+                  onChange={(e) => patch("llm_model_cost_json", e.target.value || null)}
+                  placeholder='{"gpt-4": {"prompt": 0.03, "completion": 0.06}}'
+                  rows={4}
+                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm font-mono focus:border-blue-500 focus:outline-none"
+                />
               </Field>
             </div>
           </div>

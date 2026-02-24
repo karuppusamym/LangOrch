@@ -31,12 +31,12 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 
 LangOrch is considered **production-ready** when all items below are true:
 
-- **Security**: AuthN/AuthZ enabled; role-based approvals enforced; every action attributable to an identity
-- **Reliability/HA**: scheduler/trigger firing is HA-safe under multiple replicas (no double-fire); run execution is idempotent under concurrency
-- **Scalability**: durable worker model exists (API separate from workers); horizontal scaling does not duplicate work
-- **Data**: production database + migrations + backups are in place; hot-path indexes exist
-- **Observability**: metrics/traces/logs exported to an external backend; on-call can debug a run end-to-end
-- **Quality gates**: CI blocks regressions (lint, type-check, tests, build) and core UI flows have e2e coverage
+- [x] **Security**: AuthN/AuthZ enabled; role-based approvals enforced; every action attributable to an identity
+- [x] **Reliability/HA**: scheduler/trigger firing is HA-safe under multiple replicas (no double-fire); run execution is idempotent under concurrency
+- [x] **Scalability**: durable worker model exists (API separate from workers); horizontal scaling does not duplicate work
+- [x] **Data**: production database + migrations + backups are in place; hot-path indexes exist
+- [ ] **Observability**: metrics/traces/logs exported to an external backend; on-call can debug a run end-to-end (pending full OpenTelemetry backend)
+- [x] **Quality gates**: CI blocks regressions (lint, type-check, tests, build) and core UI flows have e2e coverage
 
 See **Production readiness checklist (P0/P1)** below for concrete deliverables.
 
@@ -178,6 +178,17 @@ This pattern delivers three compound properties that neither pure-rule nor pure-
 | Observability | Full structured I/O in run events | Prompt + completion recorded; token counts tracked | Branch decision recorded in run events |
 | Failure mode | Network/API errors — well-understood | Hallucination, schema violation, token limit — needs verification guard | Evaluation error on state shape |
 | Test strategy | Unit test with fixed fixtures | Snapshot test prompt+schema; integration test with live model | Logic unit test with state fixtures |
+
+---
+
+### Agent Pool Routing Strategy
+
+When a step requires an agent executor, the orchestrator automatically routes the task to an available agent based on a specific selection algorithm (`_find_capable_agent` in `executor_dispatch.py`):
+
+1. **Capability Matching**: The system filters the registry for "online" agents whose `channel` matches the node's declared agent channel, and whose `capabilities` list includes the specific action being requested (or `*`).
+2. **Health Check**: Agents with an open circuit breaker (due to consecutive failures) are excluded from the candidate pool until the `_CIRCUIT_RESET_SECONDS` timeout expires.
+3. **Pool Grouping**: The remaining candidate agents are grouped by `pool_id` (forming an implicit `standalone` pool if `pool_id` is null). The system selects the numerically/alphabetically first pool that contains at least one healthy, capable agent.
+4. **Round-Robin Distribution**: Within the selected pool, the system maintains an in-memory counter (`_pool_counters`) to distribute tasks using a monotonic round-robin strategy (`counter % pool_size`). This ensures equitable load distribution among all identical agents in a saturated pool.
 
 ---
 

@@ -287,6 +287,10 @@ export interface PlatformConfig {
   llm_base_url: string | null;
   llm_timeout_seconds: number;
   llm_key_set: boolean;
+  llm_default_model: string;
+  llm_gateway_headers: string | null;
+  llm_model_cost_json: string | null;
+  llm_api_key?: string;
   // Retention
   checkpoint_retention_days: number;
   artifact_retention_days: number;

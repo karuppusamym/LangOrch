@@ -17,10 +17,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, Principal
 from app.auth.roles import require_role
 from app.config import settings
+from app.db.engine import get_db
 
 logger = logging.getLogger("langorch.api.config")
 router = APIRouter(tags=["config"])
@@ -59,6 +61,9 @@ class ConfigOut(BaseModel):
     llm_base_url: str
     llm_timeout_seconds: float
     llm_key_set: bool  # True if LLM_API_KEY is configured (no value exposed)
+    llm_default_model: str
+    llm_gateway_headers: str | None
+    llm_model_cost_json: str | None
 
     # Retention
     checkpoint_retention_days: int
@@ -97,6 +102,10 @@ class ConfigPatch(BaseModel):
     lease_ttl_seconds: int | None = None
     llm_base_url: str | None = None
     llm_timeout_seconds: float | None = None
+    llm_api_key: str | None = None
+    llm_default_model: str | None = None
+    llm_gateway_headers: str | None = None
+    llm_model_cost_json: str | None = None
     alert_webhook_url: str | None = None
     metrics_push_url: str | None = None
     metrics_push_interval_seconds: int | None = None
@@ -128,6 +137,9 @@ def _build_config_out() -> ConfigOut:
         llm_base_url=s.LLM_BASE_URL,
         llm_timeout_seconds=s.LLM_TIMEOUT_SECONDS,
         llm_key_set=bool(s.LLM_API_KEY),
+        llm_default_model=s.LLM_DEFAULT_MODEL,
+        llm_gateway_headers=s.LLM_GATEWAY_HEADERS,
+        llm_model_cost_json=s.LLM_MODEL_COST_JSON,
         checkpoint_retention_days=s.CHECKPOINT_RETENTION_DAYS,
         artifact_retention_days=s.ARTIFACT_RETENTION_DAYS,
         lease_ttl_seconds=s.LEASE_TTL_SECONDS,
@@ -153,7 +165,8 @@ async def get_config(
 @router.patch("/api/config", response_model=ConfigOut)
 async def patch_config(
     body: ConfigPatch,
-    _: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
 ) -> ConfigOut:
     """Hot-patch runtime-mutable configuration fields.
 
@@ -180,6 +193,10 @@ async def patch_config(
         "lease_ttl_seconds": "LEASE_TTL_SECONDS",
         "llm_base_url": "LLM_BASE_URL",
         "llm_timeout_seconds": "LLM_TIMEOUT_SECONDS",
+        "llm_api_key": "LLM_API_KEY",
+        "llm_default_model": "LLM_DEFAULT_MODEL",
+        "llm_gateway_headers": "LLM_GATEWAY_HEADERS",
+        "llm_model_cost_json": "LLM_MODEL_COST_JSON",
         "alert_webhook_url": "ALERT_WEBHOOK_URL",
         "metrics_push_url": "METRICS_PUSH_URL",
         "metrics_push_interval_seconds": "METRICS_PUSH_INTERVAL_SECONDS",
@@ -187,10 +204,77 @@ async def patch_config(
         "secrets_rotation_check": "SECRETS_ROTATION_CHECK",
     }
 
+    # Track which settings were effectively changed
+    changed_env_keys = []
+    
     for patch_field, value in updates.items():
         attr = field_map.get(patch_field)
         if attr:
             object.__setattr__(settings, attr, value)
+            changed_env_keys.append((attr, value))
             logger.info("Config patched: %s = %r", attr, value)
 
+    # Persist changes to DB
+    if changed_env_keys:
+        import json
+        from sqlalchemy import text, select
+        from app.api.secrets import _encrypt
+        from app.db.models import SecretEntry
+        
+        # We use a raw SQL UPSERT since we already support sqlite/postgres
+        # Using SQLAlchemy ORM for UPSERT is strictly dialect-specific
+        try:
+            for attr, value in changed_env_keys:
+                if attr == "LLM_API_KEY":
+                    existing = await db.execute(select(SecretEntry).where(SecretEntry.name == attr))
+                    entry = existing.scalar_one_or_none()
+                    if value:
+                        enc_val = _encrypt(str(value))
+                        if entry:
+                            entry.encrypted_value = enc_val
+                            entry.updated_by = principal.identity
+                        else:
+                            new_entry = SecretEntry(
+                                name=attr,
+                                encrypted_value=enc_val,
+                                description="LLM Provider API Key",
+                                provider_hint="",
+                                tags_json="[]",
+                                created_by=principal.identity,
+                                updated_by=principal.identity,
+                            )
+                            db.add(new_entry)
+                    else:
+                        if entry:
+                            await db.delete(entry)
+                    continue
+
+                v_json = json.dumps(value)
+                # SQLite-compatible UPSERT
+                stmt = text(
+                    "INSERT INTO system_settings (key, value_json, updated_at) "
+                    "VALUES (:k, :v, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(key) DO UPDATE SET value_json=:v, updated_at=CURRENT_TIMESTAMP"
+                )
+                if not settings.is_sqlite:
+                    # PostgreSQL-compatible UPSERT
+                    stmt = text(
+                        "INSERT INTO system_settings (key, value_json) "
+                        "VALUES (:k, :v) "
+                        "ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = CURRENT_TIMESTAMP"
+                    )
+                await db.execute(stmt, {"k": attr, "v": v_json})
+        except Exception as _e:
+            logger.warning("Failed to persist config to DB: %s", _e)
+
+    from app.api.audit import emit_audit
+    await emit_audit(
+        db,
+        category="config",
+        action="patch",
+        actor=principal.identity,
+        description=f"Platform config patched: {list(updates.keys())}",
+        meta={k: str(v) for k, v in updates.items()},
+    )
+    await db.commit()
     return _build_config_out()

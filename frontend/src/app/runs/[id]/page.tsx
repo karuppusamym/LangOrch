@@ -41,6 +41,7 @@ const EVENT_LABELS: Record<string, string> = {
   artifact_created: "Artifact Created",
   checkpoint_saved: "Checkpoint Saved",
   sla_breached: "SLA Breached",
+  loop_iteration: "Loop Iteration",
   error: "Error",
 };
 
@@ -339,8 +340,8 @@ export default function RunDetailPage() {
         {run.duration_seconds != null
           ? <InfoCard label="Duration" value={formatDuration(run.duration_seconds)} />
           : run.ended_at
-          ? <InfoCard label="Ended" value={new Date(run.ended_at).toLocaleString()} />
-          : <InfoCard label="Last Node" value={run.last_node_id ?? "—"} />}
+            ? <InfoCard label="Ended" value={new Date(run.ended_at).toLocaleString()} />
+            : <InfoCard label="Last Node" value={run.last_node_id ?? "—"} />}
       </div>
 
       {/* LLM token usage */}
@@ -383,9 +384,9 @@ export default function RunDetailPage() {
             <button key={tab} onClick={() => setActiveTab(tab)} className={`px-5 py-3 text-sm font-medium capitalize transition ${activeTab === tab ? "border-b-2 border-primary-600 text-primary-600" : "text-gray-500 hover:text-gray-700"}`}>
               {tab === "artifacts" ? `Artifacts (${artifacts.length})`
                 : tab === "timeline" ? `Timeline (${events.length}${errorCount ? ` · ${errorCount} err` : ""})`
-                : tab === "graph" ? "Live Graph"
-                : tab === "checkpoints" ? `Checkpoints (${checkpoints.length})`
-                : "Diagnostics"}
+                  : tab === "graph" ? "Live Graph"
+                    : tab === "checkpoints" ? `Checkpoints (${checkpoints.length})`
+                      : "Diagnostics"}
             </button>
           ))}
         </div>
@@ -421,15 +422,14 @@ export default function RunDetailPage() {
                     return (
                       <div
                         key={event.event_id}
-                        className={`rounded-lg border p-3 ${
-                          errStyle
-                            ? "border-red-200 bg-red-50"
-                            : isRunEvent
+                        className={`rounded-lg border p-3 ${errStyle
+                          ? "border-red-200 bg-red-50"
+                          : isRunEvent
                             ? "border-blue-100 bg-blue-50/40"
                             : isNodeEvent
-                            ? "border-purple-100 bg-purple-50/30"
-                            : "border-gray-100 bg-white"
-                        } ${isStepEvent ? "ml-4" : ""}`}
+                              ? "border-purple-100 bg-purple-50/30"
+                              : "border-gray-100 bg-white"
+                          } ${isStepEvent ? "ml-4" : ""}`}
                       >
                         <div className="flex items-center gap-2">
                           <EventDot type={event.event_type} />
@@ -455,7 +455,31 @@ export default function RunDetailPage() {
                           )}
                           {event.event_type === "step_completed" && typeof event.payload?.duration_ms === "number" && (
                             <span className="rounded bg-green-50 px-1.5 py-0.5 text-[10px] text-green-600">
-                              {event.payload.duration_ms as number}ms
+                              {Number(event.payload.duration_ms)}ms
+                            </span>
+                          )}
+                          {/* D1: retry_count badge */}
+                          {event.event_type === "step_completed" && typeof event.payload?.retry_count === "number" && Number(event.payload.retry_count) > 0 && (
+                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                              🔄 {Number(event.payload.retry_count)} retries
+                            </span>
+                          )}
+                          {/* D2: step_timeout icon */}
+                          {event.event_type === "step_timeout" && (
+                            <span className="rounded bg-orange-50 px-1.5 py-0.5 text-[10px] font-semibold text-orange-700">
+                              ⏱ Timeout
+                            </span>
+                          )}
+                          {/* G2: loop_iteration progress */}
+                          {event.event_type === "loop_iteration" && event.payload && (
+                            <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+                              ↻ {Number(event.payload.iteration) + 1}/{Number(event.payload.total)}
+                            </span>
+                          )}
+                          {/* F2: agent binding in timeline */}
+                          {event.payload?.agent && (
+                            <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-600">
+                              🤖 {String(event.payload.agent)}
                             </span>
                           )}
                           <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
@@ -878,7 +902,7 @@ function EventDot({ type }: { type: string }) {
     run_completed: "bg-green-600", run_failed: "bg-red-600", step_timeout: "bg-orange-500",
     sla_breached: "bg-red-300", node_error: "bg-red-500", approval_expired: "bg-gray-500",
     run_retry_requested: "bg-indigo-400", dry_run_step_skipped: "bg-gray-400", checkpoint_saved: "bg-teal-400",
-    llm_usage: "bg-purple-300",
+    llm_usage: "bg-purple-300", loop_iteration: "bg-indigo-300", step_error_notification: "bg-red-400",
   };
   return <div className={`mt-0.5 h-2 w-2 flex-shrink-0 rounded-full ${colors[type] ?? "bg-gray-300"}`} />;
 }

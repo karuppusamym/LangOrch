@@ -482,3 +482,36 @@ export async function patchConfig(
 ): Promise<import("./types").PlatformConfig> {
   return request("/config", { method: "PATCH", body: JSON.stringify(data) });
 }
+
+/* ── Audit Events ────────────────────────────────────────────── */
+
+export interface AuditEventRecord {
+  event_id: number;
+  ts: string;
+  category: string;
+  action: string;
+  actor: string;
+  description: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  meta: Record<string, unknown> | null;
+}
+
+export async function listAuditEvents(params?: {
+  category?: string;
+  actor?: string;
+  action?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ events: AuditEventRecord[]; limit: number; offset: number }> {
+  const qs = new URLSearchParams();
+  if (params?.category) qs.set("category", params.category);
+  if (params?.actor) qs.set("actor", params.actor);
+  if (params?.action) qs.set("action", params.action);
+  if (params?.search) qs.set("search", params.search);
+  if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+  const query = qs.toString();
+  return request(`/audit${query ? `?${query}` : ""}`);
+}

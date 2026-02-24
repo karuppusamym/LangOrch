@@ -81,6 +81,17 @@ async def get_current_user(
     from app.config import settings  # late import to avoid circular deps
 
     if not settings.AUTH_ENABLED:
+        if authorization and authorization.lower().startswith("bearer "):
+            try:
+                import jwt
+                token = authorization.split(" ", 1)[1]
+                payload = jwt.decode(token, settings.AUTH_SECRET_KEY, algorithms=["HS256"])
+                return Principal(
+                    identity=payload.get("sub", "unknown"),
+                    roles=payload.get("roles", ["viewer"])
+                )
+            except Exception:
+                pass
         return _ANON_ADMIN
 
     # ── X-API-Key ────────────────────────────────────────────────
@@ -105,3 +116,24 @@ async def get_current_user(
         detail="Authentication required",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+# ── Role-checking dependency factory ─────────────────────────────────────────
+
+def require_roles(allowed_roles: list[str]):
+    """Return a FastAPI dependency that enforces role membership.
+
+    Usage::
+
+        @router.get("/secret", dependencies=[Depends(require_roles(["admin"]))])
+        async def secret_endpoint(): ...
+    """
+    async def _check(user: Principal = Depends(get_current_user)) -> Principal:
+        for role in allowed_roles:
+            if user.has_role(role):
+                return user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Requires one of roles: {allowed_roles}",
+        )
+    return _check

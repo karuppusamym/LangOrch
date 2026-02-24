@@ -29,6 +29,8 @@ import {
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
+  useReactFlow,
+  ReactFlowProvider,
   type Node,
   type Edge,
   type NodeProps,
@@ -37,6 +39,7 @@ import {
   type Connection,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
+import { listAgents } from "@/lib/api";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -57,51 +60,51 @@ const NODE_TYPES_LIST = [
 type CkpNodeType = (typeof NODE_TYPES_LIST)[number];
 
 const TYPE_ICONS: Record<string, string> = {
-  sequence:       "▶",
-  logic:          "◇",
-  loop:           "↻",
-  parallel:       "⫽",
+  sequence: "▶",
+  logic: "◇",
+  loop: "↻",
+  parallel: "⫽",
   human_approval: "✋",
-  llm_action:     "🤖",
-  processing:     "⚙",
-  verification:   "✓",
-  transform:      "⇌",
-  subflow:        "↗",
-  terminate:      "⏹",
+  llm_action: "🤖",
+  processing: "⚙",
+  verification: "✓",
+  transform: "⇌",
+  subflow: "↗",
+  terminate: "⏹",
 };
 
 const TYPE_BG: Record<string, string> = {
   // ── Deterministic (Blue tier) ──
-  sequence:       "#3B82F6",
-  processing:     "#2563EB",
-  transform:      "#1D4ED8",
-  subflow:        "#60A5FA",
+  sequence: "#3B82F6",
+  processing: "#2563EB",
+  transform: "#1D4ED8",
+  subflow: "#60A5FA",
   // ── Intelligent (Purple tier) ──
-  llm_action:     "#7C3AED",
+  llm_action: "#7C3AED",
   // ── Control (Orange tier) ──
-  loop:           "#F97316",
-  parallel:       "#EA580C",
-  logic:          "#F59E0B",
-  verification:   "#D97706",
+  loop: "#F97316",
+  parallel: "#EA580C",
+  logic: "#F59E0B",
+  verification: "#D97706",
   human_approval: "#EF4444",
-  terminate:      "#6B7280",
+  terminate: "#6B7280",
 };
 
 // ── 3-tier node categories ────────────────────────────────────────────────────
 type NodeCategory = "deterministic" | "intelligent" | "control";
 
 const TYPE_CATEGORY: Record<string, NodeCategory> = {
-  sequence:       "deterministic",
-  processing:     "deterministic",
-  transform:      "deterministic",
-  subflow:        "deterministic",
-  llm_action:     "intelligent",
-  loop:           "control",
-  parallel:       "control",
-  logic:          "control",
-  verification:   "control",
+  sequence: "deterministic",
+  processing: "deterministic",
+  transform: "deterministic",
+  subflow: "deterministic",
+  llm_action: "intelligent",
+  loop: "control",
+  parallel: "control",
+  logic: "control",
+  verification: "control",
   human_approval: "control",
-  terminate:      "control",
+  terminate: "control",
 };
 
 const CATEGORY_META: Record<NodeCategory, { label: string; color: string; description: string; badge: string }> = {
@@ -127,8 +130,8 @@ const CATEGORY_META: Record<NodeCategory, { label: string; color: string; descri
 
 const NODE_PALETTE_GROUPS: Array<{ category: NodeCategory; types: CkpNodeType[] }> = [
   { category: "deterministic", types: ["sequence", "processing", "transform", "subflow"] },
-  { category: "intelligent",   types: ["llm_action"] },
-  { category: "control",       types: ["loop", "parallel", "logic", "verification", "human_approval", "terminate"] },
+  { category: "intelligent", types: ["llm_action"] },
+  { category: "control", types: ["loop", "parallel", "logic", "verification", "human_approval", "terminate"] },
 ];
 
 // ── Workflow templates ────────────────────────────────────────────────────────
@@ -147,12 +150,12 @@ const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     workflowGraph: {
       start_node: "extract_fields",
       nodes: {
-        extract_fields:   { type: "llm_action",     description: "Extract invoice fields via LLM", next_node: "validate_fields" },
-        validate_fields:  { type: "processing",     description: "Validate extracted fields", on_pass: "request_approval", on_fail: "flag_invalid" },
+        extract_fields: { type: "llm_action", description: "Extract invoice fields via LLM", next_node: "validate_fields" },
+        validate_fields: { type: "processing", description: "Validate extracted fields", on_pass: "request_approval", on_fail: "flag_invalid" },
         request_approval: { type: "human_approval", description: "Manager approves invoice", on_approve: "process_payment", on_reject: "flag_invalid" },
-        process_payment:  { type: "sequence",       description: "POST to payment API", next_node: "done" },
-        flag_invalid:     { type: "sequence",       description: "Log invalid invoice", next_node: "done" },
-        done:             { type: "terminate",      status: "success" },
+        process_payment: { type: "sequence", description: "POST to payment API", next_node: "done" },
+        flag_invalid: { type: "sequence", description: "Log invalid invoice", next_node: "done" },
+        done: { type: "terminate", status: "success" },
       },
     },
   },
@@ -164,12 +167,12 @@ const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       start_node: "classify_inquiry",
       nodes: {
         classify_inquiry: { type: "llm_action", description: "Classify customer inquiry type", next_node: "route" },
-        route:            { type: "logic",      description: "Route by inquiry category", on_true: "auto_reply", on_false: "specialist_queue" },
-        auto_reply:       { type: "llm_action", description: "Generate and send auto reply", next_node: "done" },
-        specialist_queue: { type: "sequence",   description: "Enqueue for human specialist", next_node: "await_specialist" },
+        route: { type: "logic", description: "Route by inquiry category", on_true: "auto_reply", on_false: "specialist_queue" },
+        auto_reply: { type: "llm_action", description: "Generate and send auto reply", next_node: "done" },
+        specialist_queue: { type: "sequence", description: "Enqueue for human specialist", next_node: "await_specialist" },
         await_specialist: { type: "human_approval", description: "Specialist resolves ticket", on_approve: "done", on_reject: "escalate" },
-        escalate:         { type: "sequence",   description: "Escalate to senior support", next_node: "done" },
-        done:             { type: "terminate",  status: "success" },
+        escalate: { type: "sequence", description: "Escalate to senior support", next_node: "done" },
+        done: { type: "terminate", status: "success" },
       },
     },
   },
@@ -180,14 +183,14 @@ const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     workflowGraph: {
       start_node: "summarise",
       nodes: {
-        summarise:      { type: "llm_action",     description: "Summarise contract clauses", next_node: "compliance_check" },
-        compliance_check: { type: "llm_action",  description: "Check against compliance rules", next_node: "risk_score" },
-        risk_score:     { type: "processing",     description: "Compute risk score", on_pass: "legal_review", on_fail: "flag_risks" },
-        flag_risks:     { type: "sequence",       description: "Log and notify risk owner", next_node: "legal_review" },
-        legal_review:   { type: "human_approval", description: "Legal signs off contract", on_approve: "archive", on_reject: "revise" },
-        revise:         { type: "sequence",       description: "Send back for revision", next_node: "done" },
-        archive:        { type: "sequence",       description: "Archive approved contract", next_node: "done" },
-        done:           { type: "terminate",      status: "success" },
+        summarise: { type: "llm_action", description: "Summarise contract clauses", next_node: "compliance_check" },
+        compliance_check: { type: "llm_action", description: "Check against compliance rules", next_node: "risk_score" },
+        risk_score: { type: "processing", description: "Compute risk score", on_pass: "legal_review", on_fail: "flag_risks" },
+        flag_risks: { type: "sequence", description: "Log and notify risk owner", next_node: "legal_review" },
+        legal_review: { type: "human_approval", description: "Legal signs off contract", on_approve: "archive", on_reject: "revise" },
+        revise: { type: "sequence", description: "Send back for revision", next_node: "done" },
+        archive: { type: "sequence", description: "Archive approved contract", next_node: "done" },
+        done: { type: "terminate", status: "success" },
       },
     },
   },
@@ -246,16 +249,16 @@ const NODE_H = 116;
 // ─── Edge label to CKP key mapping ───────────────────────────────────────────
 
 const EDGE_LABEL_OPTIONS = [
-  { value: "",          label: "→ next (default flow)" },
-  { value: "approve",   label: "✓ approve" },
-  { value: "reject",    label: "✕ reject" },
-  { value: "timeout",   label: "⏱ timeout" },
-  { value: "true",      label: "◎ true / yes" },
-  { value: "false",     label: "○ false / no" },
-  { value: "default",   label: "— default" },
-  { value: "pass",      label: "✓ pass" },
-  { value: "fail",      label: "✕ fail" },
-  { value: "error",     label: "⚠ error" },
+  { value: "", label: "→ next (default flow)" },
+  { value: "approve", label: "✓ approve" },
+  { value: "reject", label: "✕ reject" },
+  { value: "timeout", label: "⏱ timeout" },
+  { value: "true", label: "◎ true / yes" },
+  { value: "false", label: "○ false / no" },
+  { value: "default", label: "— default" },
+  { value: "pass", label: "✓ pass" },
+  { value: "fail", label: "✕ fail" },
+  { value: "error", label: "⚠ error" },
   { value: "loop body", label: "↻ loop body" },
 ];
 
@@ -347,10 +350,10 @@ export interface BuilderNodeData {
 
 function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
   const { label, nodeType, agent, isStart, description, isCheckpoint, orchestrationMode } = data;
-  const color    = TYPE_BG[nodeType] ?? "#9CA3AF";
-  const icon     = TYPE_ICONS[nodeType] ?? "●";
+  const color = TYPE_BG[nodeType] ?? "#9CA3AF";
+  const icon = TYPE_ICONS[nodeType] ?? "●";
   const category = TYPE_CATEGORY[nodeType];
-  const catMeta  = category ? CATEGORY_META[category] : null;
+  const catMeta = category ? CATEGORY_META[category] : null;
 
   return (
     <>
@@ -552,18 +555,18 @@ function ckpToRf(
   }
 
   for (const [id, n] of Object.entries(rawNodes)) {
-    if (n.next_node)    addEdgeFromCkp(id, n.next_node,    "");
-    if (n.on_approve)   addEdgeFromCkp(id, n.on_approve,   "approve");
-    if (n.on_reject)    addEdgeFromCkp(id, n.on_reject,    "reject");
-    if (n.on_timeout)   addEdgeFromCkp(id, n.on_timeout,   "timeout");
-    if (n.on_true)      addEdgeFromCkp(id, n.on_true,      "true");
-    if (n.on_false)     addEdgeFromCkp(id, n.on_false,     "false");
-    if (n.on_pass)      addEdgeFromCkp(id, n.on_pass,      "pass");
-    if (n.on_fail)      addEdgeFromCkp(id, n.on_fail,      "fail");
-    if (n.on_error)     addEdgeFromCkp(id, n.on_error,     "error");
-    if (n.on_failure)   addEdgeFromCkp(id, n.on_failure,   "error");
+    if (n.next_node) addEdgeFromCkp(id, n.next_node, "");
+    if (n.on_approve) addEdgeFromCkp(id, n.on_approve, "approve");
+    if (n.on_reject) addEdgeFromCkp(id, n.on_reject, "reject");
+    if (n.on_timeout) addEdgeFromCkp(id, n.on_timeout, "timeout");
+    if (n.on_true) addEdgeFromCkp(id, n.on_true, "true");
+    if (n.on_false) addEdgeFromCkp(id, n.on_false, "false");
+    if (n.on_pass) addEdgeFromCkp(id, n.on_pass, "pass");
+    if (n.on_fail) addEdgeFromCkp(id, n.on_fail, "fail");
+    if (n.on_error) addEdgeFromCkp(id, n.on_error, "error");
+    if (n.on_failure) addEdgeFromCkp(id, n.on_failure, "error");
     if (n.default_next) addEdgeFromCkp(id, n.default_next, "default");
-    if (n.loop_body)    addEdgeFromCkp(id, n.loop_body,    "loop body");
+    if (n.loop_body) addEdgeFromCkp(id, n.loop_body, "loop body");
     // parallel branches
     if (Array.isArray(n.branches)) {
       for (const b of n.branches as Array<{ name?: string; entry_node?: string }>) {
@@ -607,8 +610,8 @@ function rfToCkp(
     const obj: Record<string, unknown> = {
       type: d.nodeType,
       ...(d.description ? { description: d.description } : {}),
-      ...(d.agent       ? { agent: d.agent }             : {}),
-      ...(d.isCheckpoint ? { is_checkpoint: true }       : {}),
+      ...(d.agent ? { agent: d.agent } : {}),
+      ...(d.isCheckpoint ? { is_checkpoint: true } : {}),
       ...(d.extra ?? {}),
     };
 
@@ -618,17 +621,17 @@ function rfToCkp(
       const target = e.target;
       switch (label) {
         case "":
-        case "next":       obj.next_node    = target; break;
-        case "approve":    obj.on_approve   = target; break;
-        case "reject":     obj.on_reject    = target; break;
-        case "timeout":    obj.on_timeout   = target; break;
-        case "true":       obj.on_true      = target; break;
-        case "false":      obj.on_false     = target; break;
-        case "pass":       obj.on_pass      = target; break;
-        case "fail":       obj.on_fail      = target; break;
-        case "error":      obj.on_error     = target; break;
-        case "default":    obj.default_next = target; break;
-        case "loop body":  obj.loop_body    = target; break;
+        case "next": obj.next_node = target; break;
+        case "approve": obj.on_approve = target; break;
+        case "reject": obj.on_reject = target; break;
+        case "timeout": obj.on_timeout = target; break;
+        case "true": obj.on_true = target; break;
+        case "false": obj.on_false = target; break;
+        case "pass": obj.on_pass = target; break;
+        case "fail": obj.on_fail = target; break;
+        case "error": obj.on_error = target; break;
+        case "default": obj.default_next = target; break;
+        case "loop body": obj.loop_body = target; break;
         default: {
           // Reconstruct parallel branches array from "branch:" prefixed labels
           if (label.startsWith("branch:") || label === "branch") {
@@ -653,13 +656,13 @@ function rfToCkp(
     // steps for sequence / WEB agent nodes
     if (d.steps && d.steps.length > 0) obj.steps = d.steps;
     if (d.nodeType === "human_approval") {
-      if (d.approvalPrompt) obj.prompt        = d.approvalPrompt;
-      if (d.decisionType)   obj.decision_type = d.decisionType;
-      if (d.timeoutMs)      obj.timeout_ms    = d.timeoutMs;
+      if (d.approvalPrompt) obj.prompt = d.approvalPrompt;
+      if (d.decisionType) obj.decision_type = d.decisionType;
+      if (d.timeoutMs) obj.timeout_ms = d.timeoutMs;
     }
     if (d.nodeType === "llm_action") {
       if (d.llmPrompt) obj.prompt = d.llmPrompt;
-      if (d.llmModel)  obj.model  = d.llmModel;
+      if (d.llmModel) obj.model = d.llmModel;
       if (d.orchestrationMode) {
         obj.orchestration_mode = true;
         const rawBranches = (d.orchestrationBranches ?? "").trim();
@@ -670,19 +673,19 @@ function rfToCkp(
     }
     if (d.nodeType === "loop") {
       if (d.loopMaxIterations != null) obj.max_iterations = d.loopMaxIterations;
-      if (d.loopContinueCondition)     obj.continue_condition = d.loopContinueCondition;
+      if (d.loopContinueCondition) obj.continue_condition = d.loopContinueCondition;
     }
     if (d.nodeType === "parallel") {
       if (d.parallelWaitAll != null) obj.wait_all = d.parallelWaitAll;
     }
     if (d.nodeType === "processing") {
       if (d.action) obj.action = d.action;
-      if (d.inputMapping)  { try { obj.input_mapping  = JSON.parse(d.inputMapping);  } catch { obj.input_mapping  = d.inputMapping;  } }
+      if (d.inputMapping) { try { obj.input_mapping = JSON.parse(d.inputMapping); } catch { obj.input_mapping = d.inputMapping; } }
       if (d.outputMapping) { try { obj.output_mapping = JSON.parse(d.outputMapping); } catch { obj.output_mapping = d.outputMapping; } }
     }
     if (d.nodeType === "transform") {
-      if (d.transformer)   obj.transformer = d.transformer;
-      if (d.inputMapping)  { try { obj.input_mapping  = JSON.parse(d.inputMapping);  } catch { obj.input_mapping  = d.inputMapping;  } }
+      if (d.transformer) obj.transformer = d.transformer;
+      if (d.inputMapping) { try { obj.input_mapping = JSON.parse(d.inputMapping); } catch { obj.input_mapping = d.inputMapping; } }
       if (d.outputMapping) { try { obj.output_mapping = JSON.parse(d.outputMapping); } catch { obj.output_mapping = d.outputMapping; } }
     }
     if (d.nodeType === "verification") {
@@ -690,8 +693,8 @@ function rfToCkp(
       if (d.verificationRules) { try { obj.rules = JSON.parse(d.verificationRules); } catch { obj.rules = d.verificationRules; } }
     }
     if (d.nodeType === "subflow") {
-      if (d.subflowId)      obj.subflow_id = d.subflowId;
-      if (d.subflowVersion) obj.version    = d.subflowVersion;
+      if (d.subflowId) obj.subflow_id = d.subflowId;
+      if (d.subflowVersion) obj.version = d.subflowVersion;
     }
     // universal failure / retry
     if (d.onFailureNode) obj.on_failure = d.onFailureNode;
@@ -720,12 +723,14 @@ function NodeInspector({
   onUpdate,
   onSetStart,
   onDelete,
+  agentNames = [],
 }: {
   node: Node<BuilderNodeData>;
   nodes: Node<BuilderNodeData>[];
   onUpdate: (id: string, patch: Partial<BuilderNodeData>) => void;
   onSetStart: (id: string) => void;
   onDelete: (id: string) => void;
+  agentNames?: string[];
 }) {
   const d = node.data as BuilderNodeData;
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
@@ -844,7 +849,14 @@ function NodeInspector({
           value={d.agent}
           onChange={(e) => onUpdate(node.id, { agent: e.target.value })}
           placeholder="e.g. WebAgent"
+          list="agent-names-datalist"
+          aria-label="Agent name"
         />
+        {agentNames && agentNames.length > 0 && (
+          <datalist id="agent-names-datalist">
+            {agentNames.map((name) => <option key={name} value={name} />)}
+          </datalist>
+        )}
       </Field>
 
       <div className="flex items-center gap-2">
@@ -901,7 +913,7 @@ function NodeInspector({
                         <label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">action</label>
                         <input className={inputCls + " text-xs"} value={(action as string) ?? ""} onChange={(e) => updateStep(idx, { action: e.target.value })} placeholder="navigate" list={`actions-${idx}`} />
                         <datalist id={`actions-${idx}`}>
-                          {["navigate","click","fill","wait","wait_for_element","extract_text","select_all_text","screenshot","scroll","hover","select_option"].map((a) => <option key={a} value={a} />)}
+                          {["navigate", "click", "fill", "wait", "wait_for_element", "extract_text", "select_all_text", "screenshot", "scroll", "hover", "select_option"].map((a) => <option key={a} value={a} />)}
                         </datalist>
                       </div>
                     </div>
@@ -914,12 +926,37 @@ function NodeInspector({
                     {(action === "wait" || action === "wait_for_element") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">timeout_ms</label><input type="number" className={inputCls + " text-xs"} value={(rest.timeout_ms as number) ?? ""} onChange={(e) => updateStep(idx, { timeout_ms: e.target.value ? Number(e.target.value) : undefined })} placeholder="15000" /></div>}
                     {/* Extra fields as JSON */}
                     {(() => {
-                      const knownStepKeys = new Set(["step_id","action","url","target","value","output_variable","path","timeout_ms"]);
+                      const knownStepKeys = new Set(["step_id", "action", "url", "target", "value", "output_variable", "path", "timeout_ms"]);
                       const extraRest = Object.fromEntries(Object.entries(rest).filter(([k]) => !knownStepKeys.has(k)));
                       return Object.keys(extraRest).length > 0 ? (
                         <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">Other props</label><pre className="rounded bg-gray-50 p-1 text-[9px] text-gray-500 overflow-auto max-h-20">{JSON.stringify(extraRest, null, 2)}</pre></div>
                       ) : null;
                     })()}
+                    {/* E1: Per-step retry config */}
+                    <div className="rounded border border-amber-100 bg-amber-50/40 p-1.5 space-y-1 mt-1">
+                      <p className="text-[8px] font-bold uppercase tracking-widest text-amber-500">Retry / Timeout</p>
+                      <div className="flex gap-1">
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">max_retries</label><input type="number" className={inputCls + " text-xs"} value={(rest.max_retries as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { max_retries: e.target.value ? Number(e.target.value) : undefined })} placeholder="3" aria-label="Max retries" /></div>
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">delay_ms</label><input type="number" className={inputCls + " text-xs"} value={(rest.retry_delay_ms as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { retry_delay_ms: e.target.value ? Number(e.target.value) : undefined })} placeholder="1000" aria-label="Retry delay" /></div>
+                      </div>
+                      <div className="flex gap-1">
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">multiplier</label><input type="number" step="0.1" className={inputCls + " text-xs"} value={(rest.backoff_multiplier as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { backoff_multiplier: e.target.value ? Number(e.target.value) : undefined })} placeholder="2.0" aria-label="Backoff multiplier" /></div>
+                        {/* E2: timeout_ms */}
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">timeout_ms</label><input type="number" className={inputCls + " text-xs"} value={(rest.step_timeout_ms as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { step_timeout_ms: e.target.value ? Number(e.target.value) : undefined })} placeholder="30000" aria-label="Step timeout" /></div>
+                      </div>
+                    </div>
+                    {/* E3: Step binding kind badge */}
+                    <div className="mt-1 flex items-center gap-1 text-[9px]">
+                      <span className="text-gray-400">Binding:</span>
+                      {(() => {
+                        const a = (action as string) ?? "";
+                        if (["log", "wait", "set_variable", "screenshot"].includes(a)) return <span className="rounded bg-gray-200 px-1.5 py-0.5 font-semibold text-gray-700">internal</span>;
+                        if (rest.agent) return <span className="rounded bg-purple-100 px-1.5 py-0.5 font-semibold text-purple-700">agent</span>;
+                        if (rest.mcp_server) return <span className="rounded bg-teal-100 px-1.5 py-0.5 font-semibold text-teal-700">mcp</span>;
+                        return <span className="rounded bg-yellow-100 px-1.5 py-0.5 font-semibold text-yellow-700">unresolved</span>;
+                      })()}
+                    </div>
+
                   </div>
                 )}
               </div>
@@ -1277,13 +1314,26 @@ function NodeInspector({
       {/* ── Editable extra JSON ── */}
       <Field label="Extra CKP Props (JSON)">
         <textarea
-          className={`${inputCls} resize-none font-mono text-[10px]`}
+          className={`${inputCls} resize-none font-mono text-[10px] ${(() => {
+            const raw = d.extraJsonText ?? (d.extra && Object.keys(d.extra).length > 0 ? JSON.stringify(d.extra, null, 2) : "");
+            if (!raw.trim()) return "";
+            try { JSON.parse(raw); return ""; }
+            catch { return "border-red-400 bg-red-50"; }
+          })()
+            }`}
           rows={3}
           value={d.extraJsonText ?? (d.extra && Object.keys(d.extra).length > 0 ? JSON.stringify(d.extra, null, 2) : "")}
           onChange={(e) => onUpdate(node.id, { extraJsonText: e.target.value })}
           placeholder='{"custom_key": "value"}'
         />
-        <p className="mt-0.5 text-[10px] text-gray-400">Merged into the CKP node on save. Must be a valid JSON object.</p>
+        {(() => {
+          const raw = d.extraJsonText ?? "";
+          if (!raw.trim()) return null;
+          try { JSON.parse(raw); return <p className="mt-0.5 text-[10px] text-green-600">✓ Valid JSON — merged on save.</p>; }
+          catch (err) { return <p className="mt-0.5 text-[10px] text-red-600">⚠ {(err as Error).message}</p>; }
+        })()
+        }
+        {!d.extraJsonText?.trim() && <p className="mt-0.5 text-[10px] text-gray-400">Merged into the CKP node on save. Must be a valid JSON object.</p>}
       </Field>
 
       <div className="mt-auto border-t border-gray-100 pt-3 space-y-2">
@@ -1439,16 +1489,28 @@ interface WorkflowBuilderProps {
   saving?: boolean;
 }
 
-export default function WorkflowBuilder({
+// ─── Inner component (inside ReactFlowProvider so useReactFlow works) ─────────
+
+function WorkflowBuilderInner({
   initialWorkflowGraph,
   onSave,
   saving = false,
 }: WorkflowBuilderProps) {
+  const { setCenter } = useReactFlow();
+
   const [rfNodes, setRfNodes] = useState<Node<BuilderNodeData>[]>([]);
   const [rfEdges, setRfEdges] = useState<Edge[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const nodeCounter = useRef(1);
+
+  // ── Agent names for datalist (F1) ────────────────────────────────────────
+  const [agentNames, setAgentNames] = useState<string[]>([]);
+  useEffect(() => {
+    listAgents().then((agents) =>
+      setAgentNames(agents.map((a: { name: string }) => a.name))
+    ).catch(() => { });
+  }, []);
 
   // Initialise from prop
   useEffect(() => {
@@ -1574,25 +1636,27 @@ export default function WorkflowBuilder({
       eds.map((e) =>
         e.id === id
           ? {
-              ...e,
-              label: label || undefined,
-              style: { stroke: col, strokeWidth: 2 },
-              markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: col },
-              labelStyle: { fontSize: 10, fontWeight: 700, fill: col },
-            }
+            ...e,
+            label: label || undefined,
+            style: { stroke: col, strokeWidth: 2 },
+            markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: col },
+            labelStyle: { fontSize: 10, fontWeight: 700, fill: col },
+          }
           : e,
       ),
     );
   }, []);
 
-  // ── Add node from palette ────────────────────────────────────────────────
+  // ── Add node from palette (A2: center viewport on new node) ─────────────
   const addNode = useCallback((type: CkpNodeType) => {
     const id = `${type}_${nodeCounter.current++}`;
     const isFirst = rfNodes.length === 0;
+    const x = 80 + Math.random() * 40;
+    const y = 80 + rfNodes.length * 140;
     const newNode: Node<BuilderNodeData> = {
       id,
       type: "builderNode",
-      position: { x: 80 + Math.random() * 40, y: 80 + rfNodes.length * 140 },
+      position: { x, y },
       data: {
         label: id,
         nodeType: type,
@@ -1606,7 +1670,9 @@ export default function WorkflowBuilder({
     setRfNodes((nds) => [...nds, newNode] as Node<BuilderNodeData>[]);
     setSelectedNodeId(id);
     setSelectedEdgeId(null);
-  }, [rfNodes.length]);
+    // Scroll viewport to newly added node
+    setTimeout(() => setCenter(x, y, { duration: 350, zoom: 1 }), 50);
+  }, [rfNodes.length, setCenter]);
 
   // ── Load workflow template ───────────────────────────────────────────────
   const loadTemplate = useCallback((tpl: WorkflowTemplate) => {
@@ -1745,6 +1811,7 @@ export default function WorkflowBuilder({
             onUpdate={updateNode}
             onSetStart={setStartNode}
             onDelete={deleteNode}
+            agentNames={agentNames}
           />
         ) : selectedEdge ? (
           <EdgeInspector
@@ -1762,5 +1829,15 @@ export default function WorkflowBuilder({
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Exported component (wraps inner in ReactFlowProvider for useReactFlow) ───────
+
+export default function WorkflowBuilder(props: WorkflowBuilderProps) {
+  return (
+    <ReactFlowProvider>
+      <WorkflowBuilderInner {...props} />
+    </ReactFlowProvider>
   );
 }

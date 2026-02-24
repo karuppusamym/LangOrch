@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_API_KEY: str | None = None
     LLM_TIMEOUT_SECONDS: float = 60.0
+    LLM_DEFAULT_MODEL: str = "gpt-4o"
+
+    # Extra headers injected on every LLM HTTP call (JSON dict).
+    # Useful for API gateway auth, tenant isolation, or quota headers.
+    # Example: LLM_GATEWAY_HEADERS='{"X-Tenant-ID": "acme", "X-Quota-Group": "prod"}'
+    LLM_GATEWAY_HEADERS: str | None = None
+
+    # JSON override for the per-model cost-per-1k-tokens table.
+    # Shape: {"model-name": {"prompt": 0.01, "completion": 0.03}, ...}
+    # Merged on top of built-in defaults so you only need to specify overrides.
+    LLM_MODEL_COST_JSON: str | None = None
 
     # ── Alert hooks ─────────────────────────────────────────────
     # When set, a POST is sent to this URL on run_failed events

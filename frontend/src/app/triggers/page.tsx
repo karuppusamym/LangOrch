@@ -3,22 +3,23 @@
 import { useEffect, useState, useCallback } from "react";
 import { listTriggers, fireTrigger, deleteTrigger, syncTriggers } from "@/lib/api";
 import { useToast } from "@/components/Toast";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { TriggerRegistration } from "@/lib/types";
 
 const TYPE_COLORS: Record<string, string> = {
   scheduled: "bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400",
-  webhook:    "bg-purple-100 dark:bg-purple-950/40 text-purple-700 dark:text-purple-400",
-  event:      "bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400",
+  webhook: "bg-purple-100 dark:bg-purple-950/40 text-purple-700 dark:text-purple-400",
+  event: "bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400",
   file_watch: "bg-teal-100 dark:bg-teal-950/40 text-teal-700 dark:text-teal-400",
-  manual:     "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400",
+  manual: "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400",
 };
 
 const TYPE_ICONS: Record<string, string> = {
   scheduled: "🕐",
-  webhook:   "🔗",
-  event:     "⚡",
-  file_watch:"📁",
-  manual:    "▶",
+  webhook: "🔗",
+  event: "⚡",
+  file_watch: "📁",
+  manual: "▶",
 };
 
 function TriggerTypeBadge({ type }: { type: string }) {
@@ -45,6 +46,7 @@ export default function TriggersPage() {
   const [filterType, setFilterType] = useState<string>("all");
   const [filterEnabled, setFilterEnabled] = useState<"all" | "enabled" | "disabled">("all");
   const [search, setSearch] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<TriggerRegistration | null>(null);
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -74,8 +76,14 @@ export default function TriggersPage() {
     }
   }
 
-  async function handleDelete(trigger: TriggerRegistration) {
-    if (!confirm(`Delete trigger for ${trigger.procedure_id}@${trigger.version}?`)) return;
+  function handleDelete(trigger: TriggerRegistration) {
+    setConfirmDelete(trigger);
+  }
+
+  async function performDelete() {
+    if (!confirmDelete) return;
+    const trigger = confirmDelete;
+    setConfirmDelete(null);
     const key = `${trigger.procedure_id}:${trigger.version}`;
     setDeleting(key);
     try {
@@ -302,6 +310,16 @@ export default function TriggersPage() {
         </ul>
         <p className="pt-1">Triggers are defined in procedure CKP files under <code>trigger_config</code> and synced automatically on startup or via the Sync button.</p>
       </div>
+
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="Delete Trigger"
+        message={`Are you sure you want to delete the trigger for ${confirmDelete?.procedure_id}@${confirmDelete?.version}?\n\nThis will stop automatic runs. You can restore it later by re-syncing.`}
+        confirmLabel="Delete Trigger"
+        danger={true}
+        onConfirm={performDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

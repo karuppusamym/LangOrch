@@ -1,13 +1,65 @@
-"""MCP (Model Context Protocol) client connector."""
+"""MCP (Model Context Protocol) client connector.
+
+Circuit breaker: after ``_MCP_CIRCUIT_THRESHOLD`` consecutive failures the
+client short-circuits with ``MCPToolError`` until ``_MCP_CIRCUIT_RESET_SECONDS``
+have elapsed, preventing cascading failures against an unhealthy MCP server.
+"""
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger("langorch.connectors.mcp")
+
+# ── Circuit breaker state (module-level, process-scoped) ──────────────────────
+_mcp_consecutive_failures: int = 0
+_mcp_circuit_open_at: datetime | None = None
+_MCP_CIRCUIT_THRESHOLD: int = 5
+_MCP_CIRCUIT_RESET_SECONDS: int = 300
+
+
+def _check_mcp_circuit() -> None:
+    """Raise immediately if the MCP circuit breaker is open."""
+    global _mcp_circuit_open_at
+    if _mcp_circuit_open_at is None:
+        return
+    elapsed = (datetime.now(timezone.utc) - _mcp_circuit_open_at).total_seconds()
+    if elapsed < _MCP_CIRCUIT_RESET_SECONDS:
+        raise MCPToolError(
+            "mcp",
+            f"MCP circuit breaker open (failed {_MCP_CIRCUIT_THRESHOLD}× "
+            f"consecutively; resets in {_MCP_CIRCUIT_RESET_SECONDS - int(elapsed)}s)",
+        )
+    # Reset period elapsed — close the circuit
+    _mcp_circuit_open_at = None
+
+
+def _record_mcp_success() -> None:
+    global _mcp_consecutive_failures, _mcp_circuit_open_at
+    _mcp_consecutive_failures = 0
+    _mcp_circuit_open_at = None
+
+
+def _record_mcp_failure() -> None:
+    global _mcp_consecutive_failures, _mcp_circuit_open_at
+    _mcp_consecutive_failures += 1
+    if _mcp_consecutive_failures >= _MCP_CIRCUIT_THRESHOLD:
+        _mcp_circuit_open_at = datetime.now(timezone.utc)
+        logger.warning(
+            "MCP circuit breaker OPENED after %d consecutive failures",
+            _mcp_consecutive_failures,
+        )
+
+
+def reset_mcp_circuit_breaker() -> None:
+    """Reset MCP circuit breaker state (useful for tests)."""
+    global _mcp_consecutive_failures, _mcp_circuit_open_at
+    _mcp_consecutive_failures = 0
+    _mcp_circuit_open_at = None
 
 
 class MCPClient:
@@ -34,6 +86,9 @@ class MCPClient:
         step_id: str = "",
     ) -> dict[str, Any]:
         """Invoke an MCP tool and return the result dict."""
+        # Circuit breaker pre-check
+        _check_mcp_circuit()
+
         url = f"/tools/{tool_name}"
         logger.info("MCP call: %s %s run=%s", url, list(arguments.keys()), run_id)
         correlation_headers: dict[str, str] = {}
@@ -50,13 +105,17 @@ class MCPClient:
             data = resp.json()
 
             if data.get("isError"):
+                _record_mcp_failure()
                 raise MCPToolError(tool_name, data.get("error", "Unknown MCP error"))
 
+            _record_mcp_success()
             return data.get("result", data)
 
         except httpx.HTTPStatusError as exc:
+            _record_mcp_failure()
             raise MCPToolError(tool_name, f"HTTP {exc.response.status_code}") from exc
         except httpx.RequestError as exc:
+            _record_mcp_failure()
             raise MCPToolError(tool_name, str(exc)) from exc
 
     async def list_tools(self) -> list[dict[str, Any]]:

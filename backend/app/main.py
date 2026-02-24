@@ -30,6 +30,7 @@ from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.secrets import router as secrets_router
 from app.api.config import router as config_router
+from app.api.audit import router as audit_router
 
 logger = logging.getLogger("langorch.main")
 
@@ -266,6 +267,44 @@ async def _artifact_retention_loop() -> None:
             )
 
 
+async def _config_sync_loop() -> None:
+    """Background task: Periodically synchronize DB system_settings into in-memory settings.
+    Provides HA synchronization across multiple LangOrch workers/containers."""
+    from sqlalchemy import text, select
+    from app.db.models import SecretEntry
+    import json
+
+    while True:
+        await asyncio.sleep(30)
+        try:
+            async with async_session() as db:
+                # Sync standard settings
+                result = await db.execute(text("SELECT key, value_json FROM system_settings"))
+                for key, value_json in result.all():
+                    try:
+                        val = json.loads(value_json)
+                        if getattr(settings, key, None) != val:
+                            setattr(settings, key, val)
+                            logger.info("HA Sync: Reloaded config override %s", key)
+                    except Exception:
+                        pass
+                
+                # Sync secrets
+                try:
+                    from app.api.secrets import _decrypt
+                    res = await db.execute(select(SecretEntry).where(SecretEntry.name == "LLM_API_KEY"))
+                    entry = res.scalar_one_or_none()
+                    if entry:
+                        decrypted = _decrypt(entry.encrypted_value)
+                        if settings.LLM_API_KEY != decrypted:
+                            settings.LLM_API_KEY = decrypted
+                            logger.info("HA Sync: Reloaded LLM_API_KEY from secrets")
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug("Error in config sync loop: %s", exc)
+
+
 async def _file_watch_trigger_loop() -> None:
     """Background task: poll file_watch trigger registrations and fire runs when files change.
 
@@ -383,7 +422,11 @@ async def _metrics_push_loop() -> None:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         if settings.is_sqlite:
-            await conn.run_sync(Base.metadata.create_all)
+            try:
+                await conn.run_sync(Base.metadata.create_all)
+            except Exception as _e:
+                logger.warning("create_all partial failure (likely existing index): %s", _e)
+                # Tables already exist — safe to continue
         # else: for PostgreSQL, run `alembic upgrade head` before starting the server
     # Idempotent column migrations for new fields (SQLite-safe ADD COLUMN)
     # These are no-ops when the column already exists (catches on duplicate column).
@@ -416,6 +459,27 @@ async def lifespan(app: FastAPI):
                 "  expires_at DATETIME NOT NULL"
                 ")"
             ),
+            # Batch 35: audit_events table
+            (
+                "CREATE TABLE IF NOT EXISTS audit_events ("
+                "  event_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "  ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                "  category VARCHAR(64) NOT NULL, "
+                "  action VARCHAR(64) NOT NULL, "
+                "  actor VARCHAR(256) NOT NULL DEFAULT 'system', "
+                "  description TEXT NOT NULL DEFAULT '', "
+                "  resource_type VARCHAR(64), "
+                "  resource_id VARCHAR(256), "
+                "  meta_json TEXT"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS system_settings ("
+                "  key VARCHAR(128) PRIMARY KEY, "
+                "  value_json TEXT NOT NULL, "
+                "  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ),
         ]
         async with engine.begin() as conn:
             for stmt in _new_cols:
@@ -423,26 +487,61 @@ async def lifespan(app: FastAPI):
                     await conn.execute(__import__("sqlalchemy").text(stmt))
                 except Exception:
                     pass  # column already exists — ignore
+                    
+    # Load persistent system settings overrides from DB into the settings singleton
+    try:
+        from app.db.engine import async_session as _asm_cfg
+        from sqlalchemy import select
+        from app.db.models import SecretEntry
+        import json
+        async with _asm_cfg() as _db_cfg:
+            result = await _db_cfg.execute(__import__("sqlalchemy").text("SELECT key, value_json FROM system_settings"))
+            for key, value_json in result.all():
+                try:
+                    val = json.loads(value_json)
+                    setattr(settings, key, val)
+                    logger.debug("Loaded config override from DB: %s", key)
+                except Exception:
+                    pass
+            
+            # Load secure API keys
+            try:
+                from app.api.secrets import _decrypt
+                sec_res = await _db_cfg.execute(select(SecretEntry).where(SecretEntry.name == "LLM_API_KEY"))
+                entry = sec_res.scalar_one_or_none()
+                if entry:
+                    settings.LLM_API_KEY = _decrypt(entry.encrypted_value)
+                    logger.debug("Loaded secure LLM_API_KEY from DB")
+            except Exception as _sec_e:
+                logger.debug("Failed to load secure LLM_API_KEY: %s", _sec_e)
+
+    except Exception as _e:
+        logger.warning("Failed to load DB config overrides: %s", _e)
     # Seed default admin user if users table is empty
     try:
         from app.db.engine import async_session as _asm_users
         from app.services.user_service import ensure_default_admin as _seed_admin
         async with _asm_users() as _db_users:
             await _seed_admin(_db_users)
-    except Exception:
-        logger.exception("Default admin seeding failed")
+    except Exception as _e:
+        logger.warning("Auto-seed admin failed: %s", _e)
     # Start leader election — must be running before any singleton loops check is_leader
     from app.runtime.leader import leader_election as _leader_election
     _leader_election.start()
     # Give the first election attempt a head-start before loop tasks fire
     # (small sleep; SQLite will acquire immediately; PG may need one cycle)
     await asyncio.sleep(0.1)
-    _expiry_task = asyncio.create_task(_approval_expiry_loop())
-    _health_task = asyncio.create_task(_agent_health_loop())
-    _retention_task = asyncio.create_task(_checkpoint_retention_loop())
-    _artifact_retention_task = asyncio.create_task(_artifact_retention_loop())
-    _file_watch_task = asyncio.create_task(_file_watch_trigger_loop())
-    _metrics_push_task = asyncio.create_task(_metrics_push_loop())
+
+    logger.info("Application lifespan startup complete — entering serve loop")
+    
+    # Start background loops
+    task1 = asyncio.create_task(_approval_expiry_loop())
+    task2 = asyncio.create_task(_agent_health_loop())
+    task3 = asyncio.create_task(_checkpoint_retention_loop())
+    task4 = asyncio.create_task(_artifact_retention_loop())
+    task5 = asyncio.create_task(_file_watch_trigger_loop())
+    task6 = asyncio.create_task(_metrics_push_loop())
+    task7 = asyncio.create_task(_config_sync_loop())
     # Start trigger scheduler
     from app.runtime.scheduler import scheduler as _trigger_scheduler
     _trigger_scheduler.start()
@@ -514,6 +613,7 @@ app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(users_router, prefix="/api/users", tags=["users"])
 app.include_router(secrets_router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(config_router, tags=["config"])
+app.include_router(audit_router)  # prefix is defined in router: /api/audit
 
 # ── Serve local artifacts as static files ──────────────────────────────────
 # Agents write artifacts to ARTIFACTS_DIR and return URIs like

@@ -38,8 +38,9 @@ from app.utils.metrics import record_step_execution, record_step_timeout, record
 logger = logging.getLogger("langorch.runtime")
 
 # Cost-per-1k-tokens for common LLM models (USD)
-# Source: public pricing pages as of 2026-02. Adjust as needed.
-_MODEL_COST_PER_1K: dict[str, dict[str, float]] = {
+# Source: public pricing pages as of 2026-02.
+# Override/extend via settings.LLM_MODEL_COST_JSON (JSON dict).
+_DEFAULT_MODEL_COSTS: dict[str, dict[str, float]] = {
     "gpt-4": {"prompt": 0.03, "completion": 0.06},
     "gpt-4-turbo": {"prompt": 0.01, "completion": 0.03},
     "gpt-4o": {"prompt": 0.005, "completion": 0.015},
@@ -49,6 +50,30 @@ _MODEL_COST_PER_1K: dict[str, dict[str, float]] = {
     "claude-3-haiku": {"prompt": 0.00025, "completion": 0.00125},
     "claude-3-5-sonnet": {"prompt": 0.003, "completion": 0.015},
 }
+
+
+def _load_model_costs() -> dict[str, dict[str, float]]:
+    """Build the model cost table by merging defaults with config overrides.
+
+    If ``settings.LLM_MODEL_COST_JSON`` is set, its contents are parsed as
+    JSON and merged *on top of* the built-in defaults.  This lets operators
+    add new models or update pricing without code changes.
+    """
+    import json as _json
+    costs = dict(_DEFAULT_MODEL_COSTS)
+    if settings.LLM_MODEL_COST_JSON:
+        try:
+            overrides = _json.loads(settings.LLM_MODEL_COST_JSON)
+            if isinstance(overrides, dict):
+                for model, rates in overrides.items():
+                    if isinstance(rates, dict):
+                        costs[model.lower()] = rates
+        except (_json.JSONDecodeError, TypeError):
+            logger.warning("LLM_MODEL_COST_JSON is not valid JSON — using defaults")
+    return costs
+
+
+_MODEL_COST_PER_1K: dict[str, dict[str, float]] = _load_model_costs()
 
 
 def _get_retry_config(state: OrchestratorState) -> dict[str, Any]:
@@ -650,9 +675,22 @@ def execute_loop(node: IRNode, state: OrchestratorState) -> OrchestratorState:
         if payload.index_variable:
             vs[payload.index_variable] = index
 
+        # G1: emit loop_iteration event ──────────────────────────
+        events = list(state.get("events", []))
+        events.append({
+            "event_type": "loop_iteration",
+            "node_id": node.node_id,
+            "payload": {
+                "iteration": index,
+                "total": len(iterator),
+                "item": str(item)[:256],  # truncate large items
+            },
+        })
+
         return {
             **state,
             "vars": vs,
+            "events": events,
             "loop_index": index,
             "loop_item": item,
             "next_node_id": payload.body_node_id,
@@ -920,13 +958,10 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
                 break
 
     if last_exc:
-        return {
-            **state,
-            "error": {"message": str(last_exc), "node_id": node.node_id},
-            "terminal_status": "failed",
-            "next_node_id": None,
-            "current_node_id": node.node_id,
-        }  # type: ignore
+        # Raise so that the standard error handler chain (error_handlers,
+        # on_failure node, alert webhook) triggers — consistent with how
+        # agent and MCP failures propagate.
+        raise last_exc
 
     # ── Token tracking + budget enforcement ─────────────────────
     usage = llm_result.get("usage", {})

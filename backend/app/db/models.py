@@ -377,3 +377,47 @@ class SchedulerLeaderLease(Base):
     leader_id: Mapped[str] = mapped_column(String(256), nullable=False)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+# ── System Audit Events ─────────────────────────────────────────
+
+
+class AuditEvent(Base):
+    """System-level audit log for user, secret, auth, and config actions.
+
+    Separate from RunEvent so these records survive run-data retention purges.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_ts", "ts"),
+        Index("ix_audit_events_actor", "actor"),
+        Index("ix_audit_events_category", "category"),
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    # Category: user_mgmt | secret_mgmt | auth | config | run
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Action: create | update | delete | login | login_failed | patch
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Who performed the action (username / "system" / "anonymous")
+    actor: Mapped[str] = mapped_column(String(256), nullable=False, default="system")
+    # Human-readable description of what changed
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Optional: the resource that was affected
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Extra JSON metadata (old/new values, IP, etc.)
+    meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ── Global System configuration ──────────────────────────────────
+
+class SystemSetting(Base):
+    """Stores hot-patched configuration values for HA persistence."""
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

@@ -159,7 +159,7 @@ export default function ProcedureVersionDetailPage() {
         .catch((err) => setExplainError(err instanceof Error ? err.message : "Explain failed"))
         .finally(() => setExplainLoading(false));
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [procedure, activeTab]);
 
   // Flatten the nested { required: { varName: meta }, optional: { varName: meta } } CKP schema format
@@ -195,8 +195,8 @@ export default function ProcedureVersionDetailPage() {
     const borderCls = fieldErr
       ? "border-red-400 focus:border-red-500"
       : showDefault && isUsingDefault
-      ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
-      : "border-gray-300 focus:border-primary-500";
+        ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
+        : "border-gray-300 focus:border-primary-500";
     return (
       <div key={key}>
         <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
@@ -409,11 +409,10 @@ export default function ProcedureVersionDetailPage() {
             onClick={openStartRun}
             disabled={runCreating}
             title={procedure.status === "draft" ? "This procedure is in DRAFT status" : undefined}
-            className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
-              procedure.status === "draft"
+            className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${procedure.status === "draft"
                 ? "bg-green-600 hover:bg-green-700 ring-2 ring-amber-400 ring-offset-1"
                 : "bg-green-600 hover:bg-green-700"
-            }`}
+              }`}
           >
             {runCreating ? "Starting\u2026" : procedure.status === "draft" ? "Start Run (draft)" : "Start Run"}
           </button>
@@ -490,11 +489,10 @@ export default function ProcedureVersionDetailPage() {
                   .finally(() => setTriggerLoading(false));
               }
             }}
-            className={`px-4 py-2 text-sm font-medium ${
-              activeTab === tab
+            className={`px-4 py-2 text-sm font-medium ${activeTab === tab
                 ? "border-b-2 border-primary-600 text-primary-600"
                 : "text-gray-500 hover:text-gray-700"
-            }`}
+              }`}
           >
             {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "builder" ? "Builder ✏" : tab === "explain" ? "Explain" : tab === "trigger" ? "Trigger" : tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
@@ -563,6 +561,7 @@ export default function ProcedureVersionDetailPage() {
             </p>
           </div>
           <WorkflowBuilder
+            key={`${procedure.procedure_id}-v${procedure.version}`}
             initialWorkflowGraph={(procedure.ckp_json as any)?.workflow_graph ?? null}
             onSave={handleBuilderSave}
             saving={builderSaving}
@@ -635,9 +634,8 @@ export default function ProcedureVersionDetailPage() {
                   {explainResult.route_trace.map((entry, i) => (
                     <span key={i} className="flex items-center gap-1">
                       {i > 0 && <span className="text-gray-300">→</span>}
-                      <span className={`rounded px-2 py-0.5 text-xs font-mono ${
-                        entry.is_terminal ? "bg-gray-100 text-gray-500" : "bg-primary-50 text-primary-700"
-                      }`}>
+                      <span className={`rounded px-2 py-0.5 text-xs font-mono ${entry.is_terminal ? "bg-gray-100 text-gray-500" : "bg-primary-50 text-primary-700"
+                        }`}>
                         {entry.node_id}
                         <span className="ml-1 text-[10px] opacity-60">({entry.type})</span>
                       </span>
@@ -654,9 +652,8 @@ export default function ProcedureVersionDetailPage() {
                     <p className="text-[10px] text-gray-500">Required</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {explainResult.variables.required.length === 0 ? <span className="text-xs text-gray-400">None</span> : explainResult.variables.required.map((v) => (
-                        <span key={v} className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                          explainResult.variables.provided.includes(v) ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-                        }`}>{v}</span>
+                        <span key={v} className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${explainResult.variables.provided.includes(v) ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
+                          }`}>{v}</span>
                       ))}
                     </div>
                   </div>
@@ -852,8 +849,8 @@ export default function ProcedureVersionDetailPage() {
                                 h.type === "added"
                                   ? "bg-green-50"
                                   : h.type === "removed"
-                                  ? "bg-red-50"
-                                  : ""
+                                    ? "bg-red-50"
+                                    : ""
                               }
                             >
                               <td className="px-2 py-0.5 text-right text-gray-400 select-none border-r border-gray-100">
@@ -867,8 +864,8 @@ export default function ProcedureVersionDetailPage() {
                                   h.type === "added"
                                     ? "text-green-700"
                                     : h.type === "removed"
-                                    ? "text-red-700"
-                                    : "text-gray-700"
+                                      ? "text-red-700"
+                                      : "text-gray-700"
                                 }>
                                   {h.type === "added" ? "+ " : h.type === "removed" ? "- " : "  "}{h.text}
                                 </span>
@@ -917,12 +914,11 @@ export default function ProcedureVersionDetailPage() {
                       </Link>
                     </td>
                     <td className="py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                        r.status === "completed" ? "bg-green-100 text-green-700" :
-                        r.status === "failed" ? "bg-red-100 text-red-700" :
-                        r.status === "running" ? "bg-blue-100 text-blue-700" :
-                        "bg-gray-100 text-gray-600"
-                      }`}>{r.status}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${r.status === "completed" ? "bg-green-100 text-green-700" :
+                          r.status === "failed" ? "bg-red-100 text-red-700" :
+                            r.status === "running" ? "bg-blue-100 text-blue-700" :
+                              "bg-gray-100 text-gray-600"
+                        }`}>{r.status}</span>
                     </td>
                     <td className="py-2 text-xs text-gray-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
                     <td className="py-2 text-xs text-gray-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
@@ -946,9 +942,8 @@ export default function ProcedureVersionDetailPage() {
               </p>
             </div>
             {triggerReg && (
-              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${
-                triggerReg.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
-              }`}>
+              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${triggerReg.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                }`}>
                 {triggerReg.enabled ? "Active" : "Disabled"}
               </span>
             )}
