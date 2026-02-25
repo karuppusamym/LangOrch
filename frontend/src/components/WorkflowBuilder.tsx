@@ -41,6 +41,107 @@ import {
 import dagre from "@dagrejs/dagre";
 import { listAgents } from "@/lib/api";
 
+// ─── Debounced inputs (fix focus-loss bug) ───────────────────────────────────
+// These components maintain local state and only push changes to the parent on
+// blur, preventing the full React re-render on every keystroke.
+
+function DebouncedInput({
+  value: parentValue,
+  onCommit,
+  className,
+  placeholder,
+  type,
+  list,
+  "aria-label": ariaLabel,
+  disabled,
+}: {
+  value: string | number | undefined;
+  onCommit: (value: string) => void;
+  className?: string;
+  placeholder?: string;
+  type?: string;
+  list?: string;
+  "aria-label"?: string;
+  disabled?: boolean;
+}) {
+  const [local, setLocal] = useState(String(parentValue ?? ""));
+  const parentRef = useRef(String(parentValue ?? ""));
+
+  // Sync from parent when the selected node changes (different parentValue)
+  useEffect(() => {
+    const pv = String(parentValue ?? "");
+    if (pv !== parentRef.current) {
+      parentRef.current = pv;
+      setLocal(pv);
+    }
+  }, [parentValue]);
+
+  return (
+    <input
+      type={type ?? "text"}
+      className={className}
+      value={local}
+      placeholder={placeholder}
+      list={list}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => {
+        if (local !== parentRef.current) {
+          parentRef.current = local;
+          onCommit(local);
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
+function DebouncedTextarea({
+  value: parentValue,
+  onCommit,
+  className,
+  placeholder,
+  rows,
+}: {
+  value: string | undefined;
+  onCommit: (value: string) => void;
+  className?: string;
+  placeholder?: string;
+  rows?: number;
+}) {
+  const [local, setLocal] = useState(parentValue ?? "");
+  const parentRef = useRef(parentValue ?? "");
+
+  useEffect(() => {
+    const pv = parentValue ?? "";
+    if (pv !== parentRef.current) {
+      parentRef.current = pv;
+      setLocal(pv);
+    }
+  }, [parentValue]);
+
+  return (
+    <textarea
+      className={className}
+      value={local}
+      placeholder={placeholder}
+      rows={rows}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => {
+        if (local !== parentRef.current) {
+          parentRef.current = local;
+          onCommit(local);
+        }
+      }}
+    />
+  );
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const NODE_TYPES_LIST = [
@@ -364,7 +465,7 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
       />
       <div
         className="relative rounded-xl border-2 bg-white transition-shadow duration-150"
-        style={{
+        style={{ // NOSONAR
           borderColor: selected ? "#6366F1" : color,
           boxShadow: selected
             ? "0 0 0 3px rgba(99,102,241,0.3), 0 4px 12px rgba(0,0,0,0.12)"
@@ -374,14 +475,14 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
         }}
       >
         {/* Accent stripe */}
-        <div className="h-[6px] w-full rounded-t-[10px]" style={{ background: color }} />
+        <div className="h-[6px] w-full rounded-t-[10px]" style={{ background: color }} /> {/* NOSONAR */}
 
         <div className="px-3 pt-2 pb-3">
           <div className="flex items-center justify-between gap-1">
             <div className="flex items-center gap-1.5 min-w-0">
               <span
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] text-white"
-                style={{ background: color }}
+                style={{ background: color }} // NOSONAR
               >
                 {icon}
               </span>
@@ -402,7 +503,7 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
             {catMeta && (
               <span
                 className="rounded-full px-1.5 py-0.5 text-[8px] font-bold"
-                style={{ background: `${catMeta.color}20`, color: catMeta.color }}
+                style={{ background: `${catMeta.color}20`, color: catMeta.color }} // NOSONAR
               >
                 {catMeta.label.slice(0, 3).toUpperCase()}
               </span>
@@ -415,7 +516,7 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
           {agent && (
             <span
               className="mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-              style={{ background: `${color}18`, color }}
+              style={{ background: `${color}18`, color }} // NOSONAR
             >
               🤖 {agent}
             </span>
@@ -736,6 +837,30 @@ function NodeInspector({
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [expandedChecks, setExpandedChecks] = useState<Set<number>>(new Set());
 
+  const availableVars = useMemo(() => {
+    const vars = new Set<string>(["run_id", "procedure_id", "trigger_type", "triggered_by", "node_id", "step_id", "loop_index", "loop_item", "parallel_results", "llm_output"]);
+    for (const n of nodes) {
+      const type = n.data.nodeType;
+      if (type === "sequence" && Array.isArray(n.data.steps)) {
+        for (const s of n.data.steps) {
+          if (s && typeof s === "object" && typeof (s as any).output_variable === "string" && (s as any).output_variable) {
+            vars.add((s as any).output_variable);
+          }
+        }
+      } else if (type === "llm_action" && n.data.outputs) {
+        Object.keys(n.data.outputs).forEach(k => vars.add(k));
+      } else if (type === "loop") {
+        if (n.data.loopContinueCondition) {
+          // We don't have explicit loop vars visually yet, but we collect them if they exist in extra JSON
+          if (n.data.extra && n.data.extra.iterator_variable) vars.add(n.data.extra.iterator_variable as string);
+          if (n.data.extra && n.data.extra.index_variable) vars.add(n.data.extra.index_variable as string);
+          if (n.data.extra && n.data.extra.collect_variable) vars.add(n.data.extra.collect_variable as string);
+        }
+      }
+    }
+    return Array.from(vars).sort();
+  }, [nodes]);
+
   const toggleStep = (i: number) => setExpandedSteps((s) => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; });
   const toggleCheck = (i: number) => setExpandedChecks((s) => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; });
 
@@ -805,12 +930,15 @@ function NodeInspector({
           Delete
         </button>
       </div>
+      <datalist id="available-vars-list">
+        {availableVars.map((v) => <option key={v} value={`{{${v}}}`} />)}
+      </datalist>
 
       <Field label="Node ID">
-        <input
+        <DebouncedInput
           className={inputCls}
           value={d.label}
-          onChange={(e) => onUpdate(node.id, { label: e.target.value })}
+          onCommit={(v) => onUpdate(node.id, { label: v })}
           placeholder="e.g. init_step"
         />
         <p className="mt-0.5 text-[10px] text-gray-400">
@@ -834,20 +962,20 @@ function NodeInspector({
       </Field>
 
       <Field label="Description">
-        <textarea
+        <DebouncedTextarea
           className={`${inputCls} resize-none`}
           rows={2}
           value={d.description}
-          onChange={(e) => onUpdate(node.id, { description: e.target.value })}
+          onCommit={(v) => onUpdate(node.id, { description: v })}
           placeholder="Optional description"
         />
       </Field>
 
       <Field label="Agent">
-        <input
+        <DebouncedInput
           className={inputCls}
           value={d.agent}
-          onChange={(e) => onUpdate(node.id, { agent: e.target.value })}
+          onCommit={(v) => onUpdate(node.id, { agent: v })}
           placeholder="e.g. WebAgent"
           list="agent-names-datalist"
           aria-label="Agent name"
@@ -907,23 +1035,23 @@ function NodeInspector({
                     <div className="flex gap-1.5">
                       <div className="flex-1">
                         <label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">step_id</label>
-                        <input className={inputCls + " text-xs"} value={(step_id as string) ?? ""} onChange={(e) => updateStep(idx, { step_id: e.target.value })} placeholder="step_1" />
+                        <DebouncedInput className={inputCls + " text-xs"} value={(step_id as string) ?? ""} onCommit={(v) => updateStep(idx, { step_id: v })} placeholder="step_1" />
                       </div>
                       <div className="flex-1">
                         <label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">action</label>
-                        <input className={inputCls + " text-xs"} value={(action as string) ?? ""} onChange={(e) => updateStep(idx, { action: e.target.value })} placeholder="navigate" list={`actions-${idx}`} />
+                        <DebouncedInput className={inputCls + " text-xs"} value={(action as string) ?? ""} onCommit={(v) => updateStep(idx, { action: v })} placeholder="navigate" list={`actions-${idx}`} />
                         <datalist id={`actions-${idx}`}>
                           {["navigate", "click", "fill", "wait", "wait_for_element", "extract_text", "select_all_text", "screenshot", "scroll", "hover", "select_option"].map((a) => <option key={a} value={a} />)}
                         </datalist>
                       </div>
                     </div>
                     {/* Action-specific quick fields */}
-                    {(action === "navigate") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">url</label><input className={inputCls + " text-xs"} value={(rest.url as string) ?? ""} onChange={(e) => updateStep(idx, { url: e.target.value })} placeholder="https://… or {{variable}}" /></div>}
-                    {(action === "fill" || action === "click" || action === "wait_for_element" || action === "extract_text" || action === "select_all_text" || action === "hover" || action === "scroll") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">target (selector)</label><input className={inputCls + " text-xs"} value={(rest.target as string) ?? ""} onChange={(e) => updateStep(idx, { target: e.target.value })} placeholder=".css-selector or #id" /></div>}
-                    {(action === "fill") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">value</label><input className={inputCls + " text-xs"} value={(rest.value as string) ?? ""} onChange={(e) => updateStep(idx, { value: e.target.value })} placeholder="text to type" /></div>}
-                    {(action === "extract_text" || action === "select_all_text") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">output_variable</label><input className={inputCls + " text-xs"} value={(rest.output_variable as string) ?? ""} onChange={(e) => updateStep(idx, { output_variable: e.target.value })} placeholder="my_var" /></div>}
-                    {(action === "screenshot") && (<><div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">path</label><input className={inputCls + " text-xs"} value={(rest.path as string) ?? ""} onChange={(e) => updateStep(idx, { path: e.target.value })} placeholder="artifacts/{{run_id}}/shot.png" /></div><div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">output_variable</label><input className={inputCls + " text-xs"} value={(rest.output_variable as string) ?? ""} onChange={(e) => updateStep(idx, { output_variable: e.target.value })} /></div></>)}
-                    {(action === "wait" || action === "wait_for_element") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">timeout_ms</label><input type="number" className={inputCls + " text-xs"} value={(rest.timeout_ms as number) ?? ""} onChange={(e) => updateStep(idx, { timeout_ms: e.target.value ? Number(e.target.value) : undefined })} placeholder="15000" /></div>}
+                    {(action === "navigate") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">url</label><DebouncedInput className={inputCls + " text-xs"} value={(rest.url as string) ?? ""} onCommit={(v) => updateStep(idx, { url: v })} placeholder="https://… or {{variable}}" list="available-vars-list" /></div>}
+                    {(action === "fill" || action === "click" || action === "wait_for_element" || action === "extract_text" || action === "select_all_text" || action === "hover" || action === "scroll") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">target (selector)</label><DebouncedInput className={inputCls + " text-xs"} value={(rest.target as string) ?? ""} onCommit={(v) => updateStep(idx, { target: v })} placeholder=".css-selector or #id" /></div>}
+                    {(action === "fill") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">value</label><DebouncedInput className={inputCls + " text-xs"} value={(rest.value as string) ?? ""} onCommit={(v) => updateStep(idx, { value: v })} placeholder="text to type" list="available-vars-list" /></div>}
+                    {(action === "extract_text" || action === "select_all_text") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">output_variable</label><DebouncedInput className={inputCls + " text-xs"} value={(rest.output_variable as string) ?? ""} onCommit={(v) => updateStep(idx, { output_variable: v })} placeholder="my_var" /></div>}
+                    {(action === "screenshot") && (<><div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">path</label><DebouncedInput className={inputCls + " text-xs"} value={(rest.path as string) ?? ""} onCommit={(v) => updateStep(idx, { path: v })} placeholder="artifacts/{{run_id}}/shot.png" list="available-vars-list" /></div><div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">output_variable</label><DebouncedInput className={inputCls + " text-xs"} value={(rest.output_variable as string) ?? ""} onCommit={(v) => updateStep(idx, { output_variable: v })} /></div></>)}
+                    {(action === "wait" || action === "wait_for_element") && <div><label className="mb-0.5 block text-[9px] font-bold uppercase tracking-widest text-gray-400">timeout_ms</label><DebouncedInput className={inputCls + " text-xs"} type="number" value={(rest.timeout_ms as number) ?? ""} onCommit={(v) => updateStep(idx, { timeout_ms: v ? Number(v) : undefined })} placeholder="15000" /></div>}
                     {/* Extra fields as JSON */}
                     {(() => {
                       const knownStepKeys = new Set(["step_id", "action", "url", "target", "value", "output_variable", "path", "timeout_ms"]);
@@ -936,13 +1064,13 @@ function NodeInspector({
                     <div className="rounded border border-amber-100 bg-amber-50/40 p-1.5 space-y-1 mt-1">
                       <p className="text-[8px] font-bold uppercase tracking-widest text-amber-500">Retry / Timeout</p>
                       <div className="flex gap-1">
-                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">max_retries</label><input type="number" className={inputCls + " text-xs"} value={(rest.max_retries as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { max_retries: e.target.value ? Number(e.target.value) : undefined })} placeholder="3" aria-label="Max retries" /></div>
-                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">delay_ms</label><input type="number" className={inputCls + " text-xs"} value={(rest.retry_delay_ms as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { retry_delay_ms: e.target.value ? Number(e.target.value) : undefined })} placeholder="1000" aria-label="Retry delay" /></div>
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">max_retries</label><DebouncedInput type="number" className={inputCls + " text-xs"} value={(rest.max_retries as number | undefined) ?? ""} onCommit={(v) => updateStep(idx, { max_retries: v ? Number(v) : undefined })} placeholder="3" aria-label="Max retries" /></div>
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">delay_ms</label><DebouncedInput type="number" className={inputCls + " text-xs"} value={(rest.retry_delay_ms as number | undefined) ?? ""} onCommit={(v) => updateStep(idx, { retry_delay_ms: v ? Number(v) : undefined })} placeholder="1000" aria-label="Retry delay" /></div>
                       </div>
                       <div className="flex gap-1">
-                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">multiplier</label><input type="number" step="0.1" className={inputCls + " text-xs"} value={(rest.backoff_multiplier as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { backoff_multiplier: e.target.value ? Number(e.target.value) : undefined })} placeholder="2.0" aria-label="Backoff multiplier" /></div>
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">multiplier</label><DebouncedInput type="number" className={inputCls + " text-xs"} value={(rest.backoff_multiplier as number | undefined) ?? ""} onCommit={(v) => updateStep(idx, { backoff_multiplier: v ? Number(v) : undefined })} placeholder="2.0" aria-label="Backoff multiplier" /></div>
                         {/* E2: timeout_ms */}
-                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">timeout_ms</label><input type="number" className={inputCls + " text-xs"} value={(rest.step_timeout_ms as number | undefined) ?? ""} onChange={(e) => updateStep(idx, { step_timeout_ms: e.target.value ? Number(e.target.value) : undefined })} placeholder="30000" aria-label="Step timeout" /></div>
+                        <div className="flex-1"><label className="mb-0.5 block text-[8px] text-gray-400">timeout_ms</label><DebouncedInput type="number" className={inputCls + " text-xs"} value={(rest.step_timeout_ms as number | undefined) ?? ""} onCommit={(v) => updateStep(idx, { step_timeout_ms: v ? Number(v) : undefined })} placeholder="30000" aria-label="Step timeout" /></div>
                       </div>
                     </div>
                     {/* E3: Step binding kind badge */}
@@ -1001,11 +1129,11 @@ function NodeInspector({
       {d.nodeType === "human_approval" && (
         <>
           <Field label="Approval Prompt">
-            <textarea
+            <DebouncedTextarea
               className={`${inputCls} resize-none`}
               rows={2}
               value={d.approvalPrompt ?? ""}
-              onChange={(e) => onUpdate(node.id, { approvalPrompt: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { approvalPrompt: v })}
               placeholder="Decision prompt shown to approver"
             />
           </Field>
@@ -1037,19 +1165,19 @@ function NodeInspector({
       {d.nodeType === "llm_action" && (
         <>
           <Field label="Prompt">
-            <textarea
+            <DebouncedTextarea
               className={`${inputCls} resize-none`}
               rows={3}
               value={d.llmPrompt ?? ""}
-              onChange={(e) => onUpdate(node.id, { llmPrompt: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { llmPrompt: v })}
               placeholder="LLM prompt template"
             />
           </Field>
           <Field label="Model">
-            <input
+            <DebouncedInput
               className={inputCls}
               value={d.llmModel ?? ""}
-              onChange={(e) => onUpdate(node.id, { llmModel: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { llmModel: v })}
               placeholder="e.g. gpt-4o"
             />
           </Field>
@@ -1067,10 +1195,10 @@ function NodeInspector({
           </div>
           {d.orchestrationMode && (
             <Field label="Branches (comma-separated)">
-              <input
+              <DebouncedInput
                 className={inputCls}
                 value={d.orchestrationBranches ?? ""}
-                onChange={(e) => onUpdate(node.id, { orchestrationBranches: e.target.value })}
+                onCommit={(v) => onUpdate(node.id, { orchestrationBranches: v })}
                 placeholder="e.g. path_a, path_b, escalate"
               />
               <p className="mt-0.5 text-[10px] text-purple-500">
@@ -1105,10 +1233,10 @@ function NodeInspector({
             />
           </Field>
           <Field label="Continue Condition">
-            <input
+            <DebouncedInput
               className={inputCls}
               value={d.loopContinueCondition ?? ""}
-              onChange={(e) => onUpdate(node.id, { loopContinueCondition: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { loopContinueCondition: v })}
               placeholder="e.g. $.counter < 5"
             />
             <p className="mt-0.5 text-[10px] text-gray-400">Expression that must be true to keep looping</p>
@@ -1135,10 +1263,10 @@ function NodeInspector({
       {/* ── Logic / conditional fields ── */}
       {d.nodeType === "logic" && (
         <Field label="Default Next Node">
-          <input
+          <DebouncedInput
             className={inputCls}
             value={d.logicDefaultNext ?? ""}
-            onChange={(e) => onUpdate(node.id, { logicDefaultNext: e.target.value })}
+            onCommit={(v) => onUpdate(node.id, { logicDefaultNext: v })}
             placeholder="fallback node if no rule matches"
           />
           <p className="mt-0.5 text-[10px] text-gray-400">Routing via edge labels: true / false / custom condition</p>
@@ -1149,29 +1277,29 @@ function NodeInspector({
       {d.nodeType === "processing" && (
         <>
           <Field label="Action (callable)">
-            <input
+            <DebouncedInput
               className={inputCls}
               value={d.action ?? ""}
-              onChange={(e) => onUpdate(node.id, { action: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { action: v })}
               placeholder="e.g. my_module.process_data"
             />
           </Field>
           <Field label="Input Mapping (JSON)">
-            <textarea
+            <DebouncedTextarea
               className={`${inputCls} resize-none font-mono text-[10px]`}
               rows={3}
               value={d.inputMapping ?? ""}
-              onChange={(e) => onUpdate(node.id, { inputMapping: e.target.value })}
-              placeholder={'{"param": "$.output.value"}'}
+              onCommit={(v) => onUpdate(node.id, { inputMapping: v })}
+              placeholder='{"param": "$.output.value"}'
             />
           </Field>
           <Field label="Output Mapping (JSON)">
-            <textarea
+            <DebouncedTextarea
               className={`${inputCls} resize-none font-mono text-[10px]`}
               rows={3}
               value={d.outputMapping ?? ""}
-              onChange={(e) => onUpdate(node.id, { outputMapping: e.target.value })}
-              placeholder={'{"result": "$.result"}'}
+              onCommit={(v) => onUpdate(node.id, { outputMapping: v })}
+              placeholder='{"result": "$.result"}'
             />
           </Field>
         </>
@@ -1181,29 +1309,29 @@ function NodeInspector({
       {d.nodeType === "transform" && (
         <>
           <Field label="Transformer">
-            <input
+            <DebouncedInput
               className={inputCls}
               value={d.transformer ?? ""}
-              onChange={(e) => onUpdate(node.id, { transformer: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { transformer: v })}
               placeholder="e.g. jmespath or custom.transform_fn"
             />
           </Field>
           <Field label="Input Mapping (JSON)">
-            <textarea
+            <DebouncedTextarea
               className={`${inputCls} resize-none font-mono text-[10px]`}
               rows={3}
               value={d.inputMapping ?? ""}
-              onChange={(e) => onUpdate(node.id, { inputMapping: e.target.value })}
-              placeholder={'{"field": "$.source.value"}'}
+              onCommit={(v) => onUpdate(node.id, { inputMapping: v })}
+              placeholder='{"field": "$.source.value"}'
             />
           </Field>
           <Field label="Output Mapping (JSON)">
-            <textarea
+            <DebouncedTextarea
               className={`${inputCls} resize-none font-mono text-[10px]`}
               rows={3}
               value={d.outputMapping ?? ""}
-              onChange={(e) => onUpdate(node.id, { outputMapping: e.target.value })}
-              placeholder={'{"out": "$.result"}'}
+              onCommit={(v) => onUpdate(node.id, { outputMapping: v })}
+              placeholder='{"out": "$.result"}'
             />
           </Field>
         </>
@@ -1260,18 +1388,18 @@ function NodeInspector({
       {d.nodeType === "subflow" && (
         <>
           <Field label="Subflow ID">
-            <input
+            <DebouncedInput
               className={inputCls}
               value={d.subflowId ?? ""}
-              onChange={(e) => onUpdate(node.id, { subflowId: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { subflowId: v })}
               placeholder="e.g. approval_subflow"
             />
           </Field>
           <Field label="Version">
-            <input
+            <DebouncedInput
               className={inputCls}
               value={d.subflowVersion ?? ""}
-              onChange={(e) => onUpdate(node.id, { subflowVersion: e.target.value })}
+              onCommit={(v) => onUpdate(node.id, { subflowVersion: v })}
               placeholder="e.g. v1"
             />
           </Field>
@@ -1282,10 +1410,10 @@ function NodeInspector({
       <div className="rounded-lg border border-orange-100 bg-orange-50/50 p-2 space-y-2">
         <p className="text-[9px] font-bold uppercase tracking-widest text-orange-400">Failure &amp; Retry</p>
         <Field label="On Failure → Node">
-          <input
+          <DebouncedInput
             className={inputCls}
             value={d.onFailureNode ?? ""}
-            onChange={(e) => onUpdate(node.id, { onFailureNode: e.target.value })}
+            onCommit={(v) => onUpdate(node.id, { onFailureNode: v })}
             placeholder="error_handler node id"
           />
         </Field>
@@ -1427,12 +1555,12 @@ function NodePalette({
           <div key={category} className="mb-2">
             <div
               className="flex items-center gap-1.5 px-1.5 py-1 rounded-md mb-1"
-              style={{ background: `${meta.color}15` }}
+              style={{ background: `${meta.color}15` }} // NOSONAR
             >
-              <div className="h-2 w-2 rounded-full shrink-0" style={{ background: meta.color }} />
+              <div className="h-2 w-2 rounded-full shrink-0" style={{ background: meta.color }} /> {/* NOSONAR */}
               <span
                 className="text-[9px] font-bold uppercase tracking-widest"
-                style={{ color: meta.color }}
+                style={{ color: meta.color }} // NOSONAR
               >
                 {meta.label}
               </span>
@@ -1444,7 +1572,7 @@ function NodePalette({
                   onClick={() => onAdd(t)}
                   title={meta.description}
                   className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-left text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors"
-                  style={{ borderLeftColor: TYPE_BG[t], borderLeftWidth: 3 }}
+                  style={{ borderLeftColor: TYPE_BG[t], borderLeftWidth: 3 }} // NOSONAR
                 >
                   <span className="text-sm leading-none">{TYPE_ICONS[t]}</span>
                   <span className="capitalize text-[11px]">{t.replace(/_/g, " ")}</span>

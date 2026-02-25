@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.connectors.apigee_client import ApigeeTokenProvider
 
 logger = logging.getLogger("langorch.connectors.llm")
 
@@ -115,13 +116,24 @@ class LLMClient:
         # Circuit breaker pre-check
         _check_llm_circuit()
 
-        if not self.api_key:
-            raise LLMCallError("LLM_API_KEY is not configured")
-
         headers: dict[str, str] = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        
+        cert = None
+        if settings.APIGEE_ENABLED:
+            # Route through Apigee using mTLS + OAuth2
+            provider = ApigeeTokenProvider()
+            token = provider.get_token()
+            headers["Authorization"] = f"Bearer {token}"
+            if settings.APIGEE_CERTS_PATH:
+                cert = settings.APIGEE_CERTS_PATH
+        else:
+            # Standard direct LLM API access
+            if not self.api_key:
+                raise LLMCallError("LLM_API_KEY is not configured")
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         # Merge extra headers (gateway headers + per-call overrides)
         headers.update(self._extra_headers)
 
@@ -143,7 +155,7 @@ class LLMClient:
         logger.info("LLM call: model=%s url=%s", model, url)
 
         try:
-            with httpx.Client(timeout=self.timeout, headers=headers) as client:
+            with httpx.Client(cert=cert, timeout=self.timeout, headers=headers) as client:
                 resp = client.post(url, json=body)
                 resp.raise_for_status()
                 data = resp.json()

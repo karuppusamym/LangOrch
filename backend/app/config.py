@@ -67,9 +67,36 @@ class Settings(BaseSettings):
     # Merged on top of built-in defaults so you only need to specify overrides.
     LLM_MODEL_COST_JSON: str | None = None
 
+    # ── Apigee Gateway Integration ─────────────────────────────
+    APIGEE_ENABLED: bool = False
+    APIGEE_TOKEN_URL: str | None = None
+    APIGEE_CERTS_PATH: str | None = None
+    APIGEE_CONSUMER_KEY: str | None = None
+    APIGEE_CLIENT_SECRET: str | None = None
+    APIGEE_USE_CASE_ID: str | None = None
+    APIGEE_CLIENT_ID: str | None = None
+
+    # ── SSO Integration (Azure AD / OIDC) ──────────────────────
+    SSO_ENABLED: bool = False
+    SSO_CLIENT_ID: str | None = None
+    SSO_CLIENT_SECRET: str | None = None
+    SSO_AUTHORITY: str | None = None  # e.g., https://login.microsoftonline.com/your-tenant-id/v2.0
+    SSO_REDIRECT_URI: str | None = None  # e.g., http://localhost:8000/api/auth/sso/callback
+    
+    # JSON dictionary mapping Azure AD Group Object IDs or Roles to LangOrch roles.
+    # Format: {"group-uuid-1": "admin", "group-uuid-2": "operator"}
+    SSO_ROLE_MAPPING: str | None = None
+
     # ── Alert hooks ─────────────────────────────────────────────
     # When set, a POST is sent to this URL on run_failed events
     ALERT_WEBHOOK_URL: str | None = None
+
+    # ── Self-referencing base URL ────────────────────────────────
+    # Used internally when the Orchestrator needs to build its own callback URL.
+    # In production, set this to the load-balanced external URL:
+    #   SELF_BASE_URL=https://langorch.mycompany.com
+    # In local dev the default below is auto-used.
+    SELF_BASE_URL: str = "http://127.0.0.1:8000"
 
     # ── Rate limiting ───────────────────────────────────────────
     # Default max concurrent runs per procedure (0 = unlimited)

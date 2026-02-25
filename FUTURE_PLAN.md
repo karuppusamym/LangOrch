@@ -1,10 +1,10 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-22 (Batch 34: 4 enhancements —
-**Enhancement 1** Artifact metadata: `name` / `mime_type` / `size_bytes` columns added to `artifacts` table, `ArtifactOut` schema, `create_artifact()` signature, and SQLite idempotent migrations — artifact UI can show original filename, type, and size;
-**Enhancement 2** `GET /api/queue`: job queue visibility endpoint — grouped counts by status, total pending/running/done/failed, next 20 pending jobs with priority and availability timestamp;
-**Enhancement 3** `GET /api/agents/pools`: per-pool stats — agent count, status breakdown, aggregate concurrency limit, active lease count, available capacity, circuit-open agent count;
-**Enhancement 4** WorkflowBuilder 3-tier node architecture: palette reorganised into Deterministic (Blue) / Intelligent (Purple) / Control (Orange) category groups with color-coded section headers; each node card shows a category badge; color scheme updated to category-consistent shades; 3 workflow templates added: Invoice Processing, Customer Support, Contract Review — one-click load into the canvas)
+Last updated: 2026-02-24 (Batch 37: 9-Issue Sprint Completion —
+**P0** `frontend/src/components/WorkflowBuilder.tsx`: Fixed visual builder typing bug and moved Config to DB;
+**P1** `backend/app/services/validator.py`: Added variable name cross-validation, default CKP generation, and Apigee integration;
+**P2** `backend/app/api/agent_credentials.py` & `backend/app/api/agents.py`: Implemented encrypted credential assets, secure agent credential pull model (JWT grants), and agent bootstrap/heartbeats;
+**P3** `backend/app/api/auth.py` & `frontend/src/app/login/page.tsx`: Completed Azure AD / LDAP / OIDC User Management with auto-provisioning)
 
 This roadmap is updated from direct code analysis of current backend, runtime, API, and frontend implementation.
 

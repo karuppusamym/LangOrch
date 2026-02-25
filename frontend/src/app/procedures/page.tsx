@@ -9,29 +9,35 @@ import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/Procedu
 import { flattenVariablesSchema, isFieldSensitive } from "@/lib/redact";
 import type { Procedure, Project, ProcedureDetail } from "@/lib/types";
 
-export default function ProceduresPage() {
+import { Suspense } from "react";
+
+function ProceduresContent() {
   const { toast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
 
   const [procedures, setProcedures] = useState<Procedure[]>([]);
-  const [projects, setProjects]     = useState<Project[]>([]);
-  const [loading, setLoading]       = useState(true);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showImport, setShowImport] = useState(false);
   const [importJson, setImportJson] = useState("");
   const [importProjectId, setImportProjectId] = useState("");
   const [importError, setImportError] = useState("");
-  const [search, setSearch]         = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [createId, setCreateId] = useState("");
+  const [createProjectId, setCreateProjectId] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState(searchParams.get("project_id") ?? "");
-  const [runningId, setRunningId]   = useState<string | null>(null);
+  const [runningId, setRunningId] = useState<string | null>(null);
 
   // ── Quick-run modal state ──────────────────────────────────────
-  const [quickRunProc, setQuickRunProc]         = useState<ProcedureDetail | null>(null);
-  const [showVarsModal, setShowVarsModal]       = useState(false);
-  const [varsForm, setVarsForm]                 = useState<Record<string, string>>({});
-  const [varsErrors, setVarsErrors]             = useState<Record<string, string>>({});
-  const [runCreating, setRunCreating]           = useState(false);
+  const [quickRunProc, setQuickRunProc] = useState<ProcedureDetail | null>(null);
+  const [showVarsModal, setShowVarsModal] = useState(false);
+  const [varsForm, setVarsForm] = useState<Record<string, string>>({});
+  const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
+  const [runCreating, setRunCreating] = useState(false);
 
   useEffect(() => {
     const pid = searchParams.get("project_id") ?? "";
@@ -42,7 +48,7 @@ export default function ProceduresPage() {
     setLoading(true);
     try {
       const params: Record<string, string> = {};
-      if (statusFilter)  params.status     = statusFilter;
+      if (statusFilter) params.status = statusFilter;
       if (projectFilter) params.project_id = projectFilter;
       const data = await listProcedures(Object.keys(params).length ? params : undefined);
       setProcedures(data);
@@ -54,13 +60,13 @@ export default function ProceduresPage() {
   }, [statusFilter, projectFilter]);
 
   useEffect(() => { void loadProcedures(); }, [loadProcedures]);
-  useEffect(() => { listProjects().then(setProjects).catch(() => {}); }, []);
+  useEffect(() => { listProjects().then(setProjects).catch(() => { }); }, []);
 
   function changeProjectFilter(val: string) {
     setProjectFilter(val);
     const url = new URL(window.location.href);
     if (val) url.searchParams.set("project_id", val);
-    else     url.searchParams.delete("project_id");
+    else url.searchParams.delete("project_id");
     router.replace(url.pathname + url.search);
   }
 
@@ -168,6 +174,38 @@ export default function ProceduresPage() {
     }
   }
 
+  async function handleCreate() {
+    if (!createId.trim()) return;
+    setCreateError("");
+    try {
+      const pid = createId.trim();
+      const payload = {
+        procedure_id: pid,
+        version: "1.0.0",
+        name: pid,
+        description: "",
+        status: "draft",
+        global_config: { max_retries: 3 },
+        workflow_graph: {
+          start_node: "start",
+          nodes: {
+            start: { type: "sequence", steps: [], next_node: "end" },
+            end: { type: "terminate", status: "success" }
+          }
+        },
+        variables_schema: {}
+      };
+      await importProcedure(payload, createProjectId || undefined);
+      setShowCreate(false);
+      toast("Procedure created successfully", "success");
+      router.push(`/procedures/${encodeURIComponent(pid)}/1.0.0`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Creation failed";
+      setCreateError(msg);
+      toast(`Creation failed: ${msg}`, "error");
+    }
+  }
+
   const activeProject = projects.find((p) => p.project_id === projectFilter);
   const filtered = procedures.filter((proc) =>
     !search ||
@@ -192,10 +230,15 @@ export default function ProceduresPage() {
               ← All Procedures
             </button>
           )}
-          <button onClick={() => setShowImport(true)}
+          <button onClick={() => { setShowCreate(false); setShowImport(true); }}
+            className="flex items-center gap-2 rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
+            <svg className="w-4 h-4 text-neutral-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+            Import CKP
+          </button>
+          <button onClick={() => { setShowImport(false); setShowCreate(true); }}
             className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-            Import CKP
+            Create New
           </button>
         </div>
       </div>
@@ -249,6 +292,39 @@ export default function ProceduresPage() {
               className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Create form */}
+      {showCreate && (
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-sm mb-6">
+          <h3 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Create New Procedure</h3>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300">Procedure ID</label>
+              <input value={createId} onChange={(e) => setCreateId(e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                placeholder="e.g. loan_application" autoFocus />
+            </div>
+            {projects.length > 0 && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300">Assign to project (optional)</label>
+                <select value={createProjectId} onChange={(e) => setCreateProjectId(e.target.value)} aria-label="Assign to project"
+                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                  <option value="">— No project —</option>
+                  {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
+                </select>
+              </div>
+            )}
+            {createError && <p className="text-sm text-red-600">{createError}</p>}
+            <div className="pt-2 flex gap-2">
+              <button onClick={handleCreate} disabled={!createId.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">Create &amp; Edit</button>
+              <button onClick={() => { setShowCreate(false); setCreateError(""); setCreateProjectId(""); setCreateId(""); }}
+                className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -354,8 +430,8 @@ export default function ProceduresPage() {
           const borderCls = fieldErr
             ? "border-red-400 focus:border-red-500"
             : showDefault && isUsingDefault
-            ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
-            : "border-gray-300 focus:border-primary-500";
+              ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
+              : "border-gray-300 focus:border-primary-500";
           return (
             <div key={key}>
               <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
@@ -471,5 +547,13 @@ export default function ProceduresPage() {
         );
       })()}
     </div>
+  );
+}
+
+export default function ProceduresPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <ProceduresContent />
+    </Suspense>
   );
 }

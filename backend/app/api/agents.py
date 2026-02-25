@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
 from app.db.models import AgentInstance, ResourceLease
-from app.schemas.agents import AgentInstanceCreate, AgentInstanceOut, AgentInstanceUpdate
+from app.schemas.agents import AgentInstanceCreate, AgentInstanceOut, AgentInstanceUpdate, AgentHeartbeat, AgentBootstrapOut
 from app.auth import require_role
 from app.auth.deps import Principal
 
@@ -20,7 +21,7 @@ logger = logging.getLogger("langorch.api.agents")
 router = APIRouter()
 
 
-async def _probe_capabilities(base_url: str) -> list[str] | None:
+async def _probe_capabilities(base_url: str) -> list[dict] | None:
     """Try to fetch capabilities from a live agent. Returns None if unreachable."""
     url = base_url.rstrip("/") + "/capabilities"
     try:
@@ -30,7 +31,13 @@ async def _probe_capabilities(base_url: str) -> list[str] | None:
             data = resp.json()
             caps = data.get("capabilities")
             if isinstance(caps, list):
-                return [str(c) for c in caps if c]
+                normalized = []
+                for c in caps:
+                    if isinstance(c, dict):
+                        normalized.append(c)
+                    elif c:
+                        normalized.append({"name": str(c), "type": "tool", "is_batch": False})
+                return normalized
     except Exception as exc:  # pragma: no cover
         logger.debug("Could not probe capabilities from %s: %s", url, exc)
     return None
@@ -42,7 +49,7 @@ async def list_agents(db: AsyncSession = Depends(get_db)):
     return list(result.scalars().all())
 
 
-@router.get("/probe-capabilities", response_model=list[str])
+@router.get("/probe-capabilities", response_model=list[dict])
 async def probe_capabilities(base_url: str = Query(..., description="Agent base URL to probe")):
     """Fetch capabilities from a live agent without registering it."""
     caps = await _probe_capabilities(base_url)
@@ -69,7 +76,7 @@ async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(g
         concurrency_limit=body.concurrency_limit,
         resource_key=resource_key,
         pool_id=body.pool_id,
-        capabilities=",".join(resolved_caps) if resolved_caps else None,
+        capabilities=json.dumps([c.model_dump() if hasattr(c, 'model_dump') else c for c in resolved_caps]) if resolved_caps else None,
     )
     db.add(inst)
     await db.flush()
@@ -155,7 +162,7 @@ async def update_agent(agent_id: str, body: AgentInstanceUpdate, db: AsyncSessio
     if body.concurrency_limit is not None:
         agent.concurrency_limit = body.concurrency_limit
     if body.capabilities is not None:
-        agent.capabilities = ",".join(body.capabilities) if body.capabilities else None
+        agent.capabilities = json.dumps([c.model_dump() if hasattr(c, 'model_dump') else c for c in body.capabilities]) if body.capabilities else None
     if body.pool_id is not None:
         agent.pool_id = body.pool_id
     agent.updated_at = datetime.now(timezone.utc)
@@ -190,9 +197,43 @@ async def sync_capabilities(agent_id: str, db: AsyncSession = Depends(get_db), _
             detail=f"Could not reach agent at {agent.base_url}/capabilities",
         )
 
-    agent.capabilities = ",".join(caps) if caps else None
+    agent.capabilities = json.dumps(caps) if caps else None
     agent.updated_at = datetime.now(timezone.utc)
     await db.flush()
     await db.refresh(agent)
     logger.info("Synced capabilities for agent '%s': %s", agent_id, caps)
     return agent
+
+
+@router.get("/bootstrap/{channel}", response_model=AgentBootstrapOut)
+async def bootstrap_agent(channel: str, db: AsyncSession = Depends(get_db)):
+    """Return bootstrap configuration for an agent starting up in a given channel."""
+    # This could eventually be driven by a DB table for channel configs.
+    # For now, return safe default values.
+    return AgentBootstrapOut(
+        channel=channel,
+        default_pool=f"{channel}_default",
+        recommended_concurrency=5,
+    )
+
+
+@router.post("/heartbeat")
+async def agent_heartbeat(body: AgentHeartbeat, db: AsyncSession = Depends(get_db)):
+    """Receive heartbeat from an active agent instance."""
+    result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == body.agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    agent.status = body.status
+    now = datetime.now(timezone.utc)
+    agent.last_heartbeat_at = now
+    
+    # If the agent reports online, reset the circuit breaker and consecutive failures.
+    if body.status == "online":
+        agent.circuit_open_at = None
+        agent.consecutive_failures = 0
+
+    agent.updated_at = now
+    await db.flush()
+    return {"status": "ok", "agent_id": agent.agent_id}

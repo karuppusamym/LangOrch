@@ -20,73 +20,77 @@ import dagre from "@dagrejs/dagre";
 /* ── Node type icons ─────────────────────────────────────────── */
 
 const TYPE_ICONS: Record<string, string> = {
-  sequence:       "▶",
-  logic:          "◇",
-  loop:           "↻",
-  parallel:       "⫽",
+  sequence: "▶",
+  logic: "◇",
+  loop: "↻",
+  parallel: "⫽",
   human_approval: "✋",
-  llm_action:     "🤖",
-  processing:     "⚙",
-  verification:   "✓",
-  transform:      "⇌",
-  subflow:        "↗",
-  terminate:      "⏹",
+  llm_action: "🤖",
+  processing: "⚙",
+  verification: "✓",
+  transform: "⇌",
+  subflow: "↗",
+  terminate: "⏹",
 };
 
 /* ── Node type fill colors ───────────────────────────────────── */
 const TYPE_BG: Record<string, string> = {
-  sequence:       "#3B82F6",
-  logic:          "#F59E0B",
-  loop:           "#8B5CF6",
-  parallel:       "#06B6D4",
+  sequence: "#3B82F6",
+  logic: "#F59E0B",
+  loop: "#8B5CF6",
+  parallel: "#06B6D4",
   human_approval: "#EF4444",
-  llm_action:     "#10B981",
-  processing:     "#6366F1",
-  verification:   "#F97316",
-  transform:      "#EC4899",
-  subflow:        "#14B8A6",
-  terminate:      "#6B7280",
+  llm_action: "#10B981",
+  processing: "#6366F1",
+  verification: "#F97316",
+  transform: "#EC4899",
+  subflow: "#14B8A6",
+  terminate: "#6B7280",
 };
 
 /* ── Execution state styling ─────────────────────────────────── */
 const STATE_BORDER: Record<string, string> = {
-  current:     "#3B82F6",
-  running:     "#3B82F6",
-  completed:   "#22C55E",
-  failed:      "#EF4444",
-  sla_breached:"#F97316",
+  current: "#3B82F6",
+  running: "#3B82F6",
+  completed: "#22C55E",
+  failed: "#EF4444",
+  sla_breached: "#F97316",
+  pending: "#9CA3AF",
 };
 const STATE_RING: Record<string, string> = {
-  current:     "0 0 0 0 rgba(59,130,246,0), 0 0 16px 4px rgba(59,130,246,0.45)",
-  running:     "0 0 0 0 rgba(59,130,246,0), 0 0 16px 4px rgba(59,130,246,0.45)",
-  completed:   "0 0 0 3px rgba(34,197,94,0.35)",
-  failed:      "0 0 0 3px rgba(239,68,68,0.45), 0 0 12px 2px rgba(239,68,68,0.3)",
-  sla_breached:"0 0 0 3px rgba(249,115,22,0.45)",
+  current: "0 0 0 0 rgba(59,130,246,0), 0 0 16px 4px rgba(59,130,246,0.45)",
+  running: "0 0 0 0 rgba(59,130,246,0), 0 0 16px 4px rgba(59,130,246,0.45)",
+  completed: "0 0 0 3px rgba(34,197,94,0.35)",
+  failed: "0 0 0 3px rgba(239,68,68,0.45), 0 0 12px 2px rgba(239,68,68,0.3)",
+  sla_breached: "0 0 0 3px rgba(249,115,22,0.45)",
+  pending: "none",
 };
 const STATE_STATUS_ICON: Record<string, string> = {
-  completed:   "✓",
-  failed:      "✕",
-  running:     "◌",
-  current:     "◌",
-  sla_breached:"!",
+  completed: "✓",
+  failed: "✕",
+  running: "◌",
+  current: "◌",
+  sla_breached: "!",
+  pending: "⌛",
 };
 const STATE_LABEL_COLOR: Record<string, string> = {
-  completed:   "#16A34A",
-  failed:      "#DC2626",
-  running:     "#2563EB",
-  current:     "#2563EB",
-  sla_breached:"#EA580C",
+  completed: "#16A34A",
+  failed: "#DC2626",
+  running: "#2563EB",
+  current: "#2563EB",
+  sla_breached: "#EA580C",
+  pending: "#6B7280",
 };
 
 /* ── Edge styling by label keyword ──────────────────────────── */
 function edgeStyle(label: string | undefined, animated: boolean) {
   const l = (label ?? "").toLowerCase();
-  if (l === "approve" || l === "true" || l === "yes")  return { stroke: "#22C55E", strokeWidth: 2.5 };
-  if (l === "reject"  || l === "false"|| l === "no")   return { stroke: "#EF4444", strokeWidth: 2.5 };
-  if (l === "timeout" || l === "sla_breached")         return { stroke: "#F97316", strokeWidth: 2, strokeDasharray: "6 3" };
-  if (l === "default")                                 return { stroke: "#9CA3AF", strokeWidth: 1.5, strokeDasharray: "4 3" };
-  if (l.startsWith("branch:") || l === "loop body")    return { stroke: "#8B5CF6", strokeWidth: 2 };
-  if (animated)                                        return { stroke: "#F59E0B", strokeWidth: 2.5 };
+  if (l === "approve" || l === "true" || l === "yes") return { stroke: "#22C55E", strokeWidth: 2.5 };
+  if (l === "reject" || l === "false" || l === "no") return { stroke: "#EF4444", strokeWidth: 2.5 };
+  if (l === "timeout" || l === "sla_breached") return { stroke: "#F97316", strokeWidth: 2, strokeDasharray: "6 3" };
+  if (l === "default") return { stroke: "#9CA3AF", strokeWidth: 1.5, strokeDasharray: "4 3" };
+  if (l.startsWith("branch:") || l === "loop body") return { stroke: "#8B5CF6", strokeWidth: 2 };
+  if (animated) return { stroke: "#F59E0B", strokeWidth: 2.5 };
   return { stroke: "#6366F1", strokeWidth: 2 };
 }
 
@@ -123,28 +127,30 @@ interface CkpNodeData {
   description?: string;
   stepCount?: number;
   _execState?: string;
+  _loopCount?: string;
   [key: string]: unknown;
 }
 
 function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
-  const { label, nodeType, agent, isStart, isEnd, description, stepCount, _execState: execState } = data;
-  const color       = TYPE_BG[nodeType] ?? data.color ?? "#9CA3AF";
-  const icon        = TYPE_ICONS[nodeType] ?? "●";
+  const { label, nodeType, agent, isStart, isEnd, description, stepCount, _execState: execState, _loopCount: loopCount } = data;
+  const color = TYPE_BG[nodeType] ?? data.color ?? "#9CA3AF";
+  const icon = TYPE_ICONS[nodeType] ?? "●";
   const borderColor = execState ? (STATE_BORDER[execState] ?? color) : color;
-  const shadow      = execState ? (STATE_RING[execState] ?? undefined) : "0 2px 8px rgba(0,0,0,0.07)";
-  const isLive      = execState === "current" || execState === "running";
-  const isFailed    = execState === "failed";
+  const shadow = execState && STATE_RING[execState] !== "none" ? STATE_RING[execState] : "0 2px 8px rgba(0,0,0,0.07)";
+  const isLive = execState === "current" || execState === "running";
+  const isFailed = execState === "failed";
+  const isPending = execState === "pending";
 
   return (
     <>
       <Handle
         type="target"
         position={Position.Top}
-        style={{ background: "#D1D5DB", width: 9, height: 9, border: "2px solid #fff" }}
+        className="!bg-gray-300 !w-[9px] !h-[9px] !border-2 !border-white"
       />
 
       <div
-        className="relative rounded-xl border-2 bg-white transition-all duration-300"
+        className={`relative rounded-xl border-2 bg-white transition-all duration-300 ${isPending ? "opacity-60 grayscale-[0.2]" : ""}`}
         style={{
           borderColor,
           boxShadow: shadow,
@@ -175,6 +181,12 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
               {stepCount != null && stepCount > 0 && (
                 <span className="rounded-full px-1.5 py-0.5 text-[9px] font-bold" style={{ background: `${color}18`, color }}>
                   {stepCount} step{stepCount !== 1 ? "s" : ""}
+                </span>
+              )}
+              {/* Loop count badge */}
+              {loopCount && (
+                <span className="rounded-full px-1.5 py-0.5 text-[9px] font-bold whitespace-nowrap" style={{ background: `${color}18`, color }}>
+                  ↻ {loopCount}
                 </span>
               )}
               {/* Exec state badge */}
@@ -235,7 +247,7 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
       <Handle
         type="source"
         position={Position.Bottom}
-        style={{ background: "#D1D5DB", width: 9, height: 9, border: "2px solid #fff" }}
+        className="!bg-gray-300 !w-[9px] !h-[9px] !border-2 !border-white"
       />
     </>
   );
@@ -260,9 +272,14 @@ interface GraphData {
   }>;
 }
 
+export interface NodeStatus {
+  state: "running" | "completed" | "failed" | "sla_breached" | "current" | "pending";
+  loopCount?: string;
+}
+
 interface WorkflowGraphProps {
   graph: GraphData;
-  nodeStates?: Record<string, string>;
+  nodeStates?: Record<string, NodeStatus>;
 }
 
 /* ── Legends ─────────────────────────────────────────────────── */
@@ -271,15 +288,16 @@ const EDGE_LEGEND = [
   { color: "#22C55E", label: "Approve / True" },
   { color: "#EF4444", label: "Reject / False" },
   { color: "#F59E0B", label: "Condition" },
-  { color: "#F97316", label: "Timeout",       dashed: true },
+  { color: "#F97316", label: "Timeout", dashed: true },
   { color: "#8B5CF6", label: "Loop / Branch" },
-  { color: "#9CA3AF", label: "Default",        dashed: true },
+  { color: "#9CA3AF", label: "Default", dashed: true },
 ];
 
 const EXEC_LEGEND = [
-  { color: "#3B82F6", label: "Running",    icon: "◌" },
-  { color: "#22C55E", label: "Completed",  icon: "✓" },
-  { color: "#EF4444", label: "Failed",     icon: "✕" },
+  { color: "#3B82F6", label: "In Progress", icon: "◌" },
+  { color: "#22C55E", label: "Completed", icon: "✓" },
+  { color: "#9CA3AF", label: "Pending", icon: "⌛" },
+  { color: "#EF4444", label: "Failed", icon: "✕" },
   { color: "#F97316", label: "SLA breach", icon: "!" },
 ];
 
@@ -300,7 +318,10 @@ export default function WorkflowGraph({ graph, nodeStates }: WorkflowGraphProps)
           id: n.id,
           type: "ckpNode",
           position: positions.get(n.id) ?? n.position,
-          data: { ...n.data, ...(state ? { _execState: state } : {}) },
+          data: {
+            ...n.data,
+            ...(state ? { _execState: state.state, _loopCount: state.loopCount } : { _execState: "pending" })
+          },
         };
       }),
     [graph.nodes, nodeStates, positions],

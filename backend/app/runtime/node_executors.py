@@ -119,12 +119,24 @@ def _build_template_vars(state: OrchestratorState) -> dict[str, Any]:
 
     * ``{{run_id}}``       — unique ID of the current run
     * ``{{procedure_id}}`` — ID of the procedure being executed
+    * ``{{secrets.name}}`` — Agent credential grant token for the secret
 
     User-defined variables with the same name take precedence.
     """
     vs = dict(state.get("vars", {}))
-    vs.setdefault("run_id", state.get("run_id", ""))
+    run_id = state.get("run_id", "")
+    vs.setdefault("run_id", run_id)
     vs.setdefault("procedure_id", state.get("procedure_id", ""))
+    
+    # Inject credential grant tokens instead of raw secrets
+    secrets_dict = state.get("secrets", {})
+    if secrets_dict:
+        from app.api.agent_credentials import create_credential_grant_token
+        secrets_tokens = {}
+        for s_name in secrets_dict.keys():
+            secrets_tokens[s_name] = create_credential_grant_token(run_id, s_name)
+        vs.setdefault("secrets", secrets_tokens)
+
     return vs
 
 
@@ -266,7 +278,7 @@ async def execute_sequence(
                 elif db_factory is not None:
                     # Dynamic resolution from agent registry
                     async with db_factory() as db:
-                        binding = await resolve_executor(db, node, step)
+                        binding, cap_type = await resolve_executor(db, node, step, run_id=run_id)
 
                     # dry_run: skip external agent/MCP dispatch; emit a dry_run_step_skipped event
                     _exec_mode = state.get("execution_mode", "production")
@@ -343,6 +355,76 @@ async def execute_sequence(
                                 )
                         else:
                             result = await _dyn_internal_coro
+                    elif binding.kind == "agent_http" and cap_type == "workflow":
+                        # ── WORKFLOW DISPATCH (non-blocking) ─────────────────────────────
+                        # The capability is a long-running workflow. We:
+                        #   1. Build a callback_url the agent will POST to when done.
+                        #   2. Fire-and-forget the HTTP call (no await on result).
+                        #   3. Write a WORKFLOW_PENDING event to the DB.
+                        #   4. Set run status to 'paused' and break out of execute_sequence.
+                        # The run will resume when POST /api/runs/{run_id}/callback arrives.
+                        from app.config import settings as _settings
+                        import httpx as _httpx
+
+                        _base = (_settings.SELF_BASE_URL or "http://127.0.0.1:8000").rstrip("/")
+                        _callback_url = f"{_base}/api/runs/{run_id}/callback"
+                        _wf_params = {**rendered_params, "callback_url": _callback_url}
+
+                        logger.info(
+                            "Workflow dispatch: action=%s agent=%s callback=%s",
+                            step.action, binding.ref, _callback_url,
+                        )
+
+                        # Fire-and-forget — do NOT await the full response
+                        async def _fire_workflow():
+                            try:
+                                async with _httpx.AsyncClient(timeout=10.0) as _c:
+                                    await _c.post(
+                                        f"{binding.ref.rstrip('/')}/execute",
+                                        json={
+                                            "action": step.action,
+                                            "params": _wf_params,
+                                            "run_id": run_id,
+                                            "node_id": node.node_id,
+                                            "step_id": step.step_id,
+                                        },
+                                        timeout=10.0,
+                                    )
+                            except Exception as _exc:
+                                logger.warning("Workflow fire-and-forget error: %s", _exc)
+
+                        asyncio.create_task(_fire_workflow())
+
+                        # Record the pending state
+                        if db_factory is not None and run_id:
+                            async with db_factory() as db:
+                                await run_service.emit_event(
+                                    db, run_id, "workflow_delegated",
+                                    node_id=node.node_id, step_id=step.step_id,
+                                    payload={
+                                        "action": step.action,
+                                        "agent_url": binding.ref,
+                                        "callback_url": _callback_url,
+                                        "resume_node_id": node.node_id,
+                                        "resume_step_id": step.step_id,
+                                    },
+                                )
+                                # Update run status to paused so scheduler doesn't re-pick it
+                                from app.db.models import Run as _RunModel
+                                from sqlalchemy import select as _sel
+                                _run_row = (await db.execute(_sel(_RunModel).where(_RunModel.run_id == run_id))).scalar_one_or_none()
+                                if _run_row:
+                                    _run_row.status = "paused"
+                                await db.commit()
+
+                        # Return state with workflow_pending flag — LangGraph will terminate this node
+                        state_patch = dict(state)
+                        state_patch["variables"] = vs
+                        state_patch["_workflow_pending"] = True
+                        state_patch["_workflow_resume_node"] = node.node_id
+                        state_patch["_workflow_resume_step"] = step.step_id
+                        return state_patch
+
                     elif binding.kind == "agent_http":
                         lease_id: str | None = None
                         if run_id and binding.ref:
@@ -1581,7 +1663,6 @@ async def _acquire_agent_lease(
     stmt = (
         select(AgentInstance)
         .where(AgentInstance.base_url == agent_url)
-        .where(AgentInstance.status == "online")
         .limit(1)
     )
     result = await db.execute(stmt)
@@ -1597,6 +1678,21 @@ async def _acquire_agent_lease(
         step_id=step_id,
     )
     if not lease:
+        from app.services import run_service
+        # Emit pool_saturated event before failing the lease acquisition
+        await run_service.emit_event(
+            db,
+            run_id,
+            "pool_saturated",
+            node_id=node_id,
+            step_id=step_id,
+            payload={
+                "agent_id": instance.agent_id,
+                "channel": instance.channel,
+                "resource_key": instance.resource_key,
+                "pool_id": instance.pool_id,
+            }
+        )
         raise RuntimeError(f"Resource busy for agent '{instance.agent_id}' ({instance.resource_key})")
 
     return lease.lease_id

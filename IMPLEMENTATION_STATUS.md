@@ -1,10 +1,10 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-23 (Batch 36: Config UI & Native Popup Replacements —
-**Enhancement 1** `frontend/src/app/triggers/page.tsx`: Replaced native browser `window.confirm` popups with application-consistent React `<ConfirmDialog>` modal for trigger deletion;
-**Enhancement 2** `backend/app/config.py` & `backend/app/api/config.py`: Added `LLM_DEFAULT_MODEL` and exposed `llm_default_model`, `llm_gateway_headers`, `llm_model_cost_json` and `llm_api_key` to the dynamic `ConfigPatch` API;
-**Enhancement 3** `frontend/src/app/settings/page.tsx`: Upgraded LLM Settings UI to allow live editing of API Key, Default Model, Gateway Headers, and Model Cost JSON overrides without environment variable restarts;
-**Enhancement 4** `FUTURE_PLAN.md`: Documented the Agent Pool Routing Strategy (round-robin logic) and marked completed items in the Production Definition of Done checklist)
+Last updated: 2026-02-24 (Batch 37: 9-Issue Sprint Completion —
+**P0** `frontend/src/components/WorkflowBuilder.tsx`: Fixed visual builder typing bug and moved Config to DB;
+**P1** `backend/app/services/validator.py`: Added variable name cross-validation, default CKP generation, and Apigee integration;
+**P2** `backend/app/api/agent_credentials.py` & `backend/app/api/agents.py`: Implemented encrypted credential assets, secure agent credential pull model (JWT grants), and agent bootstrap/heartbeats;
+**P3** `backend/app/api/auth.py` & `frontend/src/app/login/page.tsx`: Completed Azure AD / LDAP / OIDC User Management with auto-provisioning)
 
 This document is the single authoritative source for **what is implemented vs what is missing**, derived from direct code analysis of all backend and frontend source files.
 

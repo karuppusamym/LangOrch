@@ -114,6 +114,14 @@ export interface Approval {
   created_at: string;
 }
 
+export interface AgentCapability {
+  name: string;
+  type: string;
+  description: string | null;
+  estimated_duration_s: number | null;
+  is_batch: boolean;
+}
+
 export interface AgentInstance {
   agent_id: string;
   name: string;
@@ -123,7 +131,7 @@ export interface AgentInstance {
   resource_key: string;
   concurrency_limit: number;
   pool_id: string | null;
-  capabilities: string[];
+  capabilities: AgentCapability[];
   consecutive_failures: number;
   circuit_open_at: string | null;
   updated_at: string;
@@ -291,6 +299,14 @@ export interface PlatformConfig {
   llm_gateway_headers: string | null;
   llm_model_cost_json: string | null;
   llm_api_key?: string;
+  // Apigee
+  apigee_enabled: boolean;
+  apigee_token_url: string | null;
+  apigee_certs_path: string | null;
+  apigee_consumer_key: string | null;
+  apigee_client_secret: string | null;
+  apigee_use_case_id: string | null;
+  apigee_client_id: string | null;
   // Retention
   checkpoint_retention_days: number;
   artifact_retention_days: number;
@@ -303,4 +319,22 @@ export interface PlatformConfig {
   alert_webhook_url: string | null;
   rate_limit_max_concurrent: number;
   secrets_rotation_check: boolean;
+}
+
+export interface OrchestratorWorkerOut {
+  worker_id: string;
+  status: string;
+  is_leader: boolean;
+  last_heartbeat_at: string;
+}
+
+export interface AgentPoolStats {
+  pool_id: string;
+  channel: string;
+  agent_count: number;
+  status_breakdown: Record<string, number>;
+  concurrency_limit_total: number;
+  active_leases: number;
+  available_capacity: number;
+  circuit_open_count: number;
 }

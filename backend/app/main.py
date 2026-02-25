@@ -21,6 +21,7 @@ from app.api.runs import router as runs_router
 from app.api.approvals import router as approvals_router
 from app.api.events import router as events_router
 from app.api.agents import router as agents_router
+from app.api.orchestrators import router as orchestrators_router
 from app.api.catalog import router as catalog_router
 from app.api.leases import router as leases_router
 from app.api.projects import router as projects_router
@@ -31,6 +32,7 @@ from app.api.users import router as users_router
 from app.api.secrets import router as secrets_router
 from app.api.config import router as config_router
 from app.api.audit import router as audit_router
+from app.api.agent_credentials import router as agent_credentials_router
 
 logger = logging.getLogger("langorch.main")
 
@@ -444,6 +446,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE runs ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
             "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
+            "ALTER TABLE agent_instances ADD COLUMN last_heartbeat_at DATETIME",
             "ALTER TABLE agent_instances ADD COLUMN pool_id VARCHAR(128)",
             "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
             # Batch 34: artifact metadata columns
@@ -535,13 +538,13 @@ async def lifespan(app: FastAPI):
     logger.info("Application lifespan startup complete — entering serve loop")
     
     # Start background loops
-    task1 = asyncio.create_task(_approval_expiry_loop())
-    task2 = asyncio.create_task(_agent_health_loop())
-    task3 = asyncio.create_task(_checkpoint_retention_loop())
-    task4 = asyncio.create_task(_artifact_retention_loop())
-    task5 = asyncio.create_task(_file_watch_trigger_loop())
-    task6 = asyncio.create_task(_metrics_push_loop())
-    task7 = asyncio.create_task(_config_sync_loop())
+    _expiry_task = asyncio.create_task(_approval_expiry_loop())
+    _health_task = asyncio.create_task(_agent_health_loop())
+    _retention_task = asyncio.create_task(_checkpoint_retention_loop())
+    _artifact_retention_task = asyncio.create_task(_artifact_retention_loop())
+    _file_watch_task = asyncio.create_task(_file_watch_trigger_loop())
+    _metrics_push_task = asyncio.create_task(_metrics_push_loop())
+    _config_sync_task = asyncio.create_task(_config_sync_loop())
     # Start trigger scheduler
     from app.runtime.scheduler import scheduler as _trigger_scheduler
     _trigger_scheduler.start()
@@ -575,6 +578,7 @@ async def lifespan(app: FastAPI):
         _artifact_retention_task.cancel()
         _file_watch_task.cancel()
         _metrics_push_task.cancel()
+        _config_sync_task.cancel()
         _trigger_scheduler.stop()
         _leader_election.stop()
         if _worker_task is not None:
@@ -604,6 +608,7 @@ app.include_router(runs_router, prefix="/api/runs", tags=["runs"])
 app.include_router(approvals_router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(events_router, prefix="/api", tags=["events"])
 app.include_router(agents_router, prefix="/api/agents", tags=["agents"])
+app.include_router(orchestrators_router, prefix="/api/orchestrators", tags=["orchestrators"])
 app.include_router(catalog_router, prefix="/api", tags=["catalog"])
 app.include_router(leases_router, prefix="/api/leases", tags=["leases"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
@@ -614,6 +619,7 @@ app.include_router(users_router, prefix="/api/users", tags=["users"])
 app.include_router(secrets_router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(config_router, tags=["config"])
 app.include_router(audit_router)  # prefix is defined in router: /api/audit
+app.include_router(agent_credentials_router)
 
 # ── Serve local artifacts as static files ──────────────────────────────────
 # Agents write artifacts to ARTIFACTS_DIR and return URIs like

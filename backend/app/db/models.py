@@ -201,6 +201,7 @@ class AgentInstance(Base):
     pool_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     circuit_open_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -377,6 +378,23 @@ class SchedulerLeaderLease(Base):
     leader_id: Mapped[str] = mapped_column(String(256), nullable=False)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+# ── Orchestrator Worker Registry ────────────────────────────────
+
+class OrchestratorWorker(Base):
+    """Registry of all living orchestrator backend worker replicas.
+    
+    Updated via a heartbeat loop by each node. Used for observing 
+    system health and standby capacity.
+    """
+    __tablename__ = "orchestrator_workers"
+
+    worker_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="online", nullable=False)
+    is_leader: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
 
 
 # ── System Audit Events ─────────────────────────────────────────

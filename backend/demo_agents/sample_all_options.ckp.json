@@ -1,0 +1,487 @@
+{
+    "$schema": "https://langorch.dev/ckp-schema.json",
+    "procedure_id": "complete_feature_demo_v1",
+    "procedure_version": "1.0.0",
+    "name": "Complete Feature Demo Workflow",
+    "description": "A single CKP file demonstrating every supported node type and option.",
+    "effective_date": "2026-01-01",
+    "_comment": "===== Top-Level: Global Config =====",
+    "global_config": {
+        "secrets_config": {
+            "provider": "env_vars",
+            "secret_references": {
+                "salesforce_api_key": "SFORCE_API_KEY",
+                "openai_key": "OPENAI_API_KEY"
+            }
+        },
+        "rate_limiting": {
+            "enabled": true,
+            "max_concurrent_operations": 5,
+            "max_requests_per_minute": 120
+        },
+        "default_retry": {
+            "max_attempts": 3,
+            "backoff_ms": 2000
+        }
+    },
+    "_comment2": "===== Top-Level: Trigger (choose one type) =====",
+    "trigger": {
+        "type": "scheduled",
+        "_all_types": [
+            "manual",
+            "scheduled",
+            "webhook",
+            "event",
+            "file_watch"
+        ],
+        "schedule": "0 9 * * MON-FRI",
+        "webhook_secret": "WEBHOOK_HMAC_SECRET",
+        "event_source": "kafka-topic-orders",
+        "file_watch_path": "s3://my-bucket/incoming/*.csv",
+        "dedupe_window_seconds": 60,
+        "max_concurrent_runs": 2
+    },
+    "_comment3": "===== Variables Schema (typed input contract) =====",
+    "variables_schema": {
+        "loan_amount": {
+            "type": "number",
+            "default": 50000
+        },
+        "applicant_name": {
+            "type": "string"
+        },
+        "items": {
+            "type": "array",
+            "description": "list of items to process"
+        },
+        "debug_mode": {
+            "type": "boolean",
+            "default": false
+        }
+    },
+    "start_node_id": "step_1_sequence",
+    "_comment4": "===== Nodes =====",
+    "nodes": [
+        {
+            "_comment": "--- NODE TYPE: sequence (most common: calls agent tools step-by-step) ---",
+            "node_id": "step_1_sequence",
+            "node_type": "sequence",
+            "agent": "playwright-web-agent",
+            "description": "Open browser, navigate, and extract loan data from Salesforce",
+            "is_checkpoint": true,
+            "sla": {
+                "max_duration_ms": 30000,
+                "on_breach": "escalate",
+                "_on_breach_options": [
+                    "warn",
+                    "fail",
+                    "escalate"
+                ],
+                "escalation_handler": "step_hitl_approval"
+            },
+            "telemetry": {
+                "custom_metrics": [
+                    "salesforce_open_count"
+                ]
+            },
+            "idempotency_key": "open-sf-{{run_id}}",
+            "steps": [
+                {
+                    "step_id": "navigate_to_sf",
+                    "action": "navigate",
+                    "params": {
+                        "url": "https://login.salesforce.com"
+                    },
+                    "timeout_ms": 10000,
+                    "retry_on_failure": true,
+                    "retry_config": {
+                        "max_attempts": 3,
+                        "backoff_ms": 1000
+                    },
+                    "output_variable": "page_title"
+                },
+                {
+                    "step_id": "type_username",
+                    "action": "type",
+                    "params": {
+                        "target": "#username",
+                        "value": "{{applicant_name}}"
+                    },
+                    "wait_after_ms": 500
+                },
+                {
+                    "step_id": "extract_loan_data",
+                    "action": "extract_text",
+                    "params": {
+                        "target": ".loan-amount"
+                    },
+                    "output_variable": "extracted_loan_amount",
+                    "idempotency_key": "extract-loan-{{run_id}}"
+                },
+                {
+                    "step_id": "take_screenshot",
+                    "action": "screenshot",
+                    "params": {}
+                }
+            ],
+            "validations": [
+                {
+                    "id": "check_loan_extracted",
+                    "check": "extracted_loan_amount is not None",
+                    "on_failure": "throw_exception",
+                    "_on_failure_options": [
+                        "throw_exception",
+                        "skip",
+                        "log_and_continue"
+                    ],
+                    "message": "Loan amount could not be extracted!"
+                }
+            ],
+            "error_handlers": [
+                {
+                    "error_type": "TimeoutError",
+                    "action": "retry",
+                    "_action_options": [
+                        "retry",
+                        "screenshot_and_fail",
+                        "fail",
+                        "ignore",
+                        "escalate"
+                    ],
+                    "max_retries": 2,
+                    "delay_ms": 3000,
+                    "fallback_node": "step_hitl_approval",
+                    "notify_on_error": true
+                }
+            ],
+            "transitions": [
+                {
+                    "condition": "always",
+                    "target_node_id": "step_2_transform"
+                }
+            ]
+        },
+        {
+            "_comment": "--- NODE TYPE: transform (mutate or derive variables without calling an agent) ---",
+            "node_id": "step_2_transform",
+            "node_type": "transform",
+            "description": "Format the extracted loan data for downstream nodes",
+            "transformations": [
+                {
+                    "type": "expression",
+                    "_type_options": [
+                        "expression",
+                        "jinja_template",
+                        "json_path"
+                    ],
+                    "source_variable": "extracted_loan_amount",
+                    "expression": "float(extracted_loan_amount) * 1.05",
+                    "output_variable": "loan_with_interest",
+                    "params": {}
+                },
+                {
+                    "type": "jinja_template",
+                    "source_variable": "applicant_name",
+                    "expression": "Dear {{ applicant_name }}, your adjusted loan is {{ loan_with_interest }}",
+                    "output_variable": "loan_email_body"
+                }
+            ],
+            "transitions": [
+                {
+                    "condition": "always",
+                    "target_node_id": "step_3_verification"
+                }
+            ]
+        },
+        {
+            "_comment": "--- NODE TYPE: verification (assert conditions before proceeding) ---",
+            "node_id": "step_3_verification",
+            "node_type": "verification",
+            "description": "Ensure loan amount passes compliance thresholds",
+            "checks": [
+                {
+                    "id": "max_loan_check",
+                    "condition": "loan_with_interest < 1000000",
+                    "on_fail": "fail_workflow",
+                    "_on_fail_options": [
+                        "fail_workflow",
+                        "continue",
+                        "warn"
+                    ],
+                    "message": "Loan exceeds $1M regulatory cap!"
+                },
+                {
+                    "id": "applicant_name_check",
+                    "condition": "len(applicant_name) > 0",
+                    "on_fail": "warn",
+                    "message": "Applicant name is empty"
+                }
+            ],
+            "transitions": [
+                {
+                    "condition": "always",
+                    "target_node_id": "step_4_logic"
+                }
+            ]
+        },
+        {
+            "_comment": "--- NODE TYPE: logic (conditional branching / if-else) ---",
+            "node_id": "step_4_logic",
+            "node_type": "logic",
+            "description": "Route based on loan size",
+            "rules": [
+                {
+                    "condition_expr": "loan_with_interest > 500000",
+                    "target_node_id": "step_hitl_approval"
+                },
+                {
+                    "condition_expr": "loan_with_interest > 100000",
+                    "target_node_id": "step_5_llm_risk_check"
+                }
+            ],
+            "default_next_node_id": "step_6_loop"
+        },
+        {
+            "_comment": "--- NODE TYPE: llm_action (call an AI model to decide or generate) ---",
+            "node_id": "step_5_llm_risk_check",
+            "node_type": "llm_action",
+            "description": "Use GPT-4 to assess creditworthiness",
+            "model": "gpt-4",
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "system_prompt": "You are a conservative credit risk analyst.",
+            "prompt": "Applicant: {{applicant_name}}. Loan amount: {{loan_with_interest}}. Credit score: {{credit_score}}. Should this loan be approved? Reply with {\"_next_node\": \"approved\" or \"rejected\", \"reasoning\": \"...\"}",
+            "json_mode": true,
+            "orchestration_mode": true,
+            "branches": [
+                "step_hitl_approval",
+                "step_8_parallel"
+            ],
+            "retry": {
+                "max_attempts": 2,
+                "backoff_ms": 5000
+            },
+            "outputs": {
+                "llm_reasoning": "$.reasoning"
+            },
+            "attachments": [
+                {
+                    "type": "file",
+                    "_type_options": [
+                        "file",
+                        "url",
+                        "variable"
+                    ],
+                    "source": "s3://docs/credit_policy.pdf",
+                    "description": "Internal credit policy document"
+                }
+            ]
+        },
+        {
+            "_comment": "--- NODE TYPE: human_approval (HITL — pause and wait for a human decision) ---",
+            "node_id": "step_hitl_approval",
+            "node_type": "human_approval",
+            "description": "Manager must approve large loans over $500k",
+            "prompt": "Applicant {{applicant_name}} has requested a loan of {{loan_with_interest}}. Please review and approve or reject.",
+            "decision_type": "approve_reject",
+            "_decision_type_options": [
+                "approve_reject",
+                "pick_one",
+                "acknowledge"
+            ],
+            "options": [
+                "Approve",
+                "Reject",
+                "Request More Info"
+            ],
+            "timeout_ms": 86400000,
+            "timeout_action": "escalate",
+            "escalation_contact": "compliance-team@example.com",
+            "approval_level": "manager",
+            "context_data": {
+                "loan_amount": "{{loan_with_interest}}",
+                "ai_reasoning": "{{llm_reasoning}}"
+            },
+            "on_approve": "step_6_loop",
+            "on_reject": "step_9_terminate_failure",
+            "on_timeout": "step_9_terminate_failure"
+        },
+        {
+            "_comment": "--- NODE TYPE: loop (iterate over a list of items) ---",
+            "node_id": "step_6_loop",
+            "node_type": "loop",
+            "description": "Process each document in the application package",
+            "iterator_var": "current_document",
+            "iterator_variable": "items",
+            "index_variable": "doc_index",
+            "body_node_id": "step_6a_loop_body",
+            "collect_variable": "processed_docs",
+            "max_iterations": 100,
+            "continue_on_error": false,
+            "next_node_id": "step_7_processing"
+        },
+        {
+            "_comment": "--- Loop body is just a regular sequence node ---",
+            "node_id": "step_6a_loop_body",
+            "node_type": "sequence",
+            "agent": "playwright-web-agent",
+            "steps": [
+                {
+                    "step_id": "upload_doc",
+                    "action": "navigate",
+                    "params": {
+                        "url": "{{current_document.upload_url}}"
+                    },
+                    "output_variable": "upload_result"
+                }
+            ],
+            "transitions": [
+                {
+                    "condition": "always",
+                    "target_node_id": "step_6_loop"
+                }
+            ]
+        },
+        {
+            "_comment": "--- NODE TYPE: processing (bulk data operations like filter/aggregate) ---",
+            "node_id": "step_7_processing",
+            "node_type": "processing",
+            "description": "Filter only successfully processed documents",
+            "operations": [
+                {
+                    "action": "filter",
+                    "params": {
+                        "source": "processed_docs",
+                        "condition": "item.status == 'success'",
+                        "output": "approved_docs"
+                    }
+                },
+                {
+                    "action": "aggregate",
+                    "params": {
+                        "source": "approved_docs",
+                        "function": "count",
+                        "output": "approved_doc_count"
+                    }
+                }
+            ],
+            "next_node_id": "step_8_parallel"
+        },
+        {
+            "_comment": "--- NODE TYPE: parallel (execute multiple branches concurrently) ---",
+            "node_id": "step_8_parallel",
+            "node_type": "parallel",
+            "description": "Simultaneously send email and update CRM",
+            "wait_strategy": "all",
+            "_wait_strategy_options": [
+                "all",
+                "any",
+                "none"
+            ],
+            "branch_failure": "continue",
+            "_branch_failure_options": [
+                "continue",
+                "fail_immediately"
+            ],
+            "branches": [
+                {
+                    "branch_id": "email_branch",
+                    "start_node_id": "branch_send_email"
+                },
+                {
+                    "branch_id": "crm_branch",
+                    "start_node_id": "branch_update_crm"
+                }
+            ],
+            "next_node_id": "step_9_terminate_success"
+        },
+        {
+            "node_id": "branch_send_email",
+            "node_type": "sequence",
+            "agent": "hybrid-demo-agent",
+            "steps": [
+                {
+                    "step_id": "trigger_email",
+                    "_executor_note": "calls 'run_full_salesforce_login' — a workflow-type capability (one-shot macro)",
+                    "action": "run_full_salesforce_login",
+                    "params": {
+                        "username": "{{applicant_name}}"
+                    },
+                    "output_variable": "email_result"
+                }
+            ],
+            "transitions": []
+        },
+        {
+            "node_id": "branch_update_crm",
+            "node_type": "sequence",
+            "agent": "playwright-web-agent",
+            "steps": [
+                {
+                    "step_id": "navigate_crm",
+                    "action": "navigate",
+                    "params": {
+                        "url": "https://crm.example.com/loans/{{applicant_name}}"
+                    }
+                }
+            ],
+            "transitions": []
+        },
+        {
+            "_comment": "--- NODE TYPE: subflow (call another procedure as a child run) ---",
+            "node_id": "step_optional_subflow",
+            "node_type": "subflow",
+            "description": "Run a dedicated 'notify_compliance' sub-workflow",
+            "procedure_id": "notify_compliance_v1",
+            "version": "latest",
+            "input_mapping": {
+                "applicant": "applicant_name",
+                "amount": "loan_with_interest"
+            },
+            "output_mapping": {
+                "compliance_ticket_id": "compliance_case_id"
+            },
+            "on_failure": "fail_parent",
+            "_on_failure_options": [
+                "fail_parent",
+                "ignore",
+                "continue"
+            ],
+            "inherit_context": false,
+            "next_node_id": "step_9_terminate_success"
+        },
+        {
+            "_comment": "--- NODE TYPE: terminate (explicit end — SUCCESS) ---",
+            "node_id": "step_9_terminate_success",
+            "node_type": "terminate",
+            "terminal_status": "success",
+            "outputs": {
+                "final_loan_amount": "loan_with_interest",
+                "doc_count": "approved_doc_count"
+            },
+            "cleanup_actions": [
+                {
+                    "action": "close_browser",
+                    "params": {}
+                }
+            ]
+        },
+        {
+            "_comment": "--- NODE TYPE: terminate (explicit end — FAILURE) ---",
+            "node_id": "step_9_terminate_failure",
+            "node_type": "terminate",
+            "terminal_status": "failure",
+            "outputs": {
+                "reason": "llm_reasoning"
+            },
+            "error_actions": [
+                {
+                    "action": "send_slack_alert",
+                    "params": {
+                        "channel": "#loans-failures"
+                    }
+                }
+            ]
+        }
+    ]
+}

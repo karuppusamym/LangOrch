@@ -57,13 +57,24 @@ class ConfigOut(BaseModel):
     worker_retry_delay_seconds: float
     worker_lock_duration_seconds: float
 
-    # LLM
+    # LLM & Apigee
     llm_base_url: str
     llm_timeout_seconds: float
     llm_key_set: bool  # True if LLM_API_KEY is configured (no value exposed)
     llm_default_model: str
     llm_gateway_headers: str | None
     llm_model_cost_json: str | None
+    
+    apigee_enabled: bool
+    apigee_token_url: str | None
+    apigee_certs_path: str | None
+    apigee_consumer_key: str | None
+    apigee_client_secret: str | None
+    apigee_use_case_id: str | None
+    apigee_client_id: str | None
+
+    # SSO
+    sso_enabled: bool
 
     # Retention
     checkpoint_retention_days: int
@@ -106,6 +117,13 @@ class ConfigPatch(BaseModel):
     llm_default_model: str | None = None
     llm_gateway_headers: str | None = None
     llm_model_cost_json: str | None = None
+    apigee_enabled: bool | None = None
+    apigee_token_url: str | None = None
+    apigee_certs_path: str | None = None
+    apigee_consumer_key: str | None = None
+    apigee_client_secret: str | None = None
+    apigee_use_case_id: str | None = None
+    apigee_client_id: str | None = None
     alert_webhook_url: str | None = None
     metrics_push_url: str | None = None
     metrics_push_interval_seconds: int | None = None
@@ -140,6 +158,14 @@ def _build_config_out() -> ConfigOut:
         llm_default_model=s.LLM_DEFAULT_MODEL,
         llm_gateway_headers=s.LLM_GATEWAY_HEADERS,
         llm_model_cost_json=s.LLM_MODEL_COST_JSON,
+        apigee_enabled=s.APIGEE_ENABLED,
+        apigee_token_url=s.APIGEE_TOKEN_URL,
+        apigee_certs_path=s.APIGEE_CERTS_PATH,
+        apigee_consumer_key=s.APIGEE_CONSUMER_KEY,
+        apigee_client_secret=s.APIGEE_CLIENT_SECRET,
+        apigee_use_case_id=s.APIGEE_USE_CASE_ID,
+        apigee_client_id=s.APIGEE_CLIENT_ID,
+        sso_enabled=s.SSO_ENABLED,
         checkpoint_retention_days=s.CHECKPOINT_RETENTION_DAYS,
         artifact_retention_days=s.ARTIFACT_RETENTION_DAYS,
         lease_ttl_seconds=s.LEASE_TTL_SECONDS,
@@ -197,6 +223,13 @@ async def patch_config(
         "llm_default_model": "LLM_DEFAULT_MODEL",
         "llm_gateway_headers": "LLM_GATEWAY_HEADERS",
         "llm_model_cost_json": "LLM_MODEL_COST_JSON",
+        "apigee_enabled": "APIGEE_ENABLED",
+        "apigee_token_url": "APIGEE_TOKEN_URL",
+        "apigee_certs_path": "APIGEE_CERTS_PATH",
+        "apigee_consumer_key": "APIGEE_CONSUMER_KEY",
+        "apigee_client_secret": "APIGEE_CLIENT_SECRET",
+        "apigee_use_case_id": "APIGEE_USE_CASE_ID",
+        "apigee_client_id": "APIGEE_CLIENT_ID",
         "alert_webhook_url": "ALERT_WEBHOOK_URL",
         "metrics_push_url": "METRICS_PUSH_URL",
         "metrics_push_interval_seconds": "METRICS_PUSH_INTERVAL_SECONDS",

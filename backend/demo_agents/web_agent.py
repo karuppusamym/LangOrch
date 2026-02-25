@@ -60,17 +60,17 @@ SETTINGS = AgentSettings(
 
 
 # All actions this agent can handle (drives /capabilities and self-registration)
-CAPABILITIES: list[str] = [
-    "navigate",
-    "click",
-    "type",
-    "wait_for_element",
-    "extract_text",
-    "extract_table_data",
-    "select_all_text",
-    "get_attribute",
-    "screenshot",
-    "close",
+CAPABILITIES: list[dict[str, Any]] = [
+    {"name": "navigate", "type": "tool", "is_batch": False},
+    {"name": "click", "type": "tool", "is_batch": False},
+    {"name": "type", "type": "tool", "is_batch": False},
+    {"name": "wait_for_element", "type": "tool", "is_batch": False},
+    {"name": "extract_text", "type": "tool", "is_batch": False},
+    {"name": "extract_table_data", "type": "tool", "is_batch": False},
+    {"name": "select_all_text", "type": "tool", "is_batch": False},
+    {"name": "get_attribute", "type": "tool", "is_batch": False},
+    {"name": "screenshot", "type": "tool", "is_batch": False},
+    {"name": "close", "type": "tool", "is_batch": False},
 ]
 
 
@@ -83,14 +83,31 @@ async def _set_agent_status(status: str) -> None:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.put(url, json=payload)
-            resp.raise_for_status()
+            if resp.status_code == 404 and status == "online":
+                # Agent not found; auto-register it
+                register_url = f"{SETTINGS.orchestrator_url}/api/agents"
+                register_payload = {
+                    "agent_id": SETTINGS.agent_id,
+                    "name": "Local Playwright Agent",
+                    "channel": "web",
+                    "base_url": f"http://127.0.0.1:{SETTINGS.agent_port}",
+                    "concurrency_limit": 1,
+                    "resource_key": "web_default",
+                    "pool_id": "web_pool_1",
+                    "capabilities": CAPABILITIES
+                }
+                reg_resp = await client.post(register_url, json=register_payload)
+                reg_resp.raise_for_status()
+                logger.info("Agent '%s' auto-registered successfully.", SETTINGS.agent_id)
+            else:
+                resp.raise_for_status()
             logger.info(
-                "Agent '%s' marked %s (capabilities: %s).",
-                SETTINGS.agent_id, status, ", ".join(CAPABILITIES) if status == "online" else "-",
+                "Agent '%s' marked %s (capabilities: %d tools).",
+                SETTINGS.agent_id, status, len(CAPABILITIES) if status == "online" else 0,
             )
     except Exception as exc:
         logger.warning(
-            "Could not update agent status in orchestrator (%s): %s", url, exc
+            "Could not update/register agent status in orchestrator (%s): %s", url, exc
         )
 
 

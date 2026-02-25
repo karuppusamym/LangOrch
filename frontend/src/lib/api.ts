@@ -9,6 +9,7 @@ import type {
   RunEvent,
   Approval,
   AgentInstance,
+  AgentCapability,
   RunDiagnostics,
   MetricsSummary,
   CheckpointMetadata,
@@ -224,7 +225,7 @@ export async function registerAgent(data: {
   base_url: string;
   resource_key?: string;
   concurrency_limit?: number;
-  capabilities?: string[];
+  capabilities?: AgentCapability[];
 }): Promise<AgentInstance> {
   return request("/agents", {
     method: "POST",
@@ -234,7 +235,7 @@ export async function registerAgent(data: {
 
 export async function updateAgent(
   agentId: string,
-  data: { status?: string; base_url?: string; concurrency_limit?: number; capabilities?: string[] }
+  data: { status?: string; base_url?: string; concurrency_limit?: number; capabilities?: AgentCapability[] }
 ): Promise<AgentInstance> {
   return request(`/agents/${encodeURIComponent(agentId)}`, {
     method: "PUT",
@@ -250,7 +251,7 @@ export async function syncAgentCapabilities(agentId: string): Promise<AgentInsta
   return request(`/agents/${encodeURIComponent(agentId)}/sync-capabilities`, { method: "POST" });
 }
 
-export async function probeAgentCapabilities(baseUrl: string): Promise<string[]> {
+export async function probeAgentCapabilities(baseUrl: string): Promise<AgentCapability[]> {
   return request(`/agents/probe-capabilities?base_url=${encodeURIComponent(baseUrl)}`);
 }
 
@@ -515,3 +516,14 @@ export async function listAuditEvents(params?: {
   const query = qs.toString();
   return request(`/audit${query ? `?${query}` : ""}`);
 }
+
+/* ── Health & Workers ────────────────────────────────────────── */
+
+export async function fetchOrchestrators(): Promise<import("./types").OrchestratorWorkerOut[]> {
+  return request("/orchestrators");
+}
+
+export async function fetchAgentPools(): Promise<import("./types").AgentPoolStats[]> {
+  return request("/agents/pools");
+}
+

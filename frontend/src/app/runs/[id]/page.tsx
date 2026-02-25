@@ -72,16 +72,31 @@ async function copyText(text: string, toast: (msg: string, type: "success") => v
   try { await navigator.clipboard.writeText(text); toast("Copied", "success"); } catch { /* ignore */ }
 }
 
-function buildNodeStateMap(events: RunEvent[], currentNodeId: string | null): Record<string, string> {
-  const map: Record<string, string> = {};
+interface NodeStatus {
+  state: "running" | "completed" | "failed" | "sla_breached" | "current" | "pending";
+  loopCount?: string;
+}
+
+function buildNodeStateMap(events: RunEvent[], currentNodeId: string | null): Record<string, NodeStatus> {
+  const map: Record<string, NodeStatus> = {};
   for (const ev of events) {
     if (!ev.node_id) continue;
-    if (ev.event_type === "node_started") map[ev.node_id] = "running";
-    else if (ev.event_type === "node_completed") map[ev.node_id] = "completed";
-    else if (["node_error", "run_failed"].includes(ev.event_type)) map[ev.node_id] = "failed";
-    else if (ev.event_type === "sla_breached" && map[ev.node_id] !== "failed") map[ev.node_id] = "sla_breached";
+    if (!map[ev.node_id]) map[ev.node_id] = { state: "pending" };
+
+    if (ev.event_type === "node_started") map[ev.node_id].state = "running";
+    else if (ev.event_type === "node_completed") map[ev.node_id].state = "completed";
+    else if (["node_error", "run_failed"].includes(ev.event_type)) map[ev.node_id].state = "failed";
+    else if (ev.event_type === "sla_breached" && map[ev.node_id].state !== "failed") map[ev.node_id].state = "sla_breached";
+    else if (ev.event_type === "loop_iteration" && ev.payload) {
+      const payload = ev.payload as Record<string, unknown>;
+      if (payload.iteration !== undefined && payload.total !== undefined) {
+        map[ev.node_id].loopCount = `${Number(payload.iteration) + 1}/${Number(payload.total)}`;
+      } else if (payload.iteration !== undefined) {
+        map[ev.node_id].loopCount = `${Number(payload.iteration) + 1}`;
+      }
+    }
   }
-  if (currentNodeId && map[currentNodeId] === "running") map[currentNodeId] = "current";
+  if (currentNodeId && map[currentNodeId]?.state === "running") map[currentNodeId].state = "current";
   return map;
 }
 
@@ -459,9 +474,9 @@ export default function RunDetailPage() {
                             </span>
                           )}
                           {/* D1: retry_count badge */}
-                          {event.event_type === "step_completed" && typeof event.payload?.retry_count === "number" && Number(event.payload.retry_count) > 0 && (
+                          {event.event_type === "step_completed" && typeof (event.payload as Record<string, unknown>)?.retry_count === "number" && Number((event.payload as Record<string, unknown>).retry_count) > 0 && (
                             <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
-                              🔄 {Number(event.payload.retry_count)} retries
+                              🔄 {Number((event.payload as Record<string, unknown>).retry_count)} retries
                             </span>
                           )}
                           {/* D2: step_timeout icon */}
@@ -473,13 +488,13 @@ export default function RunDetailPage() {
                           {/* G2: loop_iteration progress */}
                           {event.event_type === "loop_iteration" && event.payload && (
                             <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
-                              ↻ {Number(event.payload.iteration) + 1}/{Number(event.payload.total)}
+                              ↻ {Number((event.payload as Record<string, unknown>).iteration) + 1}/{Number((event.payload as Record<string, unknown>).total)}
                             </span>
                           )}
                           {/* F2: agent binding in timeline */}
-                          {event.payload?.agent && (
+                          {Boolean((event.payload as Record<string, unknown>)?.agent) && (
                             <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-600">
-                              🤖 {String(event.payload.agent)}
+                              🤖 {String((event.payload as Record<string, unknown>).agent)}
                             </span>
                           )}
                           <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
@@ -543,7 +558,7 @@ export default function RunDetailPage() {
               ) : (
                 <>
                   <div className="mb-3 flex flex-wrap gap-3 text-xs text-gray-500">
-                    {([["current", "bg-blue-500"], ["completed", "bg-green-500"], ["failed", "bg-red-500"], ["sla_breached", "bg-orange-400"]] as const).map(([s, bg]) => (
+                    {([["in_progress", "bg-blue-500"], ["completed", "bg-green-500"], ["pending", "bg-gray-400"], ["failed", "bg-red-500"], ["sla_breached", "bg-orange-400"]] as const).map(([s, bg]) => (
                       <span key={s} className="flex items-center gap-1"><span className={`h-3 w-3 rounded-full ${bg}`} />{s.replace("_", " ")}</span>
                     ))}
                   </div>

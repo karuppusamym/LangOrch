@@ -4,15 +4,15 @@ import { useEffect, useState } from "react";
 import { listAgents, registerAgent, updateAgent, deleteAgent, getActionCatalog, syncAgentCapabilities, probeAgentCapabilities } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { AgentInstance } from "@/lib/types";
+import type { AgentInstance, AgentCapability } from "@/lib/types";
 
 // Suggested channels — user can type anything; these are just hints shown via datalist
 const SUGGESTED_CHANNELS = ["web", "desktop", "email", "api", "database", "llm", "masteragent", "crm", "erp", "iot", "voice", "chat"];
 
 const STATUS_COLORS: Record<string, string> = {
-  online:  "bg-green-500",
+  online: "bg-green-500",
   offline: "bg-gray-400",
-  busy:    "bg-yellow-500",
+  busy: "bg-yellow-500",
 };
 
 function formatRelativeTime(iso: string): string {
@@ -24,7 +24,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 export default function AgentsPage() {
-  const [agents, setAgents]   = useState<AgentInstance[]>([]);
+  const [agents, setAgents] = useState<AgentInstance[]>([]);
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [showRegister, setShowRegister] = useState(false);
@@ -35,7 +35,7 @@ export default function AgentsPage() {
     base_url: "http://localhost:9000",
     resource_key: "",
     concurrency_limit: 1,
-    capabilities: [] as string[],
+    capabilities: [] as AgentCapability[],
   });
   // Track existing channels from registered agents for the datalist
   const [registeredChannels, setRegisteredChannels] = useState<string[]>([]);
@@ -110,14 +110,15 @@ export default function AgentsPage() {
   const channelActions = catalog[form.channel] ?? [];
 
   function addCapability(value?: string) {
-    const cap = (value ?? capInput).trim().toLowerCase().replace(/\s+/g, "_");
-    if (!cap || form.capabilities.includes(cap)) { setCapInput(""); return; }
-    setForm((prev) => ({ ...prev, capabilities: [...prev.capabilities, cap] }));
+    const capName = (value ?? capInput).trim().toLowerCase().replace(/\s+/g, "_");
+    if (!capName || form.capabilities.some((c) => c.name === capName)) { setCapInput(""); return; }
+    const newCap: AgentCapability = { name: capName, type: "tool", description: null, estimated_duration_s: null, is_batch: false };
+    setForm((prev) => ({ ...prev, capabilities: [...prev.capabilities, newCap] }));
     setCapInput("");
   }
 
-  function removeCapability(cap: string) {
-    setForm((prev) => ({ ...prev, capabilities: prev.capabilities.filter((c) => c !== cap) }));
+  function removeCapability(capName: string) {
+    setForm((prev) => ({ ...prev, capabilities: prev.capabilities.filter((c) => c.name !== capName) }));
   }
 
   async function handleFetchCapabilities() {
@@ -269,9 +270,9 @@ export default function AgentsPage() {
               {form.capabilities.length === 0 ? (
                 <span className="self-center text-xs italic text-neutral-400">No capabilities — will accept all actions</span>
               ) : form.capabilities.map((cap) => (
-                <span key={cap} className="flex items-center gap-1 rounded-full bg-blue-100 dark:bg-blue-950/50 px-2.5 py-0.5 text-xs font-medium text-blue-800 dark:text-blue-300">
-                  {cap}
-                  <button type="button" onClick={() => removeCapability(cap)} className="ml-0.5 text-blue-500 hover:text-red-500">&times;</button>
+                <span key={cap.name} className="flex items-center gap-1 rounded-full bg-blue-100 dark:bg-blue-950/50 px-2.5 py-0.5 text-xs font-medium text-blue-800 dark:text-blue-300">
+                  {cap.name}
+                  <button type="button" onClick={() => removeCapability(cap.name)} className="ml-0.5 text-blue-500 hover:text-red-500">&times;</button>
                 </span>
               ))}
             </div>
@@ -281,7 +282,7 @@ export default function AgentsPage() {
                 placeholder="Type a capability and press Enter or Add"
                 className="flex-1 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" autoComplete="off" />
               <datalist id="cap-suggestions">
-                {channelActions.filter((a) => !form.capabilities.includes(a)).map((a) => <option key={a} value={a} />)}
+                {channelActions.filter((a) => !form.capabilities.some((c) => c.name === a)).map((a) => <option key={a} value={a} />)}
               </datalist>
               <button type="button" onClick={() => addCapability()} disabled={!capInput.trim()}
                 className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-3 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40">
@@ -345,8 +346,21 @@ export default function AgentsPage() {
                 <div className="mt-3">
                   <p className="mb-1 text-[10px] font-medium text-neutral-400 uppercase tracking-wider">Capabilities</p>
                   <div className="flex flex-wrap gap-1">
-                    {agent.capabilities.map((cap) => (
-                      <span key={cap} className="rounded-full bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-xs text-neutral-600 dark:text-neutral-400">{cap}</span>
+                    {agent.capabilities.map((cap, i) => (
+                      <span
+                        key={cap.name || i}
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${cap.type === "workflow"
+                          ? "bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800/50"
+                          : "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                          }`}
+                        title={cap.description || undefined}
+                      >
+                        {cap.type === "workflow" && (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                        )}
+                        {cap.name}
+                        {cap.is_batch && <span className="text-[9px] uppercase font-bold opacity-60 ml-0.5">BATCH</span>}
+                      </span>
                     ))}
                   </div>
                 </div>

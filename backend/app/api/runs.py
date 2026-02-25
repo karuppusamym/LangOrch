@@ -224,3 +224,90 @@ async def delete_run(run_id: str, db: AsyncSession = Depends(get_db), _principal
         raise HTTPException(status_code=404, detail="Run not found")
     await db.commit()
     return {"deleted": True, "run_id": run_id}
+
+
+@router.post("/{run_id}/callback", status_code=200)
+async def workflow_callback(
+    run_id: str,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Webhook callback endpoint for long-running workflow agents.
+
+    When the Orchestrator dispatches a `type:'workflow'` capability, it
+    fires the agent in a non-blocking way and passes this URL as
+    `callback_url` in the params.  When the agent finishes, it POSTs
+    the result payload here.
+
+    Expected body (all optional except status):
+        {
+          "status":        "success" | "failure",
+          "output":        {...},          # merged into run variables
+          "step_id":       "step-xxx",    # which step completed
+          "node_id":       "node-xxx",    # which node to resume from
+          "error":         "..."          # only on failure
+        }
+    """
+    run = await run_service.get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if run.status != "paused":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is not paused (status={run.status}). Callback ignored.",
+        )
+
+    callback_status = body.get("status", "success")
+    output_vars = body.get("output") or {}
+    error_msg = body.get("error")
+    resume_node = body.get("node_id")
+    resume_step = body.get("step_id")
+
+    import logging as _logging
+    _log = _logging.getLogger("langorch.api.runs.callback")
+    _log.info(
+        "Workflow callback received: run=%s status=%s node=%s step=%s",
+        run_id, callback_status, resume_node, resume_step,
+    )
+
+    # Record the callback event
+    await run_service.emit_event(
+        db, run_id, "workflow_callback_received",
+        node_id=resume_node, step_id=resume_step,
+        payload={
+            "status": callback_status,
+            "output": output_vars,
+            "error": error_msg,
+        },
+    )
+
+    if callback_status == "failure":
+        # Mark run as failed, don't resume
+        await run_service.update_run_status(db, run_id, "failed")
+        await run_service.emit_event(
+            db, run_id, "run_failed",
+            payload={"reason": "workflow_callback_failure", "error": error_msg},
+        )
+        await db.commit()
+        return {"resumed": False, "status": "failed", "run_id": run_id}
+
+    # Success path: merge outputs into run variables, re-enqueue
+    if output_vars:
+        # Store callback outputs as a pending vars patch for the worker to merge
+        await run_service.emit_event(
+            db, run_id, "workflow_output_ready",
+            node_id=resume_node, step_id=resume_step,
+            payload={"output_vars": output_vars},
+        )
+
+    # Re-queue the run to resume execution from where it paused
+    await run_service.update_run_status(db, run_id, "queued")
+    from app.worker.enqueue import requeue_run as _requeue
+    await _requeue(db, run_id)
+    await db.commit()
+
+    _log.info("Run %s re-queued after workflow callback", run_id)
+    return {"resumed": True, "status": "queued", "run_id": run_id}
+

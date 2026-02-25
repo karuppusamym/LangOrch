@@ -22,6 +22,7 @@ from app.services import approval_service, run_service
 from app.services.secrets_service import get_secrets_manager, configure_secrets_provider, EnvironmentSecretsProvider, VaultSecretsProvider, invalidate_secrets_cache, provider_from_config
 from app.utils.metrics import record_run_started, record_run_completed
 from app.utils.run_cancel import RunCancelledError, register as _cancel_register, deregister as _cancel_deregister
+from app.runtime.executor_dispatch import clear_run_affinity
 
 logger = logging.getLogger("langorch.execution")
 
@@ -608,8 +609,9 @@ async def execute_run(run_id: str, db_factory) -> None:
                 )
                 record_run_completed(run_duration, "completed")
 
-            await db.commit()
-            logger.info("Run %s finished with status: %s", run_id, terminal)
+                await db.commit()
+                logger.info("Run %s finished with status: %s", run_id, terminal)
+                clear_run_affinity(run_id)
 
         except RunCancelledError:
             logger.info("Run %s cancelled during execution", run_id)
@@ -617,6 +619,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                 await run_service.update_run_status(db, run_id, "canceled")
                 await run_service.emit_event(db, run_id, "run_canceled", payload={"reason": "cancel_signal"})
                 await db.commit()
+                clear_run_affinity(run_id)
             except Exception:
                 logger.exception("Failed to persist cancel status for run %s", run_id)
 
@@ -642,6 +645,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                             )
                             record_run_completed(_dur, "completed")
                             await db.commit()
+                            clear_run_affinity(run_id)
                         except Exception:
                             logger.exception("Failed to persist on_failure recovery status")
                         return
@@ -652,6 +656,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                     payload={"message": str(exc), "type": type(exc).__name__}
                 )
                 await db.commit()
+                clear_run_affinity(run_id)
             except Exception:
                 logger.exception("Failed to update run status after error")
         finally:

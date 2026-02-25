@@ -171,28 +171,27 @@ def validate_ir(ir: IRProcedure) -> list[str]:
             for _v in (_p.iterator_variable, _p.index_variable, _p.collect_variable):
                 if _v:
                     _all_known_vars.add(_v)
-    # Only enforce when the procedure declares a non-empty variables_schema
-    if ir.variables_schema:
-        for nid, node in ir.nodes.items():
-            payload = node.payload
-            if isinstance(payload, IRSequencePayload):
-                for step in payload.steps:
-                    _params_text = json.dumps(step.params) if step.params else ""
-                    _idem_text = step.idempotency_key or ""
-                    for _var in _JINJA_VAR_RE.findall(_params_text + " " + _idem_text):
-                        if _var not in _all_known_vars:
-                            errors.append(
-                                f"Node '{nid}', step '{step.step_id}': template references "
-                                f"undeclared variable '{{{{{_var}}}}}'."
-                            )
-            elif isinstance(payload, IRLlmActionPayload):
-                _llm_text = (payload.prompt or "") + " " + (payload.system_prompt or "")
-                for _var in _JINJA_VAR_RE.findall(_llm_text):
+    # Enforce variable references against known variables (inputs, outputs, built-ins)
+    for nid, node in ir.nodes.items():
+        payload = node.payload
+        if isinstance(payload, IRSequencePayload):
+            for step in payload.steps:
+                _params_text = json.dumps(step.params) if step.params else ""
+                _idem_text = step.idempotency_key or ""
+                for _var in _JINJA_VAR_RE.findall(_params_text + " " + _idem_text):
                     if _var not in _all_known_vars:
                         errors.append(
-                            f"Node '{nid}' (llm_action): prompt references undeclared variable "
-                            f"'{{{{{_var}}}}}'."
+                            f"Node '{nid}', step '{step.step_id}': template references "
+                            f"undeclared variable '{{{{{_var}}}}}'."
                         )
+        elif isinstance(payload, IRLlmActionPayload):
+            _llm_text = (payload.prompt or "") + " " + (payload.system_prompt or "")
+            for _var in _JINJA_VAR_RE.findall(_llm_text):
+                if _var not in _all_known_vars:
+                    errors.append(
+                        f"Node '{nid}' (llm_action): prompt references undeclared variable "
+                        f"'{{{{{_var}}}}}'."
+                    )
 
     # ── Action / channel compatibility ─────────────────────────────
     # Sequence steps with non-internal actions must be attached to a node that

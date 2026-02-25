@@ -183,3 +183,154 @@ async def issue_token(body: TokenRequest) -> TokenResponse:
         identity=body.identity,
         roles=body.roles,
     )
+
+@router.get(
+    "/sso/login",
+    summary="Redirect to SSO provider for login",
+    tags=["auth"],
+)
+async def sso_login():
+    """Redirect the user to the configured SSO provider."""
+    from fastapi.responses import RedirectResponse
+    from app.config import settings
+    import secrets
+    from urllib.parse import urlencode
+    
+    if not settings.SSO_ENABLED:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="SSO is not enabled")
+    
+    state = secrets.token_urlsafe(16)
+    authority = (settings.SSO_AUTHORITY or "").rstrip("/")
+    auth_url = f"{authority}/oauth2/v2.0/authorize"
+    
+    params = {
+        "client_id": settings.SSO_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": settings.SSO_REDIRECT_URI,
+        "response_mode": "query",
+        "scope": "openid profile email",
+        "state": state,
+    }
+    url = f"{auth_url}?{urlencode(params)}"
+    return RedirectResponse(url)
+
+
+@router.get(
+    "/sso/callback",
+    summary="Handle SSO provider callback",
+    tags=["auth"],
+)
+async def sso_callback(
+    code: str,
+    state: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Exchange code for token, provision user, and redirect to frontend with JWT."""
+    from fastapi.responses import RedirectResponse
+    from fastapi import HTTPException
+    from app.config import settings
+    from app.db.models import User
+    from app.services.user_service import create_user
+    from sqlalchemy import select
+    import httpx
+    import jwt
+    import secrets
+
+    if not settings.SSO_ENABLED:
+        raise HTTPException(status_code=400, detail="SSO is not enabled")
+        
+    authority = (settings.SSO_AUTHORITY or "").rstrip("/")
+    token_url = f"{authority}/oauth2/v2.0/token"
+    
+    data = {
+        "client_id": settings.SSO_CLIENT_ID,
+        "client_secret": settings.SSO_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": settings.SSO_REDIRECT_URI,
+    }
+    
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(token_url, data=data)
+        if resp.status_code != 200:
+            logger.error(f"SSO token exchange failed: {resp.text}")
+            raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
+        
+        token_data = resp.json()
+        
+    id_token = token_data.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="No id_token received from SSO provider")
+        
+    payload = jwt.decode(id_token, options={"verify_signature": False})
+    
+    sso_sub = payload.get("sub")
+    email = payload.get("email") or payload.get("preferred_username") or f"{sso_sub}@sso.local"
+    name = payload.get("name") or email.split("@")[0]
+    
+    # ── Role Mapping Logic ──
+    mapped_role = "viewer"  # Default role
+    if settings.SSO_ROLE_MAPPING:
+        import json
+        try:
+            role_map = json.loads(settings.SSO_ROLE_MAPPING)
+            # Entra ID / Azure AD might send 'groups' (OIDs) or 'roles' (App Roles)
+            user_groups = payload.get("groups", [])
+            if not user_groups:
+                user_groups = payload.get("roles", [])
+            
+            # Roles ordered by privilege (highest to lowest)
+            role_hierarchy = ["admin", "manager", "operator", "approver", "viewer"]
+            highest_privilege = "viewer"
+            highest_idx = role_hierarchy.index(highest_privilege)
+            
+            for group in user_groups:
+                if group in role_map:
+                    resolved = role_map[group]
+                    if resolved in role_hierarchy:
+                        idx = role_hierarchy.index(resolved)
+                        if idx < highest_idx:
+                            highest_idx = idx
+                            highest_privilege = resolved
+            
+            mapped_role = highest_privilege
+            logger.debug(f"SSO mapping resolved role '{mapped_role}' from groups {user_groups}")
+        except json.JSONDecodeError:
+            logger.error("Failed to parse SSO_ROLE_MAPPING JSON. Defaulting to viewer.")
+    
+    if not sso_sub:
+        raise HTTPException(status_code=400, detail="Invalid ID token: missing subject")
+        
+    result = await db.execute(select(User).where(User.sso_subject == sso_sub))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        user = await create_user(
+            db,
+            username=email,
+            email=email,
+            password=secrets.token_urlsafe(32),
+            role=mapped_role,
+            full_name=name,
+            sso_subject=sso_sub,
+            sso_provider="azure_ad"
+        )
+        await db.commit()
+        logger.info(f"Auto-provisioned SSO user: {email} with role: {mapped_role}")
+    else:
+        # User already exists; keep their role perfectly in sync with Azure AD
+        if user.role != mapped_role:
+            logger.info(f"Syncing SSO user role: {email} ({user.role} -> {mapped_role})")
+            user.role = mapped_role
+            await db.commit()
+            await db.refresh(user)
+
+    expire = settings.AUTH_TOKEN_EXPIRE_MINUTES
+    local_jwt = _issue_jwt(user.username, [user.role], expire, settings.AUTH_SECRET_KEY)
+    
+    # Redirect to frontend login page, passing the token so it can be stored
+    frontend_url = "http://localhost:3000/login"
+    redirect_url = f"{frontend_url}?token={local_jwt}"
+    
+    return RedirectResponse(url=redirect_url)

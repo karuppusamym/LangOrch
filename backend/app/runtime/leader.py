@@ -124,6 +124,10 @@ class LeaderElection:
                         self._name, self._leader_id,
                     )
                 self._is_leader = acquired
+
+                # Always heartbeat our existence to the registry (standby or active)
+                await self._heartbeat_worker_registry(acquired)
+
             except Exception:
                 logger.exception(
                     "LeaderElection: unexpected error during acquire/renew (lease=%s)",
@@ -133,6 +137,47 @@ class LeaderElection:
             await asyncio.sleep(_RENEW_INTERVAL)
 
     # ── DB operations ─────────────────────────────────────────
+
+    async def _heartbeat_worker_registry(self, is_leader: bool) -> None:
+        """Upsert this instance's presence into the workers table."""
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from app.db.engine import async_session
+        from app.db.models import OrchestratorWorker
+
+        now = datetime.now(timezone.utc)
+        
+        # We use a generic upsert since this table might be updated in PG or SQLite.
+        # Often it's easier to just try UPDATE, if zero rows, try INSERT.
+        # This keeps it database agnostic without pulling dialect specific inserts immediately.
+        async with async_session() as db:
+            if is_leader:
+                # If we are the leader, actively demote all ghosts so there is only one true leader visible.
+                await db.execute(
+                    update(OrchestratorWorker)
+                    .where(OrchestratorWorker.worker_id != self._leader_id)
+                    .values(is_leader=False)
+                )
+
+            stmt = (
+                update(OrchestratorWorker)
+                .where(OrchestratorWorker.worker_id == self._leader_id)
+                .values(is_leader=is_leader, last_heartbeat_at=now, status="online")
+            )
+            res = await db.execute(stmt)
+            if res.rowcount == 0:
+                try:
+                    db.add(OrchestratorWorker(
+                        worker_id=self._leader_id,
+                        status="online",
+                        is_leader=is_leader,
+                        last_heartbeat_at=now,
+                    ))
+                    await db.commit()
+                except IntegrityError:
+                    await db.rollback()
+            else:
+                await db.commit()
 
     async def _try_acquire_or_renew(self) -> bool:
         from app.db.engine import async_session

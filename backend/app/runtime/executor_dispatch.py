@@ -43,6 +43,19 @@ logger = logging.getLogger("langorch.runtime.dispatch")
 # Module-level so they survive across requests within a process.
 _pool_counters: dict[str, int] = defaultdict(int)
 
+# ── Agent Affinity Tracking — keyed by "{run_id}:{channel}" ──────────────────
+# Maps a run to a specific agent instance to maintain session affinity
+# (e.g. keeping the same browser session for all WEB steps in a run).
+_run_agent_affinity: dict[str, str] = {}
+
+
+def clear_run_affinity(run_id: str) -> None:
+    """Clear all affinity bindings for a given run to prevent memory leaks."""
+    keys_to_remove = [k for k in _run_agent_affinity.keys() if k.startswith(f"{run_id}:")]
+    for k in keys_to_remove:
+        del _run_agent_affinity[k]
+        logger.debug("Cleared agent affinity binding: %s", k)
+
 
 class NoExecutorError(Exception):
     """Raised when no registered agent or tool can handle the action."""
@@ -60,8 +73,13 @@ async def resolve_executor(
     db: AsyncSession,
     node: IRNode,
     step: IRStep,
-) -> ExecutorBinding:
+    run_id: str | None = None,
+) -> tuple["ExecutorBinding", str]:
     """Dynamically resolve which executor should handle this step.
+
+    Returns:
+        (ExecutorBinding, capability_type) where capability_type is
+        'tool' (fast, block and wait) or 'workflow' (slow, use webhook).
 
     Resolution order:
       1. Already bound at compile time (internal) → return as-is.
@@ -71,42 +89,48 @@ async def resolve_executor(
     """
     # 1. Already bound (internal actions like log, wait, set_variable)
     if step.executor_binding and step.executor_binding.kind == "internal":
-        return step.executor_binding
+        return step.executor_binding, "tool"
 
     # 2. Determine channel from the CKP node's agent field
     channel = (node.agent or "").upper()
     if not channel:
         # No agent declared on this node — treat as internal/generic
-        return ExecutorBinding(kind="internal", ref=step.action)
+        return ExecutorBinding(kind="internal", ref=step.action), "tool"
 
     # Normalize channel to lowercase for DB lookup
     channel_lower = channel.lower()
 
     # 3. Query the agent registry for a matching online agent
-    agent = await _find_capable_agent(db, channel_lower, step.action)
+    agent, cap_type = await _find_capable_agent(db, channel_lower, step.action, run_id)
     if agent:
         return ExecutorBinding(
             kind="agent_http",
             ref=agent.base_url,  # actual URL, not a hardcoded name
             mode="step",
-        )
+        ), cap_type
 
     # 4. MCP fallback (if configured)
     if settings.MCP_BASE_URL:
-        return ExecutorBinding(kind="mcp_tool", ref=settings.MCP_BASE_URL, mode="step")
+        return ExecutorBinding(kind="mcp_tool", ref=settings.MCP_BASE_URL, mode="step"), "tool"
 
     # 5. Nothing found
     raise NoExecutorError(channel_lower, step.action)
 
 
 async def _find_capable_agent(
-    db: AsyncSession, channel: str, action: str
-) -> AgentInstance | None:
+    db: AsyncSession, channel: str, action: str, run_id: str | None = None
+) -> tuple["AgentInstance | None", str]:
     """Find an online agent whose channel matches and capabilities include the action.
+
+    Returns:
+        (agent, capability_type) where capability_type is 'tool' or 'workflow'.
+        If no agent found, returns (None, 'tool').
 
     Selection strategy
     ------------------
-    * Agents are first grouped by ``pool_id``.
+    * First checks `_run_agent_affinity` for an existing binding for this run+channel.
+    * If affinity agent is offline/circuit-open, affinity is broken.
+    * Otherwise, agents are grouped by ``pool_id``.
     * Within a pool the *next* agent is chosen via a monotonic round-robin
       counter (``_pool_counters["{channel}:{pool_id}"]``).
     * Agents without a ``pool_id`` form their own implicit pool keyed by
@@ -114,6 +138,8 @@ async def _find_capable_agent(
     * Circuit-open agents are skipped; the counter does NOT advance for them
       so the next healthy agent in the pool is tried.
     """
+    import json as _json
+
     stmt = (
         select(AgentInstance)
         .where(AgentInstance.channel == channel)
@@ -141,29 +167,85 @@ async def _find_capable_agent(
             return False
         return True
 
-    def _has_capability(agent: AgentInstance) -> bool:
-        caps = [c.strip() for c in agent.capabilities.split(",") if c.strip()] if agent.capabilities else []
-        return not caps or "*" in caps or action in caps
+    def _parse_caps(agent: AgentInstance) -> list[dict]:
+        """Parse the JSON-stored capabilities list. Handles both JSON and legacy CSV."""
+        raw = agent.capabilities
+        if not raw:
+            return []
+        raw = raw.strip()
+        if raw.startswith("["):
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, list):
+                    result_list = []
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            result_list.append(item)
+                        elif isinstance(item, str):
+                            result_list.append({"name": item, "type": "tool"})
+                    return result_list
+            except _json.JSONDecodeError:
+                pass
+        # Legacy CSV fallback
+        return [{"name": c.strip(), "type": "tool"} for c in raw.split(",") if c.strip()]
+
+    def _has_capability(agent: AgentInstance) -> tuple[bool, str]:
+        """Return (can_handle, capability_type)."""
+        caps = _parse_caps(agent)
+        if not caps:
+            return True, "tool"  # Empty = accept all, assume tool
+        for cap in caps:
+            name = cap.get("name", "")
+            if name == "*" or name == action:
+                return True, cap.get("type", "tool")
+        return False, "tool"
+
+    # Pre-filter healthy and capable agents
+    capable_agents_with_types = [
+        (a, t) for a in agents
+        if _is_healthy(a)
+        for ok, t in [_has_capability(a)]
+        if ok
+    ]
+    if not capable_agents_with_types:
+        return None, "tool"
+
+    # Check for affinity first
+    affinity_key = f"{run_id}:{channel}" if run_id else None
+    if affinity_key and affinity_key in _run_agent_affinity:
+        affinity_agent_id = _run_agent_affinity[affinity_key]
+        for a, t in capable_agents_with_types:
+            if a.agent_id == affinity_agent_id:
+                logger.debug("Affinity hit: routing %s action to agent %s for run %s", channel, a.agent_id, run_id)
+                return a, t
+        # If we got here, the affinity agent is apparently offline or circuit-open.
+        logger.warning("Affinity broken: agent %s for run %s channel %s is no longer healthy/capable.", affinity_agent_id, run_id, channel)
+        del _run_agent_affinity[affinity_key]
 
     # Group capable, healthy agents by pool key
-    pools: dict[str, list[AgentInstance]] = defaultdict(list)
-    for agent in agents:
-        if _is_healthy(agent) and _has_capability(agent):
-            pool_key = f"{channel}:{agent.pool_id or 'standalone'}"
-            pools[pool_key].append(agent)
+    pools: dict[str, list[tuple[AgentInstance, str]]] = defaultdict(list)
+    for agent, cap_type in capable_agents_with_types:
+        pool_key = f"{channel}:{agent.pool_id or 'standalone'}"
+        pools[pool_key].append((agent, cap_type))
 
     if not pools:
-        return None
+        return None, "tool"
 
     # Use the first (sorted) pool that has agents.
-    # When agents share a pool_id they will all end up in the same list.
     pool_key = sorted(pools.keys())[0]
-    pool_agents = pools[pool_key]
+    pool_entries = pools[pool_key]
 
     # Round-robin within the pool
-    idx = _pool_counters[pool_key] % len(pool_agents)
+    idx = _pool_counters[pool_key] % len(pool_entries)
     _pool_counters[pool_key] += 1
-    return pool_agents[idx]
+    selected_agent, selected_cap_type = pool_entries[idx]
+
+    # Establish new affinity if we have a run_id
+    if affinity_key:
+        _run_agent_affinity[affinity_key] = selected_agent.agent_id
+        logger.debug("Established new affinity: routing %s action to agent %s for run %s", channel, selected_agent.agent_id, run_id)
+
+    return selected_agent, selected_cap_type
 
 
 async def dispatch_to_agent(

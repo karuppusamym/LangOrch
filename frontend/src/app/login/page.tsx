@@ -5,20 +5,39 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { authLogin, authMe } from "@/lib/api";
 import { setToken, setUser, isAuthenticated } from "@/lib/auth";
 
-export default function LoginPage() {
+import { Suspense } from "react";
+
+function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState("");
+  const [error, setError] = useState("");
   const [showPw, setShowPw] = useState(false);
 
-  // If already authenticated, redirect to dashboard
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+
+  // If already authenticated or just received token from SSO, redirect to dashboard
   useEffect(() => {
-    if (isAuthenticated()) {
+    const ssoToken = searchParams?.get("token");
+    if (ssoToken) {
+      setToken(ssoToken);
+      authMe().then(me => {
+        setUser({ identity: me.identity, roles: me.roles, user_id: me.user_id, email: me.email, full_name: me.full_name, role: me.role });
+        router.replace(searchParams?.get("from") ?? "/");
+      }).catch(() => {
+        router.replace(searchParams?.get("from") ?? "/");
+      });
+    } else if (isAuthenticated()) {
       router.replace(searchParams?.get("from") ?? "/");
     }
+
+    // Check if SSO is enabled
+    fetch("http://localhost:8000/api/auth/sso/status")
+      .then(r => r.json())
+      .then(d => setSsoEnabled(d.sso_enabled))
+      .catch(() => setSsoEnabled(false));
   }, [router, searchParams]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -139,6 +158,21 @@ export default function LoginPage() {
               Password: <span className="font-mono font-semibold">admin123</span>
             </p>
           </div>
+
+          {/* SSO Button */}
+          {ssoEnabled && (
+            <div className="pt-4 border-t border-neutral-200 dark:border-neutral-800">
+              <a
+                href="http://localhost:8000/api/auth/sso/login"
+                className="w-full flex items-center justify-center gap-3 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 py-2.5 text-sm font-semibold text-neutral-900 dark:text-neutral-100 hover:bg-neutral-50 dark:hover:bg-neutral-700 transition-colors"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M11.4 24V12.6H0V24H11.4ZM24 24V12.6H12.6V24H24ZM11.4 11.4V0H0V11.4H11.4ZM24 0H12.6V11.4H24V0Z" fill="#00A4EF" />
+                </svg>
+                Sign in with Azure AD (SSO)
+              </a>
+            </div>
+          )}
         </div>
 
         {/* Auth providers note */}
@@ -147,5 +181,13 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoginContent />
+    </Suspense>
   );
 }

@@ -9,10 +9,15 @@ type Tab = "general" | "execution" | "security" | "llm" | "retention";
 type PlatformStats = { totalRuns: number; totalAgents: number; totalProcedures: number; totalProjects: number };
 
 function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button onClick={() => onChange(!value)} role="switch" aria-checked={value}
-      className={`relative inline-flex h-6 w-11 rounded-full transition-colors focus:outline-none ${value ? "bg-blue-600" : "bg-neutral-300 dark:bg-neutral-600"}`}>
-      <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform mt-0.5 ${value ? "translate-x-5" : "translate-x-0.5"}`} />
+  return value ? (
+    <button onClick={() => onChange(false)} role="switch" aria-checked="true" aria-label="Toggle" title="Toggle"
+      className="relative inline-flex h-6 w-11 rounded-full transition-colors focus:outline-none bg-blue-600">
+      <span className="inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform mt-0.5 translate-x-5" />
+    </button>
+  ) : (
+    <button onClick={() => onChange(true)} role="switch" aria-checked="false" aria-label="Toggle" title="Toggle"
+      className="relative inline-flex h-6 w-11 rounded-full transition-colors focus:outline-none bg-neutral-300 dark:bg-neutral-600">
+      <span className="inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform mt-0.5 translate-x-0.5" />
     </button>
   );
 }
@@ -29,7 +34,7 @@ function Field({ label, children, help }: { label: string; children: React.React
 
 function NumInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
   return (
-    <input type="number" value={value}
+    <input type="number" value={value} title="Number Input" placeholder="0"
       onChange={(e) => onChange(Number(e.target.value))}
       className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
   );
@@ -37,7 +42,7 @@ function NumInput({ value, onChange }: { value: number; onChange: (n: number) =>
 
 function TextInput({ value, onChange, placeholder }: { value: string; onChange: (s: string) => void; placeholder?: string }) {
   return (
-    <input type="text" value={value} placeholder={placeholder}
+    <input type="text" value={value} placeholder={placeholder ?? "Enter text"} title={placeholder ?? "Text Input"}
       onChange={(e) => onChange(e.target.value)}
       className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
   );
@@ -48,7 +53,7 @@ function SaveBar({ dirty, saving, onSave }: { dirty: boolean; saving: boolean; o
   return (
     <div className="flex items-center justify-between rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-4 py-3">
       <p className="text-xs text-amber-700 dark:text-amber-400">
-        ⚠ Changes are applied in-memory and take effect immediately but are not persisted across server restarts.
+        ⚠ Changes take effect immediately and are persisted to the database across server restarts.
       </p>
       <button onClick={onSave} disabled={saving}
         className="ml-4 shrink-0 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60 transition-colors">
@@ -367,8 +372,49 @@ export default function SettingsPage() {
           </div>
 
           <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
+            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Apigee Gateway (mTLS + OAuth2)</h2>
+            <p className="text-xs text-neutral-400 mb-5">Configure Apigee token exchange to dynamically inject Bearer tokens into LLM calls.</p>
+            <div className="space-y-5">
+              <Field label="Enable Apigee Integration" help="Requires valid token URL, mTLS certs, and client credentials">
+                <div className="flex items-center gap-3 pt-1">
+                  <Toggle value={val("apigee_enabled")} onChange={(v) => patch("apigee_enabled", v)} />
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${val("apigee_enabled") ? "bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-400"}`}>
+                    {val("apigee_enabled") ? "Enabled" : "Disabled"}
+                  </span>
+                </div>
+              </Field>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <Field label="Token URL" help="Apigee OAuth2 token endpoint">
+                  <TextInput value={val("apigee_token_url") ?? ""} onChange={(s) => patch("apigee_token_url", s || null)} placeholder="https://api.enterprise.com/oauth/token" />
+                </Field>
+                <Field label="mTLS Cert Path" help="Absolute path to the dual PEM certificate file">
+                  <TextInput value={val("apigee_certs_path") ?? ""} onChange={(s) => patch("apigee_certs_path", s || null)} placeholder="/app/certs/apigee.pem" />
+                </Field>
+                <Field label="Client ID / Consumer Key">
+                  <TextInput value={val("apigee_client_id") ?? ""} onChange={(s) => patch("apigee_client_id", s || null)} placeholder="Enter Client ID" />
+                </Field>
+                <Field label="Client Secret / Consumer Secret">
+                  <div className="relative">
+                    <input
+                      className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      type="password"
+                      value={val("apigee_client_secret") ?? ""}
+                      onChange={(e) => patch("apigee_client_secret", e.target.value || null)}
+                      placeholder="Enter Client Secret"
+                    />
+                  </div>
+                </Field>
+                <Field label="Use Case ID (Optional)">
+                  <TextInput value={val("apigee_use_case_id") ?? ""} onChange={(s) => patch("apigee_use_case_id", s || null)} placeholder="Optional Use Case ID" />
+                </Field>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
             <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Enterprise Configuration</h2>
-            <p className="text-xs text-neutral-400 mb-5">Advanced configuration for API gateways and custom model costs.</p>
+            <p className="text-xs text-neutral-400 mb-5">Advanced configuration for standalone API gateways and custom model costs.</p>
             <div className="space-y-5">
               <Field label="API Gateway Headers (JSON)" help="Extra headers injected on every LLM call (e.g. proxy auth, tenant ID)">
                 <textarea

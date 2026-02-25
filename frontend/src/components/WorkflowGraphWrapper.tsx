@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import WorkflowGraph from "./WorkflowGraph";
 
+import type { NodeStatus } from "./WorkflowGraph";
+
 /**
  * Wrapper that only mounts WorkflowGraph on the client side.
  * This avoids both SSR issues with @xyflow/react (which needs DOM APIs)
@@ -13,7 +15,7 @@ export default function WorkflowGraphWrapper({
   nodeStates,
 }: {
   graph: { nodes: any[]; edges: any[] };
-  nodeStates?: Record<string, string>;
+  nodeStates?: Record<string, NodeStatus>;
 }) {
   const [mounted, setMounted] = useState(false);
 
