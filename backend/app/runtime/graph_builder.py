@@ -36,6 +36,29 @@ from app.runtime.state import OrchestratorState
 logger = logging.getLogger("langorch.graph_builder")
 
 
+async def _emit_node_lifecycle(
+    db_factory: Callable | None,
+    run_id: str,
+    event_type: str,
+    node_id: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Emit a node-level lifecycle event (node_started / node_completed / node_error)."""
+    if not db_factory or not run_id:
+        return
+    try:
+        from app.services import run_service
+        async with db_factory() as db:
+            await run_service.emit_event(
+                db, run_id, event_type,
+                node_id=node_id,
+                payload=payload,
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to emit %s for node %s: %s", event_type, node_id, exc)
+
+
 async def _check_sla(
     node_id: str,
     t0: float,
@@ -221,6 +244,43 @@ def build_graph(
                 def fn(state: OrchestratorState) -> OrchestratorState:
                     result = _NODE_EXECUTORS[node.type](node, state)
                     return _apply_checkpoint_marker(result, node.node_id)
+
+            # Wrap fn with node-level lifecycle event emission
+            _base_fn = fn
+            _is_async = asyncio.iscoroutinefunction(_base_fn)
+            _nid = node.node_id  # capture for closure
+            _node_name = node.description or node.node_id  # human-readable name for events
+
+            async def fn(
+                state: OrchestratorState,
+                _bfn: Any = _base_fn,
+                _ia: bool = _is_async,
+                _node_id: str = _nid,
+                _nname: str = _node_name,
+            ) -> OrchestratorState:
+                _rid = state.get("run_id", "")
+                await _emit_node_lifecycle(db_factory, _rid, "node_started", _node_id,
+                                           payload={"node_name": _nname})
+                try:
+                    result = (await _bfn(state)) if _ia else _bfn(state)
+                    # Emit node_paused instead of node_completed when the node is
+                    # waiting for an external signal (human approval, async workflow).
+                    _ts = result.get("terminal_status") if isinstance(result, dict) else None
+                    if _ts == "awaiting_approval" or result.get("_workflow_pending"):
+                        await _emit_node_lifecycle(db_factory, _rid, "node_paused", _node_id,
+                                                   payload={"reason": _ts or "workflow_pending",
+                                                            "node_name": _nname})
+                    else:
+                        await _emit_node_lifecycle(db_factory, _rid, "node_completed", _node_id,
+                                                   payload={"node_name": _nname})
+                    return result
+                except Exception as exc:
+                    await _emit_node_lifecycle(
+                        db_factory, _rid, "node_error", _node_id,
+                        payload={"error": str(exc)[:500], "node_name": _nname},
+                    )
+                    raise
+
             fn.__name__ = f"node_{node.node_id}"
             return fn
 

@@ -31,6 +31,7 @@ function ProceduresContent() {
   const [statusFilter, setStatusFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState(searchParams.get("project_id") ?? "");
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [procPage, setProcPage] = useState(0);
 
   // ── Quick-run modal state ──────────────────────────────────────
   const [quickRunProc, setQuickRunProc] = useState<ProcedureDetail | null>(null);
@@ -61,6 +62,7 @@ function ProceduresContent() {
 
   useEffect(() => { void loadProcedures(); }, [loadProcedures]);
   useEffect(() => { listProjects().then(setProjects).catch(() => { }); }, []);
+  useEffect(() => { setProcPage(0); }, [search, statusFilter, projectFilter]);
 
   function changeProjectFilter(val: string) {
     setProjectFilter(val);
@@ -212,6 +214,9 @@ function ProceduresContent() {
     proc.name.toLowerCase().includes(search.toLowerCase()) ||
     proc.procedure_id.toLowerCase().includes(search.toLowerCase())
   );
+  const PROC_PAGE_SIZE = 15;
+  const totalProcPages = Math.ceil(filtered.length / PROC_PAGE_SIZE);
+  const pagedProcs = filtered.slice(procPage * PROC_PAGE_SIZE, (procPage + 1) * PROC_PAGE_SIZE);
 
   return (
     <div className="p-6 space-y-6">
@@ -352,7 +357,7 @@ function ProceduresContent() {
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {filtered.map((proc) => {
+              {pagedProcs.map((proc) => {
                 const key = `${proc.procedure_id}:${proc.version}`;
                 const href = `/procedures/${encodeURIComponent(proc.procedure_id)}/${encodeURIComponent(proc.version)}`;
                 const projName = projects.find((p) => p.project_id === proc.project_id)?.name;
@@ -402,6 +407,22 @@ function ProceduresContent() {
               })}
             </tbody>
           </table>
+          {totalProcPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50">
+              <span className="text-xs text-neutral-400">{procPage * PROC_PAGE_SIZE + 1}–{Math.min((procPage + 1) * PROC_PAGE_SIZE, filtered.length)} of {filtered.length} procedures</span>
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => setProcPage((p) => Math.max(0, p - 1))} disabled={procPage === 0}
+                  className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                  ← Prev
+                </button>
+                <span className="text-xs text-neutral-500 px-2">{procPage + 1} / {totalProcPages}</span>
+                <button onClick={() => setProcPage((p) => Math.min(totalProcPages - 1, p + 1))} disabled={procPage >= totalProcPages - 1}
+                  className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -22,6 +22,7 @@ export default function RunsPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<"cancel" | "delete" | null>(null);
+  const [search, setSearch] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const PAGE_SIZE = 100;
   const { toast } = useToast();
@@ -163,8 +164,17 @@ export default function RunsPage() {
     setCreatedTo(now.toISOString().slice(0, 10));
   }
 
-  const filteredRuns =
-    filter === "all" ? runs : runs.filter((r) => r.status === filter);
+  const filteredRuns = runs.filter((r) => {
+    if (filter !== "all" && r.status !== filter) return false;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (
+      r.run_id.toLowerCase().includes(q) ||
+      r.procedure_id.toLowerCase().includes(q) ||
+      r.status.toLowerCase().includes(q) ||
+      (r.thread_id ?? "").toLowerCase().includes(q)
+    );
+  });
 
   const statusCounts = runs.reduce(
     (acc, r) => {
@@ -198,9 +208,10 @@ export default function RunsPage() {
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
             <input
               type="search"
-              placeholder="Search runs..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by run ID, procedure, status…"
               className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-3 py-2 text-sm text-neutral-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
-              readOnly
             />
           </div>
           <select

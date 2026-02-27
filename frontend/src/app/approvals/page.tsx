@@ -75,10 +75,21 @@ export default function ApprovalsPage() {
     }
   }
 
-  const filtered =
-    filter === "all" ? approvals : approvals.filter((a) => a.status === "pending");
+  const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "canceled"];
 
-  const pendingCount = approvals.filter((a) => a.status === "pending").length;
+  const filtered =
+    filter === "all" ? approvals : approvals.filter(
+      (a) => a.status === "pending" && !TERMINAL_RUN_STATUSES.includes(a.run_status ?? "")
+    );
+
+  // Truly actionable: pending AND run is NOT in a terminal state
+  const pendingCount = approvals.filter(
+    (a) => a.status === "pending" && !TERMINAL_RUN_STATUSES.includes(a.run_status ?? "")
+  ).length;
+  // Stale: pending but run has reached a terminal state
+  const staleCount = approvals.filter(
+    (a) => a.status === "pending" && TERMINAL_RUN_STATUSES.includes(a.run_status ?? "")
+  ).length;
 
   return (
     <div className="p-6 space-y-6">
@@ -98,6 +109,11 @@ export default function ApprovalsPage() {
               {pendingCount} pending
             </span>
           )}
+          {staleCount > 0 && (
+            <span className="rounded-full bg-gray-100 dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-500 dark:text-gray-400" title="Pending approvals whose run is no longer waiting">
+              {staleCount} stale
+            </span>
+          )}
           <span className="text-xs text-neutral-400">Live (SSE)</span>
         </div>
       </div>
@@ -113,7 +129,7 @@ export default function ApprovalsPage() {
           <div className="flex items-center gap-2 ml-auto">
             <button onClick={() => setFilter("pending")}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${filter === "pending" ? "bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400" : "text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>
-              Pending ({pendingCount})
+              Actionable ({pendingCount})
             </button>
             <button onClick={() => setFilter("all")}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${filter === "all" ? "bg-blue-100 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400" : "text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>
@@ -131,7 +147,7 @@ export default function ApprovalsPage() {
       ) : filtered.length === 0 ? (
         <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
           <svg className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-700" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-          {filter === "pending" ? "No pending approvals — all caught up!" : "No approvals found."}
+          {filter === "pending" ? "No actionable approvals — all caught up!" : "No approvals found."}
         </div>
       ) : (
         <div className="space-y-4">
@@ -144,6 +160,17 @@ export default function ApprovalsPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <ApprovalStatusBadge status={approval.status} />
+                      {/* Run status badge: show stale warning when run has reached a terminal state */}
+                      {approval.status === "pending" && TERMINAL_RUN_STATUSES.includes(approval.run_status ?? "") && (
+                        <span className="rounded-full bg-gray-100 dark:bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:text-gray-400" title={`Run is ${approval.run_status}`}>
+                          ⚠ stale (run: {approval.run_status})
+                        </span>
+                      )}
+                      {approval.run_status === "waiting_approval" && approval.status === "pending" && (
+                        <span className="rounded-full bg-amber-50 dark:bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400" title="Run is actively waiting">
+                          ▶ run waiting
+                        </span>
+                      )}
                       <span className="text-xs text-neutral-500 dark:text-neutral-400">Node: {approval.node_id}</span>
                       {approval.expires_at && approval.status === "pending" && (
                         <CountdownBadge expiresAt={approval.expires_at} />

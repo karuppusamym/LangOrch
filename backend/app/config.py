@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+# Absolute path to the backend/ directory — one level up from this file (app/).
+# Using an absolute default means the server can be launched from any CWD and
+# will always read/write the same database file.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_DEFAULT_DB_URL = f"sqlite+aiosqlite:///{_BACKEND_DIR / 'langorch.db'}"
 
 
 class Settings(BaseSettings):
     # ── Database ────────────────────────────────────────────────
-    # Primary DB URL.  Defaults to SQLite (local dev).
+    # Primary DB URL.  Defaults to SQLite in the backend/ directory.
     # For PostgreSQL set:
     #   ORCH_DB_URL=postgresql+asyncpg://user:pass@host:5432/langorch
-    ORCH_DB_URL: str = "sqlite+aiosqlite:///./langorch.db"
+    ORCH_DB_URL: str = _DEFAULT_DB_URL
 
     # Dialect is auto-detected from the URL below — override only if needed.
     ORCH_DB_DIALECT: str = "sqlite"  # sqlite | postgres
@@ -35,6 +42,13 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = True
+    
+    # ── Observability ───────────────────────────────────────────
+    # Log format: "text" (default) or "json" (for structured remote logging)
+    LOG_FORMAT: str = "text"
+    
+    # OpenTelemetry OTLP Exporter Endpoint (e.g. http://localhost:4318/v1/traces)
+    OTLP_ENDPOINT: str | None = None
 
     # ── CORS (frontend) ────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
@@ -98,6 +112,10 @@ class Settings(BaseSettings):
     # In local dev the default below is auto-used.
     SELF_BASE_URL: str = "http://127.0.0.1:8000"
 
+    # ── Workflow Timeout ─────────────────────────────────────────
+    # How long to wait for a paused run's workflow callback before failing the run
+    WORKFLOW_CALLBACK_TIMEOUT_MINUTES: int = 60
+
     # ── Rate limiting ───────────────────────────────────────────
     # Default max concurrent runs per procedure (0 = unlimited)
     RATE_LIMIT_MAX_CONCURRENT: int = 0
@@ -146,6 +164,17 @@ class Settings(BaseSettings):
     # Multiplied by attempt number for linear backoff.
     WORKER_RETRY_DELAY_SECONDS: float = 10.0
 
+    # ── Agent boundary hardening ───────────────────────────────
+    # When True, agents with empty/omitted capabilities are treated as
+    # incapable (default-deny). Agents must explicitly declare capabilities
+    # or '*' to receive dispatches.
+    AGENT_REQUIRE_EXPLICIT_CAPABILITIES: bool = True
+
+    # When True, agent /execute responses must match the documented envelope:
+    # {"status": "success"|"error", "result": ..., "error": ...}
+    # and malformed responses are rejected at the connector boundary.
+    AGENT_STRICT_RESPONSE_SCHEMA: bool = True
+
     # ── Authentication ───────────────────────────────────────────
     # Set AUTH_ENABLED=true to require JWT Bearer or X-API-Key on all mutating
     # endpoints.  When false (default) every request is treated as an
@@ -193,7 +222,7 @@ class Settings(BaseSettings):
         # If user set dialect=postgres with separate parts but no full URL,
         # build the asyncpg URL automatically.
         if (
-            url == "sqlite+aiosqlite:///./langorch.db"
+            url in ("sqlite+aiosqlite:///./langorch.db", _DEFAULT_DB_URL)
             and self.ORCH_DB_DIALECT == "postgres"
             and self.ORCH_DB_PASSWORD is not None
         ):

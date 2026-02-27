@@ -121,7 +121,7 @@ class TestDynamicInternalTimeout:
 
         db_factory, _ = _make_db_factory()
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.runtime.node_executors._execute_step_action", new=AsyncMock(return_value={"ok": True})), \
              patch("app.services.run_service.emit_event", new=AsyncMock()), \
              patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
@@ -150,7 +150,7 @@ class TestDynamicInternalTimeout:
 
         emitted_types = []
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.runtime.node_executors._execute_step_action", new=_slow_action), \
              patch("app.services.run_service.emit_event",
                    new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: emitted_types.append(event_type))), \
@@ -191,7 +191,7 @@ class TestScreenshotOnFail:
         async def _fail_action(*_a, **_kw):
             raise RuntimeError("deliberate failure")
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.runtime.node_executors._execute_step_action", new=_fail_action), \
              patch("app.services.run_service.emit_event",
                    new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: emitted_types.append(event_type))), \
@@ -221,7 +221,7 @@ class TestScreenshotOnFail:
         async def _fail_action(*_a, **_kw):
             raise RuntimeError("deliberate failure")
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.runtime.node_executors._execute_step_action", new=_fail_action), \
              patch("app.services.run_service.emit_event",
                    new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: emitted_types.append(event_type))), \
@@ -257,7 +257,7 @@ class TestMockExternalCalls:
         db_factory, _ = _make_db_factory()
         emitted_types = []
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.services.run_service.emit_event",
                    new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: emitted_types.append(event_type))), \
              patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
@@ -282,7 +282,7 @@ class TestMockExternalCalls:
         db_factory, _ = _make_db_factory()
         emitted_types = []
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.services.run_service.emit_event",
                    new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: emitted_types.append(event_type))), \
              patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
@@ -306,7 +306,7 @@ class TestMockExternalCalls:
 
         db_factory, _ = _make_db_factory()
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.runtime.executor_dispatch.dispatch_to_agent", new=AsyncMock(return_value={"ok": True})), \
              patch("app.services.run_service.emit_event", new=AsyncMock()), \
              patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
@@ -344,7 +344,7 @@ class TestTestDataOverrides:
         db_factory, _ = _make_db_factory()
         emitted_types = []
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.services.run_service.emit_event",
                    new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: emitted_types.append(event_type))), \
              patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
@@ -372,7 +372,7 @@ class TestTestDataOverrides:
 
         db_factory, _ = _make_db_factory()
 
-        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=binding)), \
+        with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "tool"))), \
              patch("app.runtime.node_executors._execute_step_action", new=AsyncMock(return_value={})), \
              patch("app.services.run_service.emit_event", new=AsyncMock()), \
              patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
@@ -524,10 +524,11 @@ class TestConfig:
     def test_checkpoint_retention_days_env_override(self, monkeypatch):
         """CHECKPOINT_RETENTION_DAYS can be overridden via env var."""
         monkeypatch.setenv("CHECKPOINT_RETENTION_DAYS", "7")
-        from importlib import reload
-        import app.config as cfg_module
-        reload(cfg_module)
-        s = cfg_module.Settings()
+        # Instantiate a fresh Settings() to pick up the env override without
+        # reloading the module (a reload would replace the shared `settings`
+        # singleton and break other tests that hold a reference to the old one).
+        from app.config import Settings
+        s = Settings()
         assert s.CHECKPOINT_RETENTION_DAYS == 7
 
 

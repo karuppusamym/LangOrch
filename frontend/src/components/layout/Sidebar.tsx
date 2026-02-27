@@ -72,7 +72,9 @@ export default function Sidebar() {
     async function refresh() {
       try {
         const [approvals, runs] = await Promise.all([listApprovals(), listRuns({ limit: 50 })]);
-        setPendingCount(approvals.filter((a) => a.status === "pending").length);
+        const TERMINAL = ["completed", "failed", "cancelled", "canceled"];
+        // Only count truly actionable: pending approvals whose run is NOT in a terminal state
+        setPendingCount(approvals.filter((a) => a.status === "pending" && !TERMINAL.includes(a.run_status ?? "")).length);
         setFailedCount(runs.filter((r) => r.status === "failed").length);
       } catch { /* noop */ }
     }

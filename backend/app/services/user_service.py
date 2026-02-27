@@ -142,8 +142,12 @@ async def authenticate(db: AsyncSession, username: str, password: str) -> User |
 
 
 async def ensure_default_admin(db: AsyncSession) -> None:
-    """Seed a default admin user if the users table is completely empty."""
-    result = await db.execute(select(User).limit(1))
+    """Seed a default admin user if no admin user exists yet.
+
+    Checks for an existing 'admin' username specifically, so leftover test
+    users don't suppress seeding.
+    """
+    result = await db.execute(select(User).where(User.username == "admin").limit(1))
     if result.scalar_one_or_none() is None:
         await create_user(
             db,

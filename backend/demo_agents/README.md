@@ -19,6 +19,27 @@ powershell -ExecutionPolicy Bypass -File .\run_playwright_agent.ps1
 - Channel: `web`
 - Resource key: `web_default`
 
+**Configurable environment variables (multi-agent tests):**
+- `WEB_AGENT_ID`
+- `WEB_AGENT_NAME`
+- `WEB_AGENT_PORT`
+- `WEB_AGENT_CHANNEL` (default: `web`)
+- `WEB_AGENT_POOL_ID` (default: `web_pool_1`)
+- `WEB_AGENT_RESOURCE_KEY` (default: `web_default`)
+- `WEB_AGENT_CONCURRENCY` (default: `1`)
+
+**Start 5 WEB agents in one pool (dry-run):**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_5_web_agents.ps1
+```
+
+**Start 5 WEB agents in different pools (dry-run):**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_5_web_agents_split_pools.ps1
+```
+
+Note: Dispatcher currently selects the first sorted pool key for a channel before doing round-robin in that pool. Using a single shared pool is recommended for full utilization in load tests.
+
 **Endpoints:** `GET /health`, `GET /capabilities`, `POST /execute`
 
 ---

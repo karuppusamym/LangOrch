@@ -484,6 +484,15 @@ export async function patchConfig(
   return request("/config", { method: "PATCH", body: JSON.stringify(data) });
 }
 
+export async function testLlmConnection(): Promise<{
+  ok: boolean;
+  model?: string;
+  response?: string;
+  error?: string;
+}> {
+  return request("/config/test-llm", { method: "POST" });
+}
+
 /* ── Audit Events ────────────────────────────────────────────── */
 
 export interface AuditEventRecord {

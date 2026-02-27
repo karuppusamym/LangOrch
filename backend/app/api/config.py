@@ -200,7 +200,9 @@ async def patch_config(
     disk — set the corresponding environment variable or .env entry for
     permanent changes.
     """
-    updates: dict[str, Any] = {k: v for k, v in body.model_dump().items() if v is not None}
+    # Use exclude_unset=True so explicitly-null values (i.e. clearing a field)
+    # are included, while fields never mentioned in the request body are skipped.
+    updates: dict[str, Any] = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -282,6 +284,12 @@ async def patch_config(
                             await db.delete(entry)
                     continue
 
+                if value is None:
+                    # Clearing a field — delete the row so it resets to the env/default
+                    del_stmt = text("DELETE FROM system_settings WHERE key = :k")
+                    await db.execute(del_stmt, {"k": attr})
+                    continue
+
                 v_json = json.dumps(value)
                 # SQLite-compatible UPSERT
                 stmt = text(
@@ -311,3 +319,35 @@ async def patch_config(
     )
     await db.commit()
     return _build_config_out()
+
+
+class LLMTestResult(BaseModel):
+    ok: bool
+    model: str | None = None
+    response: str | None = None
+    error: str | None = None
+
+
+@router.post("/api/config/test-llm", response_model=LLMTestResult)
+async def test_llm_connection(
+    _: Principal = Depends(require_role("admin")),
+) -> LLMTestResult:
+    """Fire a minimal LLM request to verify the current endpoint + key are reachable."""
+    from app.connectors.llm_client import LLMClient, LLMCallError
+    try:
+        client = LLMClient()
+        result = client.complete(
+            prompt='Respond with exactly the word: OK',
+            model=settings.LLM_DEFAULT_MODEL,
+            max_tokens=10,
+            temperature=0.0,
+        )
+        return LLMTestResult(
+            ok=True,
+            model=result["usage"].get("model") or settings.LLM_DEFAULT_MODEL,
+            response=(result.get("text") or "").strip()[:120],
+        )
+    except LLMCallError as exc:
+        return LLMTestResult(ok=False, error=str(exc))
+    except Exception as exc:
+        return LLMTestResult(ok=False, error=f"{type(exc).__name__}: {exc}")

@@ -27,6 +27,7 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentInstance[]>([]);
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
+  const [agentPage, setAgentPage] = useState(0);
   const [showRegister, setShowRegister] = useState(false);
   const [form, setForm] = useState({
     agent_id: "",
@@ -177,6 +178,10 @@ export default function AgentsPage() {
     }
   }
 
+  const AGENT_PAGE_SIZE = 9;
+  const totalAgentPages = Math.ceil(agents.length / AGENT_PAGE_SIZE);
+  const pagedAgents = agents.slice(agentPage * AGENT_PAGE_SIZE, (agentPage + 1) * AGENT_PAGE_SIZE);
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
@@ -309,7 +314,7 @@ export default function AgentsPage() {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {agents.map((agent) => (
+          {pagedAgents.map((agent) => (
             <div key={agent.agent_id} className={`rounded-xl border bg-white dark:bg-neutral-900 p-5 shadow-sm ${agent.circuit_open_at ? "border-red-300 dark:border-red-800 ring-1 ring-red-200 dark:ring-red-900" : "border-neutral-200 dark:border-neutral-800"}`}>
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-neutral-900 dark:text-neutral-100">{agent.name}</h3>
@@ -381,6 +386,22 @@ export default function AgentsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+      {!loading && totalAgentPages > 1 && (
+        <div className="flex items-center justify-between px-2 py-1">
+          <span className="text-xs text-neutral-400">{agentPage * AGENT_PAGE_SIZE + 1}–{Math.min((agentPage + 1) * AGENT_PAGE_SIZE, agents.length)} of {agents.length} agents</span>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setAgentPage((p) => Math.max(0, p - 1))} disabled={agentPage === 0}
+              className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+              ← Prev
+            </button>
+            <span className="text-xs text-neutral-500 px-2">{agentPage + 1} / {totalAgentPages}</span>
+            <button onClick={() => setAgentPage((p) => Math.min(totalAgentPages - 1, p + 1))} disabled={agentPage >= totalAgentPages - 1}
+              className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+              Next →
+            </button>
+          </div>
         </div>
       )}
 

@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Approval, Artifact, ResourceLease, Run, RunEvent, RunJob, StepIdempotency
@@ -87,6 +87,12 @@ async def update_run_status(db: AsyncSession, run_id: str, status: str, **kwargs
         run.started_at = datetime.now(timezone.utc)
     if status in ("succeeded", "completed", "failed", "canceled", "cancelled"):
         run.ended_at = datetime.now(timezone.utc)
+        # Void any pending approvals so the approvals list stays in sync
+        await db.execute(
+            update(Approval)
+            .where(Approval.run_id == run_id, Approval.status == "pending")
+            .values(status="cancelled")
+        )
     for k, v in kwargs.items():
         if hasattr(run, k):
             setattr(run, k, v)
@@ -335,3 +341,77 @@ async def get_run_diagnostics(db: AsyncSession, run_id: str) -> dict:
         "total_events": total_events,
         "error_events": error_events,
     }
+
+
+async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) -> list[str]:
+    """Find runs that are 'paused' waiting for a workflow callback for too long, and fail them.
+    
+    A run is considered stalled if its status is 'paused', and it has a 'workflow_delegated'
+    event older than the timeout, without any subsequent events indicating resumption.
+    """
+    from datetime import timedelta
+    from app.db.models import Run, RunEvent
+    from sqlalchemy.orm import aliased
+    import logging
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+    
+    # We want to find paused runs where we see a workflow_delegated event older than cutoff
+    # Ensure there isn't a newer event (though if it resumed it wouldn't be paused)
+    # Finding paused runs is the first filter.
+    stmt = (
+        select(Run, RunEvent)
+        .join(RunEvent, Run.run_id == RunEvent.run_id)
+        .where(
+            Run.status == "paused",
+            RunEvent.event_type == "workflow_delegated",
+            RunEvent.ts < cutoff
+        )
+    )
+    result = await db.execute(stmt)
+    
+    failed_runs = []
+    
+    # Since a run could have multiple delegations over its lifetime, 
+    # we need to be careful. If the run is currently paused, and the *latest*
+    # event is workflow_delegated, then it is waiting for a webhook.
+    # In SQLite, getting the latest event per run is sometimes tricky using group_by.
+    # Instead, we pull the candidates and check their latest event.
+    candidates = result.all()
+    
+    if not candidates:
+        return []
+
+    # Map run_id -> (Run, most_recent_workflow_delegated_event)
+    run_map = {}
+    for r, ev in candidates:
+        if r.run_id not in run_map or ev.ts > run_map[r.run_id][1].ts:
+            run_map[r.run_id] = (r, ev)
+            
+    # For each candidate run, fetch its absolute latest event to ensure it is actually workflow_delegated
+    for r_id, (run, ev) in run_map.items():
+        latest_event_stmt = (
+            select(RunEvent.event_type)
+            .where(RunEvent.run_id == r_id)
+            .order_by(RunEvent.ts.desc())
+            .limit(1)
+        )
+        latest_ev_type = (await db.execute(latest_event_stmt)).scalar()
+        
+        if latest_ev_type == "workflow_delegated":
+            # The run is stuck waiting for a callback! Fail it.
+            run.status = "failed"
+            run.error_message = f"Workflow webhook callback timed out after {timeout_minutes} minutes."
+            run.ended_at = datetime.now(timezone.utc)
+            
+            # Emit failure event
+            await emit_event(
+                db, 
+                r_id, 
+                "run_failed", 
+                payload={"error": run.error_message, "timeout_minutes": timeout_minutes}
+            )
+            failed_runs.append(r_id)
+            
+    await db.flush()
+    return failed_runs

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTheme } from "@/components/ThemeProvider";
-import { listApprovals, listRuns } from "@/lib/api";
+import { listApprovals, listRuns, listProcedures, listAgents } from "@/lib/api";
 
 //  tiny icon helpers 
 const SearchIcon = () => (
@@ -32,13 +32,74 @@ const BellIcon = () => (
 );
 
 interface Notification { id: string; title: string; desc: string; href: string; type: "warning" | "info" }
+interface SearchResult { kind: "procedure" | "run" | "agent"; label: string; sub: string; href: string; }
 
 export default function Header() {
   const pathname = usePathname();
+  const router = useRouter();
   const { theme, toggle } = useTheme();
   const [bellOpen, setBellOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const bellRef = useRef<HTMLDivElement>(null);
+
+  // Global search
+  const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runSearch = useCallback(async (q: string) => {
+    if (!q.trim()) { setSearchResults([]); setSearchOpen(false); return; }
+    setSearching(true);
+    try {
+      const ql = q.toLowerCase();
+      const [procs, runs, agents] = await Promise.all([
+        listProcedures().catch(() => []),
+        listRuns({ limit: 100 }).catch(() => []),
+        listAgents().catch(() => []),
+      ]);
+      const results: SearchResult[] = [
+        ...procs
+          .filter((p) => p.name.toLowerCase().includes(ql) || p.procedure_id.toLowerCase().includes(ql))
+          .slice(0, 4)
+          .map((p) => ({ kind: "procedure" as const, label: p.name, sub: p.procedure_id, href: `/procedures/${p.procedure_id}` })),
+        ...runs
+          .filter((r) => r.run_id.toLowerCase().includes(ql) || r.procedure_id.toLowerCase().includes(ql) || r.status.toLowerCase().includes(ql))
+          .slice(0, 4)
+          .map((r) => ({ kind: "run" as const, label: r.run_id, sub: `${r.procedure_id} · ${r.status}`, href: `/runs/${r.run_id}` })),
+        ...agents
+          .filter((a) => a.name.toLowerCase().includes(ql) || a.agent_id.toLowerCase().includes(ql))
+          .slice(0, 3)
+          .map((a) => ({ kind: "agent" as const, label: a.name, sub: a.agent_id, href: `/agents` })),
+      ];
+      setSearchResults(results);
+      setSearchOpen(true);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => runSearch(query), 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [query, runSearch]);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setSearchOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  // Close search on navigation
+  useEffect(() => { setSearchOpen(false); setQuery(""); }, [pathname]);
+
+  const kindLabel = { procedure: "Procedure", run: "Run", agent: "Agent" } as const;
+  const kindColor = { procedure: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300", run: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", agent: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" } as const;
 
   const segment = pathname.split("/").filter(Boolean)[0] ?? "";
   const pageLabel = segment
@@ -91,13 +152,46 @@ export default function Header() {
       </div>
 
       {/* Search bar */}
-      <div className="relative flex-1 max-w-lg mx-auto">
+      <div ref={searchRef} className="relative flex-1 max-w-lg mx-auto">
         <SearchIcon />
         <input
           type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => { if (searchResults.length > 0) setSearchOpen(true); }}
           placeholder="Search procedures, runs, agents..."
           className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-4 py-2 text-sm text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition-all"
         />
+        {searching && (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2">
+            <svg className="h-3.5 w-3.5 animate-spin text-neutral-400" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+          </span>
+        )}
+        {searchOpen && query.trim() && (
+          <div className="absolute left-0 right-0 top-full mt-1.5 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl z-50 overflow-hidden">
+            {searchResults.length === 0 ? (
+              <p className="px-4 py-3 text-sm text-neutral-500">No results for &ldquo;{query}&rdquo;</p>
+            ) : (
+              <ul className="max-h-72 overflow-y-auto">
+                {searchResults.map((r, i) => (
+                  <li key={i}>
+                    <Link
+                      href={r.href}
+                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                      onClick={() => { setSearchOpen(false); setQuery(""); }}
+                    >
+                      <span className={`shrink-0 text-[10px] font-semibold rounded px-1.5 py-0.5 ${kindColor[r.kind]}`}>{kindLabel[r.kind]}</span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100 truncate">{r.label}</p>
+                        <p className="text-xs text-neutral-400 truncate">{r.sub}</p>
+                      </div>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Right actions */}

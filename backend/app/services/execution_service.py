@@ -260,6 +260,11 @@ async def _emit_checkpoint_event(db_factory, run_id: str, node_id: str) -> None:
         logger.warning("Failed to emit checkpoint_saved event for run %s node %s: %s", run_id, node_id, exc)
 
 
+from app.utils.logger import ctx_run_id
+from app.utils.tracing import get_tracer
+
+_tracer = get_tracer("langorch.execution")
+
 async def execute_run(run_id: str, db_factory) -> None:
     """
     Full run execution pipeline (called as a background task):
@@ -271,6 +276,15 @@ async def execute_run(run_id: str, db_factory) -> None:
       6. Execute with initial state
       7. Update run status + emit events
     """
+    # Inject run_id into structured logs
+    token_run_id = ctx_run_id.set(run_id)
+    
+    from opentelemetry import trace, context
+    from opentelemetry.trace import set_span_in_context
+    span = _tracer.start_span("execute_run")
+    span.set_attribute("run_id", run_id)
+    token_trace = context.attach(set_span_in_context(span))
+    
     async with db_factory() as db:
         _cancel_register(run_id)
         try:
@@ -480,6 +494,30 @@ async def execute_run(run_id: str, db_factory) -> None:
                 if isinstance(v, dict) and "default" in v
             }
 
+            # Fetch any workflow outputs if resuming from a webhook callback
+            wf_output_vars = {}
+            try:
+                from sqlalchemy import desc
+                wf_evt_stmt = (
+                    select(RunEvent.payload_json)
+                    .where(RunEvent.run_id == run_id)
+                    .where(RunEvent.event_type == "workflow_output_ready")
+                    .order_by(desc(RunEvent.ts))
+                    .limit(1)
+                )
+                wf_evt_json = (await db.execute(wf_evt_stmt)).scalar()
+                if wf_evt_json:
+                    wf_payload = json.loads(wf_evt_json)
+                    if isinstance(wf_payload, dict):
+                        _payload_output = wf_payload.get("output_vars")
+                        if not isinstance(_payload_output, dict):
+                            _payload_output = wf_payload.get("output")
+                        if isinstance(_payload_output, dict):
+                            wf_output_vars = _payload_output
+                        logger.info("Run %s: merged workflow outputs into state", run_id)
+            except Exception as exc:
+                logger.warning("Failed to parse workflow_output_ready payload: %s", exc)
+
             # Rate limiting: build asyncio.Semaphore if global_config.rate_limiting.max_concurrent is set
             _rl_cfg = ir.global_config.get("rate_limiting") or {}
             _max_concurrent = int(_rl_cfg.get("max_concurrent") or settings.RATE_LIMIT_MAX_CONCURRENT or 0)
@@ -491,7 +529,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                 _gc_for_state["_rate_semaphore"] = _rate_semaphore
 
             initial_state: OrchestratorState = {
-                "vars": {**schema_defaults, **input_vars},
+                "vars": {**schema_defaults, **input_vars, **wf_output_vars},
                 "secrets": secrets_dict,
                 "run_id": run_id,
                 "procedure_id": ir.procedure_id,
@@ -513,10 +551,11 @@ async def execute_run(run_id: str, db_factory) -> None:
                 "terminal_status": None,
             }
 
+            _exec_event = "execution_resumed" if resume_reason else "execution_started"
             await run_service.emit_event(
                 db,
                 run_id,
-                "execution_started",
+                _exec_event,
                 payload={
                     "entry_node_id": resume_entry_node or ir.start_node_id,
                     "resume_reason": resume_reason,
@@ -565,10 +604,19 @@ async def execute_run(run_id: str, db_factory) -> None:
                     db, run_id, "run_failed", payload={"error": error}
                 )
                 record_run_completed(run_duration, "failed")
+                await db.commit()
+                clear_run_affinity(run_id)
                 asyncio.ensure_future(_fire_alert_webhook(run_id, error))
             elif terminal == "awaiting_approval" and isinstance(awaiting_approval, dict):
                 # Persist current vars so resume can continue without replaying side effects.
-                run.input_vars_json = json.dumps(final_state.get("vars", {}))
+                # Strip system-injected keys (run_id, procedure_id, __* internals) so they
+                # don't pollute the Input Variables display or re-injection on resume.
+                _SYSTEM_VAR_KEYS = {"run_id", "procedure_id", "secrets"}
+                _saved_vars = {
+                    k: v for k, v in (final_state.get("vars") or {}).items()
+                    if not k.startswith("__") and k not in _SYSTEM_VAR_KEYS
+                }
+                run.input_vars_json = json.dumps(_saved_vars)
 
                 approval = await approval_service.create_approval(
                     db,
@@ -591,12 +639,20 @@ async def execute_run(run_id: str, db_factory) -> None:
                     run_id,
                     "approval_requested",
                     node_id=final_state.get("current_node_id"),
-                    payload={"approval_id": approval.approval_id},
+                    payload={
+                        "approval_id": approval.approval_id,
+                        "node_name": awaiting_approval.get("node_name") or final_state.get("current_node_id"),
+                    },
                 )
+                await db.commit()  # ← must commit so status is visible immediately
+                logger.info("Run %s paused waiting_approval on node %s (approval_id=%s)",
+                            run_id, final_state.get("current_node_id"), approval.approval_id)
             elif terminal == "failed":
                 await run_service.update_run_status(db, run_id, "failed", error_message="Execution terminated with failed status")
                 await run_service.emit_event(db, run_id, "run_failed")
                 record_run_completed(run_duration, "failed")
+                await db.commit()
+                clear_run_affinity(run_id)
                 asyncio.ensure_future(_fire_alert_webhook(run_id, None))
             else:
                 # Persist final output vars alongside the run record
@@ -661,3 +717,6 @@ async def execute_run(run_id: str, db_factory) -> None:
                 logger.exception("Failed to update run status after error")
         finally:
             _cancel_deregister(run_id)
+            span.end()
+            context.detach(token_trace)
+            ctx_run_id.reset(token_run_id)

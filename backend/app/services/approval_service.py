@@ -48,6 +48,40 @@ async def list_approvals(db: AsyncSession, status: str | None = None) -> list[Ap
     return list(result.scalars().all())
 
 
+async def list_approvals_enriched(db: AsyncSession, status: str | None = None) -> list[dict]:
+    """Return approvals joined with their run status so the UI can tell stale from active."""
+    from app.db.models import Run
+    stmt = (
+        select(Approval, Run.status.label("run_status"))
+        .outerjoin(Run, Run.run_id == Approval.run_id)
+        .order_by(Approval.created_at.desc())
+    )
+    if status:
+        stmt = stmt.where(Approval.status == status)
+    result = await db.execute(stmt)
+    rows = result.all()
+    enriched = []
+    for row in rows:
+        approval: Approval = row[0]
+        run_status: str | None = row[1]
+        enriched.append({
+            "approval_id": approval.approval_id,
+            "run_id": approval.run_id,
+            "node_id": approval.node_id,
+            "prompt": approval.prompt,
+            "decision_type": approval.decision_type,
+            "options_json": approval.options_json,
+            "context_data_json": approval.context_data_json,
+            "status": approval.status,
+            "decided_by": approval.decided_by,
+            "decision_json": approval.decision_json,
+            "created_at": approval.created_at,
+            "decided_at": approval.decided_at,
+            "run_status": run_status,
+        })
+    return enriched
+
+
 async def get_approval(db: AsyncSession, approval_id: str) -> Approval | None:
     return await db.get(Approval, approval_id)
 

@@ -295,3 +295,52 @@ class TestParseVerification:
         assert payload.checks[0].condition == "vars.x > 0"
         assert payload.checks[0].on_fail == "fail_workflow"
         assert payload.checks[0].message == "x must be positive"
+
+
+class TestParseWorkflowDispatchMode:
+    def test_step_workflow_dispatch_mode_parsed(self):
+        ckp = {
+            "procedure_id": "wf_mode_proc",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                                "workflow_dispatch_mode": "sync",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        ir = parse_ckp(ckp)
+        step = ir.nodes["seq"].payload.steps[0]
+        assert step.workflow_dispatch_mode == "sync"
+
+    def test_global_workflow_dispatch_mode_preserved(self):
+        ckp = {
+            "procedure_id": "wf_mode_global_proc",
+            "version": "1.0.0",
+            "global_config": {"workflow_dispatch_mode": "async"},
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "steps": [{"step_id": "s1", "action": "log", "message": "ok"}],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        ir = parse_ckp(ckp)
+        assert ir.global_config["workflow_dispatch_mode"] == "async"

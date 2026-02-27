@@ -1,6 +1,11 @@
 ﻿# LangOrch Implementation Status
 
-Last updated: 2026-02-24 (Batch 37: 9-Issue Sprint Completion —
+Last updated: 2026-02-26 (Validation Addendum: Full Feature Walkthrough audit + workflow dispatch mode rollout verification —
+`backend/tests/test_p2_agent_features.py` executed locally: 8 passed;
+callback token propagation + workflow output merge key compatibility fixed;
+`workflow_dispatch_mode` (`sync|async`) implemented and validated with targeted suites:
+`test_batch16.py`, `test_batch22.py`, `test_batch23.py`, `test_workflow_dispatch_mode.py`, `test_parser.py`, `test_validator.py` => 127 passed)
+Previous major update: 2026-02-24 (Batch 37: 9-Issue Sprint Completion —
 **P0** `frontend/src/components/WorkflowBuilder.tsx`: Fixed visual builder typing bug and moved Config to DB;
 **P1** `backend/app/services/validator.py`: Added variable name cross-validation, default CKP generation, and Apigee integration;
 **P2** `backend/app/api/agent_credentials.py` & `backend/app/api/agents.py`: Implemented encrypted credential assets, secure agent credential pull model (JWT grants), and agent bootstrap/heartbeats;
@@ -23,8 +28,30 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 | LLM routing & gateway | Dynamic per-call LLM client, externalised cost table, circuit breaker on LLM + MCP all implemented (Batch 35); cost-based fallback model selection policy is pending | P1 |
 | API gateway integration | `LLM_GATEWAY_HEADERS` supports static header injection (Batch 35); full dynamic Apigee/Kong integration (rate-limiting, token exchange) is pending | P2 |
 | Compliance controls | No PII tokenization pre-LLM, GDPR erase flow, or policy-as-code compile checks | P2 |
-| Agent pool capacity signals | `pool_id` + deterministic round-robin exist; saturation/autoscale signals and capability-version policy are pending | P2 |
+| Agent pool capacity signals | `pool_saturated` event emission is implemented in lease-acquire failure path; remaining work is autoscaler consumption policy + capability-version governance policy | P2 |
 | Test hardening breadth | Strong unit coverage + core Playwright flows; broader load/soak and failure-path e2e coverage are pending | P2 |
+
+---
+
+## 2026-02-26 walkthrough validation addendum
+
+| Walkthrough claim | Validation result | Evidence / notes |
+|-----|-----|-----|
+| Agent affinity stickiness | ✅ Confirmed | `_run_agent_affinity` and `clear_run_affinity(run_id)` in runtime dispatch + execution completion paths |
+| Pool saturation signal | ✅ Confirmed | `_acquire_agent_lease()` emits `pool_saturated` with `agent_id/channel/resource_key/pool_id` before raising |
+| System Health dashboard | ✅ Confirmed | `/api/orchestrators` pruning endpoint + `OrchestratorWorker` heartbeat registry + frontend `/health` page polling every 5s |
+| Azure AD dynamic role mapping | ✅ Confirmed | `SSO_ROLE_MAPPING` JSON parse in `sso_callback` with privilege hierarchy: admin > manager > operator > approver > viewer |
+| HA lease failover behavior | ⚠️ Code supports; runtime proof not re-executed in this validation pass | `LeaderElection` renew/steal/insert paths + leader-only singleton loops are present; prior 8000→8001 failover claim not replayed live here |
+| Hybrid demo agent + capability typing | ✅ Confirmed | `backend/demo_agents/hybrid_agent.py` exposes tool + workflow capabilities; frontend badges differentiate `workflow` vs `tool`; typed chain present in frontend API/types |
+| Probe capabilities schema list[dict] | ✅ Confirmed | `/api/agents/probe-capabilities` returns `response_model=list[dict]` |
+| Async webhook delegation (phase 2/3) | ✅ Confirmed and hardened | Non-blocking `asyncio.create_task` dispatch + pause/requeue callback flow + timeout sweeper exist. Callback URL now carries HMAC token when auth secret is set; callback/output merge accepts both `output` and `output_vars` payload keys |
+| Workflow dispatch mode (`sync` / `async`) | ✅ Implemented and validated | IR/parser/validator + runtime sequence dispatch branch now support explicit mode selection (`async` default). Added focused runtime tests and reconciled adjacent test contracts for new resolver return shape |
+| Code cleanup (6 stale files removed) | ✅ Confirmed | Stale temp/test files removed, including `backend/test_out.txt` |
+
+Terminology note (to avoid confusion):
+
+- `workflow` capability is still **step execution** (never batch by itself); dispatch is now configurable as `sync` or `async` via `workflow_dispatch_mode` (default `async`).
+- `batch` execution mode is not currently implemented in runtime dispatch; `is_batch` is metadata only at this stage.
 
 ---
 
@@ -661,7 +688,7 @@ projects, procedures, runs, run_events, approvals, step_idempotency, artifacts, 
 93. **Auth config settings** — `AUTH_ENABLED`, `AUTH_SECRET_KEY`, `AUTH_TOKEN_EXPIRE_MINUTES`, `API_KEYS` added to `Settings`
 94. **Role guards wired to routers** — `operator` guard on all mutating endpoints in `runs.py`, `procedures.py`, `agents.py`; `approver` guard on `POST /api/approvals/{id}/decision`; `admin` guard on destructive cleanup; `decided_by` auto-set from `principal.identity` when body field is blank
 95. **Token issuance endpoint** — `app/api/auth.py`: `POST /api/auth/token` (HS256 JWT with `sub` + `roles` claims, shared-secret body auth); only active when `AUTH_ENABLED=true`
-96. **Agent `pool_id` + round-robin** — `pool_id: str | None` column added to `AgentInstance`; `executor_dispatch._find_capable_agent` replaced `random.shuffle` with per-pool `_pool_counters` monotonic round-robin; counters keyed `"{channel}:{pool_id or 'standalone'}"`; `AgentInstanceCreate/Update/Out` schemas + `register_agent`/`update_agent` handlers updated
+96. **Agent `pool_id` + round-robin** — `pool_id: str | None` column added to `AgentInstance`; `executor_dispatch._find_capable_agent` uses deterministic per-pool round-robin with persistent DB-backed `AgentDispatchCounter` (atomic PostgreSQL UPSERT, SQLite fallback), keyed as `"{channel}:{pool_id or 'standalone'}"`; `AgentInstanceCreate/Update/Out` schemas + `register_agent`/`update_agent` handlers updated
 97. **Migration v003** — `alembic/versions/v003_agent_pool_id.py`: adds `pool_id VARCHAR(128)` + `ix_agent_instances_pool_id` index
 98. **Prometheus Pushgateway export** — `METRICS_PUSH_URL`, `METRICS_PUSH_INTERVAL_SECONDS`, `METRICS_PUSH_JOB` config; `_metrics_push_loop()` background task pushes Prometheus text to pushgateway PUT API; `to_prometheus_text()` extracted as shared serializer; `GET /api/metrics` now uses it; p95 percentile added to histogram stats
 99. **Secret rotation cache flush** — `invalidate_secrets_cache()` global helper in `secrets_service.py`; `SECRETS_ROTATION_CHECK=true` triggers flush + `secrets_cache_invalidated` run event before each run execution; `invalidate_secrets_cache` imported in `execution_service.py`

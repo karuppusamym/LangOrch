@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from typing import Literal
 
 import httpx
+from pydantic import BaseModel, ValidationError
+
+from app.config import settings
 
 logger = logging.getLogger("langorch.connectors.agent")
+
+
+class AgentExecuteEnvelope(BaseModel):
+    status: Literal["success", "error"]
+    result: Any | None = None
+    error: str | None = None
 
 
 class AgentClient:
@@ -64,10 +74,40 @@ class AgentClient:
             resp.raise_for_status()
             data = resp.json()
 
-            if data.get("status") == "error":
-                raise AgentActionError(action, data.get("error", "Unknown agent error"))
+            envelope: AgentExecuteEnvelope | None = None
+            if settings.AGENT_STRICT_RESPONSE_SCHEMA:
+                try:
+                    envelope = AgentExecuteEnvelope.model_validate(data)
+                except ValidationError as exc:
+                    raise AgentActionError(
+                        action,
+                        f"Invalid agent response schema: {exc.errors()[0].get('msg', 'validation error')}",
+                    ) from exc
+            else:
+                # Backward-compatible mode for legacy agents
+                if isinstance(data, dict) and "status" in data:
+                    try:
+                        envelope = AgentExecuteEnvelope.model_validate(data)
+                    except ValidationError:
+                        envelope = None
+                elif isinstance(data, dict):
+                    logger.warning(
+                        "Legacy agent response (missing status envelope) accepted for action=%s run=%s",
+                        action,
+                        run_id,
+                    )
+                    return data.get("result", data)
 
-            return data.get("result", data)
+            if envelope and envelope.status == "error":
+                raise AgentActionError(action, envelope.error or "Unknown agent error")
+
+            if envelope:
+                return envelope.result if envelope.result is not None else {}
+
+            # Permissive fallback (strict mode disabled and unknown response shape)
+            if isinstance(data, dict):
+                return data.get("result", data)
+            raise AgentActionError(action, "Agent response must be a JSON object")
 
         except httpx.HTTPStatusError as exc:
             raise AgentActionError(action, f"HTTP {exc.response.status_code}") from exc

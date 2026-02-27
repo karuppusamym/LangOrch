@@ -318,7 +318,7 @@ class TestDryRunExecuteSequence:
         with (
             patch(
                 "app.runtime.executor_dispatch.resolve_executor",
-                new=AsyncMock(return_value=binding),
+                new=AsyncMock(return_value=(binding, "tool")),
             ),
             patch("app.services.run_service.emit_event", new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: captured.append(event_type))),
         ):
@@ -348,7 +348,7 @@ class TestDryRunExecuteSequence:
         with (
             patch(
                 "app.runtime.executor_dispatch.resolve_executor",
-                new=AsyncMock(return_value=binding),
+                new=AsyncMock(return_value=(binding, "tool")),
             ),
             patch("app.services.run_service.emit_event", new=AsyncMock(side_effect=lambda db, run_id, event_type, **kw: captured.append(event_type))),
         ):

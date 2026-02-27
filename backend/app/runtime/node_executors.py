@@ -111,6 +111,28 @@ def _get_step_retry_config(step: Any, state: OrchestratorState) -> dict[str, Any
     }
 
 
+def _get_workflow_dispatch_mode(step: Any, state: OrchestratorState) -> str:
+    """Resolve workflow dispatch mode for a step.
+
+    Priority:
+      1) step.workflow_dispatch_mode
+      2) state.global_config.workflow_dispatch_mode
+      3) "async" (default/backward-compatible)
+    """
+    step_mode = getattr(step, "workflow_dispatch_mode", None)
+    if isinstance(step_mode, str) and step_mode.strip():
+        normalized = step_mode.strip().lower()
+        return normalized if normalized in ("async", "sync") else "async"
+
+    gc = state.get("global_config") or {}
+    global_mode = gc.get("workflow_dispatch_mode")
+    if isinstance(global_mode, str) and global_mode.strip():
+        normalized = global_mode.strip().lower()
+        return normalized if normalized in ("async", "sync") else "async"
+
+    return "async"
+
+
 def _build_template_vars(state: OrchestratorState) -> dict[str, Any]:
     """Build the variable context for template rendering.
 
@@ -171,174 +193,106 @@ async def execute_sequence(
     if node.sla and isinstance(node.sla, dict):
         _sla_max_ms = node.sla.get("max_duration_ms")
 
+    from app.utils.logger import ctx_step_id
+    from app.utils.tracing import get_tracer
+    from opentelemetry import trace, context
+    from opentelemetry.trace import set_span_in_context
+    _tracer = get_tracer("langorch.runtime")
+
     for step in payload.steps:
-        if run_id and _is_cancelled(run_id):
-            raise RunCancelledError(f"Run {run_id} was cancelled")
-        rendered_params = render_template_dict(step.params, vs)
-        # Redact sensitive fields before logging
-        safe_params = redact_sensitive_data(rendered_params)
-        logger.info("Step %s: action=%s params=%s", step.step_id, step.action, safe_params)
+        token_step = ctx_step_id.set(step.step_id)
+        span = _tracer.start_span("execute_step")
+        span.set_attribute("step_id", step.step_id)
+        span.set_attribute("action", step.action)
+        token_trace = context.attach(set_span_in_context(span))
+        try:
+            if run_id and _is_cancelled(run_id):
+                raise RunCancelledError(f"Run {run_id} was cancelled")
+            rendered_params = render_template_dict(step.params, vs)
+            # Redact sensitive fields before logging
+            safe_params = redact_sensitive_data(rendered_params)
+            logger.info("Step %s: action=%s params=%s", step.step_id, step.action, safe_params)
 
-        # wait_ms: pause before this step executes
-        if step.wait_ms and isinstance(step.wait_ms, (int, float)) and step.wait_ms > 0:
-            logger.debug("Step %s: waiting %dms before execution", step.step_id, step.wait_ms)
-            await asyncio.sleep(step.wait_ms / 1000.0)
+            # wait_ms: pause before this step executes
+            if step.wait_ms and isinstance(step.wait_ms, (int, float)) and step.wait_ms > 0:
+                logger.debug("Step %s: waiting %dms before execution", step.step_id, step.wait_ms)
+                await asyncio.sleep(step.wait_ms / 1000.0)
 
-        # Retry loop configuration — step-level override wins over global policy
-        retry_config = _get_step_retry_config(step, state)
-        max_retries = retry_config.get("max_retries", 0)
-        attempt = 0
-        _step_start_time = __import__('time').monotonic()
+            # Retry loop configuration — step-level override wins over global policy
+            retry_config = _get_step_retry_config(step, state)
+            max_retries = retry_config.get("max_retries", 0)
+            attempt = 0
+            _step_start_time = __import__('time').monotonic()
         
-        while True:
-            result: Any = None
-            used_cached_result = False
-
-            if db_factory is not None and run_id:
-                async with db_factory() as db:
-                    cached_result = await _get_completed_step_result(db, run_id, node.node_id, step.step_id)
-                    if cached_result is not None:
-                        result = cached_result
-                        used_cached_result = True
-                        logger.info(
-                            "Step %s/%s reused cached idempotent result",
-                            node.node_id,
-                            step.step_id,
-                        )
-                    else:
-                        await run_service.emit_event(
-                            db,
-                            run_id,
-                            "step_started",
-                            node_id=node.node_id,
-                            step_id=step.step_id,
-                            payload={"action": step.action},
-                        )
-                        # Evaluate idempotency_key template against current vars
-                        rendered_idem_key = (
-                            render_template_str(step.idempotency_key, vs)
-                            if step.idempotency_key
-                            else None
-                        )
-                        await _mark_step_started(
-                            db,
-                            run_id,
-                            node.node_id,
-                            step.step_id,
-                            rendered_idem_key,
-                        )
-                    await db.commit()
-
-            if used_cached_result:
-                if step.output_variable and result is not None:
-                    vs[step.output_variable] = result
+            while True:
+                result: Any = None
+                used_cached_result = False
 
                 if db_factory is not None and run_id:
                     async with db_factory() as db:
-                        await run_service.emit_event(
-                            db,
-                            run_id,
-                            "step_completed",
-                            node_id=node.node_id,
-                            step_id=step.step_id,
-                            payload={
-                                "action": step.action,
-                                "output_variable": step.output_variable,
-                                "cached": True,
-                            },
-                        )
+                        cached_result = await _get_completed_step_result(db, run_id, node.node_id, step.step_id)
+                        if cached_result is not None:
+                            result = cached_result
+                            used_cached_result = True
+                            logger.info(
+                                "Step %s/%s reused cached idempotent result",
+                                node.node_id,
+                                step.step_id,
+                            )
+                        else:
+                            await run_service.emit_event(
+                                db,
+                                run_id,
+                                "step_started",
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                                payload={"action": step.action},
+                            )
+                            # Evaluate idempotency_key template against current vars
+                            rendered_idem_key = (
+                                render_template_str(step.idempotency_key, vs)
+                                if step.idempotency_key
+                                else None
+                            )
+                            await _mark_step_started(
+                                db,
+                                run_id,
+                                node.node_id,
+                                step.step_id,
+                                rendered_idem_key,
+                            )
                         await db.commit()
-                record_step_execution(node.node_id, "cached")
-                break  # Exit retry loop, continue to next step
 
-            try:
-                # Fast path: internal actions
-                if step.executor_binding and step.executor_binding.kind == "internal":
-                    _internal_coro = _execute_step_action(step.action, rendered_params, vs)
-                    if step.timeout_ms and step.timeout_ms > 0:
-                        try:
-                            result = await asyncio.wait_for(
-                                _internal_coro, timeout=step.timeout_ms / 1000.0
-                            )
-                        except asyncio.TimeoutError:
-                            record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
-                            if db_factory is not None and run_id:
-                                async with db_factory() as db:
-                                    await run_service.emit_event(
-                                        db, run_id, "step_timeout",
-                                        node_id=node.node_id, step_id=step.step_id,
-                                        payload={"timeout_ms": step.timeout_ms, "action": step.action},
-                                    )
-                                    await db.commit()
-                            raise TimeoutError(
-                                f"Step {step.step_id} timed out after {step.timeout_ms}ms"
-                            )
-                    else:
-                        result = await _internal_coro
-                elif db_factory is not None:
-                    # Dynamic resolution from agent registry
-                    async with db_factory() as db:
-                        binding, cap_type = await resolve_executor(db, node, step, run_id=run_id)
+                if used_cached_result:
+                    if step.output_variable and result is not None:
+                        vs[step.output_variable] = result
 
-                    # dry_run: skip external agent/MCP dispatch; emit a dry_run_step_skipped event
-                    _exec_mode = state.get("execution_mode", "production")
-                    _global_cfg_rt = state.get("global_config") or {}
-                    _mock_external = _global_cfg_rt.get("mock_external_calls", False)
-                    _test_overrides = _global_cfg_rt.get("test_data_overrides") or {}
-                    if _exec_mode == "dry_run" and binding.kind in ("agent_http", "mcp_tool"):
-                        logger.info(
-                            "dry_run: skipping %s dispatch for step %s/%s (binding=%s)",
-                            binding.kind, node.node_id, step.step_id, binding.ref,
-                        )
-                        result = {"dry_run": True, "skipped_action": step.action, "binding": binding.kind}
-                        if db_factory is not None and run_id:
-                            async with db_factory() as db:
-                                await run_service.emit_event(
-                                    db, run_id, "dry_run_step_skipped",
-                                    node_id=node.node_id, step_id=step.step_id,
-                                    payload={
-                                        "action": step.action,
-                                        "binding": binding.kind,
-                                        "ref": binding.ref,
-                                    },
-                                )
-                                await db.commit()
-                    elif step.step_id in _test_overrides:
-                        # test_data_overrides: return configured test result for this step
-                        result = _test_overrides[step.step_id]
-                        logger.info(
-                            "test_data_overrides: returning override for step %s/%s",
-                            node.node_id, step.step_id,
-                        )
-                        if db_factory is not None and run_id:
-                            async with db_factory() as db:
-                                await run_service.emit_event(
-                                    db, run_id, "step_test_override_applied",
-                                    node_id=node.node_id, step_id=step.step_id,
-                                    payload={"step_id": step.step_id, "override": result},
-                                )
-                                await db.commit()
-                    elif _mock_external and binding.kind in ("agent_http", "mcp_tool"):
-                        # mock_external_calls: return stub result without calling real agent/MCP
-                        logger.info(
-                            "mock_external_calls: returning stub for step %s/%s (binding=%s)",
-                            node.node_id, step.step_id, binding.kind,
-                        )
-                        result = {"mocked": True, "action": step.action, "binding": binding.kind}
-                        if db_factory is not None and run_id:
-                            async with db_factory() as db:
-                                await run_service.emit_event(
-                                    db, run_id, "step_mock_applied",
-                                    node_id=node.node_id, step_id=step.step_id,
-                                    payload={"action": step.action, "binding": binding.kind, "ref": binding.ref},
-                                )
-                                await db.commit()
-                    elif binding.kind == "internal":
-                        _dyn_internal_coro = _execute_step_action(step.action, rendered_params, vs)
+                    if db_factory is not None and run_id:
+                        async with db_factory() as db:
+                            await run_service.emit_event(
+                                db,
+                                run_id,
+                                "step_completed",
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                                payload={
+                                    "action": step.action,
+                                    "output_variable": step.output_variable,
+                                    "cached": True,
+                                },
+                            )
+                            await db.commit()
+                    record_step_execution(node.node_id, "cached")
+                    break  # Exit retry loop, continue to next step
+
+                try:
+                    # Fast path: internal actions
+                    if step.executor_binding and step.executor_binding.kind == "internal":
+                        _internal_coro = _execute_step_action(step.action, rendered_params, vs)
                         if step.timeout_ms and step.timeout_ms > 0:
                             try:
                                 result = await asyncio.wait_for(
-                                    _dyn_internal_coro, timeout=step.timeout_ms / 1000.0
+                                    _internal_coro, timeout=step.timeout_ms / 1000.0
                                 )
                             except asyncio.TimeoutError:
                                 record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
@@ -347,110 +301,78 @@ async def execute_sequence(
                                         await run_service.emit_event(
                                             db, run_id, "step_timeout",
                                             node_id=node.node_id, step_id=step.step_id,
-                                            payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "internal"},
+                                            payload={"timeout_ms": step.timeout_ms, "action": step.action},
                                         )
                                         await db.commit()
                                 raise TimeoutError(
                                     f"Step {step.step_id} timed out after {step.timeout_ms}ms"
                                 )
                         else:
-                            result = await _dyn_internal_coro
-                    elif binding.kind == "agent_http" and cap_type == "workflow":
-                        # ── WORKFLOW DISPATCH (non-blocking) ─────────────────────────────
-                        # The capability is a long-running workflow. We:
-                        #   1. Build a callback_url the agent will POST to when done.
-                        #   2. Fire-and-forget the HTTP call (no await on result).
-                        #   3. Write a WORKFLOW_PENDING event to the DB.
-                        #   4. Set run status to 'paused' and break out of execute_sequence.
-                        # The run will resume when POST /api/runs/{run_id}/callback arrives.
-                        from app.config import settings as _settings
-                        import httpx as _httpx
+                            result = await _internal_coro
+                    elif db_factory is not None:
+                        # Dynamic resolution from agent registry
+                        async with db_factory() as db:
+                            binding, cap_type = await resolve_executor(db, node, step, run_id=run_id)
 
-                        _base = (_settings.SELF_BASE_URL or "http://127.0.0.1:8000").rstrip("/")
-                        _callback_url = f"{_base}/api/runs/{run_id}/callback"
-                        _wf_params = {**rendered_params, "callback_url": _callback_url}
-
-                        logger.info(
-                            "Workflow dispatch: action=%s agent=%s callback=%s",
-                            step.action, binding.ref, _callback_url,
-                        )
-
-                        # Fire-and-forget — do NOT await the full response
-                        async def _fire_workflow():
-                            try:
-                                async with _httpx.AsyncClient(timeout=10.0) as _c:
-                                    await _c.post(
-                                        f"{binding.ref.rstrip('/')}/execute",
-                                        json={
-                                            "action": step.action,
-                                            "params": _wf_params,
-                                            "run_id": run_id,
-                                            "node_id": node.node_id,
-                                            "step_id": step.step_id,
-                                        },
-                                        timeout=10.0,
-                                    )
-                            except Exception as _exc:
-                                logger.warning("Workflow fire-and-forget error: %s", _exc)
-
-                        asyncio.create_task(_fire_workflow())
-
-                        # Record the pending state
-                        if db_factory is not None and run_id:
-                            async with db_factory() as db:
-                                await run_service.emit_event(
-                                    db, run_id, "workflow_delegated",
-                                    node_id=node.node_id, step_id=step.step_id,
-                                    payload={
-                                        "action": step.action,
-                                        "agent_url": binding.ref,
-                                        "callback_url": _callback_url,
-                                        "resume_node_id": node.node_id,
-                                        "resume_step_id": step.step_id,
-                                    },
-                                )
-                                # Update run status to paused so scheduler doesn't re-pick it
-                                from app.db.models import Run as _RunModel
-                                from sqlalchemy import select as _sel
-                                _run_row = (await db.execute(_sel(_RunModel).where(_RunModel.run_id == run_id))).scalar_one_or_none()
-                                if _run_row:
-                                    _run_row.status = "paused"
-                                await db.commit()
-
-                        # Return state with workflow_pending flag — LangGraph will terminate this node
-                        state_patch = dict(state)
-                        state_patch["variables"] = vs
-                        state_patch["_workflow_pending"] = True
-                        state_patch["_workflow_resume_node"] = node.node_id
-                        state_patch["_workflow_resume_step"] = step.step_id
-                        return state_patch
-
-                    elif binding.kind == "agent_http":
-                        lease_id: str | None = None
-                        if run_id and binding.ref:
-                            async with db_factory() as db:
-                                lease_id = await _acquire_agent_lease(
-                                    db,
-                                    agent_url=binding.ref,
-                                    run_id=run_id,
-                                    node_id=node.node_id,
-                                    step_id=step.step_id,
-                                )
-                                await db.commit()
-
-                        try:
-                            _dispatch_coro = dispatch_to_agent(
-                                agent_url=binding.ref,
-                                action=step.action,
-                                params=rendered_params,
-                                run_id=run_id,
-                                node_id=node.node_id,
-                                step_id=step.step_id,
+                        # dry_run: skip external agent/MCP dispatch; emit a dry_run_step_skipped event
+                        _exec_mode = state.get("execution_mode", "production")
+                        _global_cfg_rt = state.get("global_config") or {}
+                        _mock_external = _global_cfg_rt.get("mock_external_calls", False)
+                        _test_overrides = _global_cfg_rt.get("test_data_overrides") or {}
+                        if _exec_mode == "dry_run" and binding.kind in ("agent_http", "mcp_tool"):
+                            logger.info(
+                                "dry_run: skipping %s dispatch for step %s/%s (binding=%s)",
+                                binding.kind, node.node_id, step.step_id, binding.ref,
                             )
+                            result = {"dry_run": True, "skipped_action": step.action, "binding": binding.kind}
+                            if db_factory is not None and run_id:
+                                async with db_factory() as db:
+                                    await run_service.emit_event(
+                                        db, run_id, "dry_run_step_skipped",
+                                        node_id=node.node_id, step_id=step.step_id,
+                                        payload={
+                                            "action": step.action,
+                                            "binding": binding.kind,
+                                            "ref": binding.ref,
+                                        },
+                                    )
+                                    await db.commit()
+                        elif step.step_id in _test_overrides:
+                            # test_data_overrides: return configured test result for this step
+                            result = _test_overrides[step.step_id]
+                            logger.info(
+                                "test_data_overrides: returning override for step %s/%s",
+                                node.node_id, step.step_id,
+                            )
+                            if db_factory is not None and run_id:
+                                async with db_factory() as db:
+                                    await run_service.emit_event(
+                                        db, run_id, "step_test_override_applied",
+                                        node_id=node.node_id, step_id=step.step_id,
+                                        payload={"step_id": step.step_id, "override": result},
+                                    )
+                                    await db.commit()
+                        elif _mock_external and binding.kind in ("agent_http", "mcp_tool"):
+                            # mock_external_calls: return stub result without calling real agent/MCP
+                            logger.info(
+                                "mock_external_calls: returning stub for step %s/%s (binding=%s)",
+                                node.node_id, step.step_id, binding.kind,
+                            )
+                            result = {"mocked": True, "action": step.action, "binding": binding.kind}
+                            if db_factory is not None and run_id:
+                                async with db_factory() as db:
+                                    await run_service.emit_event(
+                                        db, run_id, "step_mock_applied",
+                                        node_id=node.node_id, step_id=step.step_id,
+                                        payload={"action": step.action, "binding": binding.kind, "ref": binding.ref},
+                                    )
+                                    await db.commit()
+                        elif binding.kind == "internal":
+                            _dyn_internal_coro = _execute_step_action(step.action, rendered_params, vs)
                             if step.timeout_ms and step.timeout_ms > 0:
                                 try:
                                     result = await asyncio.wait_for(
-                                        _dispatch_coro, timeout=step.timeout_ms / 1000.0
+                                        _dyn_internal_coro, timeout=step.timeout_ms / 1000.0
                                     )
                                 except asyncio.TimeoutError:
                                     record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
@@ -459,249 +381,412 @@ async def execute_sequence(
                                             await run_service.emit_event(
                                                 db, run_id, "step_timeout",
                                                 node_id=node.node_id, step_id=step.step_id,
-                                                payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "agent_http"},
+                                                payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "internal"},
                                             )
                                             await db.commit()
                                     raise TimeoutError(
                                         f"Step {step.step_id} timed out after {step.timeout_ms}ms"
                                     )
                             else:
-                                result = await _dispatch_coro
-                        finally:
-                            if lease_id and db_factory is not None:
-                                async with db_factory() as db:
-                                    await _release_lease(db, lease_id)
-                                    await db.commit()
-                    elif binding.kind == "mcp_tool":
-                        _mcp_coro = dispatch_to_mcp(
-                            mcp_url=binding.ref,
-                            tool_name=step.action,
-                            arguments=rendered_params,
-                            run_id=run_id,
-                            node_id=node.node_id,
-                            step_id=step.step_id,
-                        )
-                        if step.timeout_ms and step.timeout_ms > 0:
-                            try:
-                                result = await asyncio.wait_for(
-                                    _mcp_coro, timeout=step.timeout_ms / 1000.0
+                                result = await _dyn_internal_coro
+                        elif binding.kind == "agent_http" and cap_type == "workflow":
+                            _wf_mode = _get_workflow_dispatch_mode(step, state)
+
+                            if _wf_mode == "sync":
+                                logger.info(
+                                    "Workflow sync dispatch: action=%s agent=%s",
+                                    step.action,
+                                    binding.ref,
                                 )
-                            except asyncio.TimeoutError:
-                                record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
+                                _dispatch_coro = dispatch_to_agent(
+                                    agent_url=binding.ref,
+                                    action=step.action,
+                                    params=rendered_params,
+                                    run_id=run_id,
+                                    node_id=node.node_id,
+                                    step_id=step.step_id,
+                                )
+                                if step.timeout_ms and step.timeout_ms > 0:
+                                    try:
+                                        result = await asyncio.wait_for(
+                                            _dispatch_coro, timeout=step.timeout_ms / 1000.0
+                                        )
+                                    except asyncio.TimeoutError:
+                                        record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
+                                        if db_factory is not None and run_id:
+                                            async with db_factory() as db:
+                                                await run_service.emit_event(
+                                                    db, run_id, "step_timeout",
+                                                    node_id=node.node_id, step_id=step.step_id,
+                                                    payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "agent_http_workflow_sync"},
+                                                )
+                                                await db.commit()
+                                        raise TimeoutError(
+                                            f"Step {step.step_id} timed out after {step.timeout_ms}ms"
+                                        )
+                                else:
+                                    result = await _dispatch_coro
+                            else:
+                                # ── WORKFLOW DISPATCH (non-blocking) ─────────────────────────────
+                                # The capability is a long-running workflow. We:
+                                #   1. Build a callback_url the agent will POST to when done.
+                                #   2. Fire-and-forget the HTTP call (no await on result).
+                                #   3. Write a WORKFLOW_PENDING event to the DB.
+                                #   4. Set run status to 'paused' and break out of execute_sequence.
+                                # The run will resume when POST /api/runs/{run_id}/callback arrives.
+                                from app.config import settings as _settings
+                                import httpx as _httpx
+                                import hmac as _hmac
+                                import hashlib as _hashlib
+
+                                _base = (_settings.SELF_BASE_URL or "http://127.0.0.1:8000").rstrip("/")
+                                _callback_url = f"{_base}/api/runs/{run_id}/callback"
+                                if _settings.AUTH_SECRET_KEY:
+                                    _token = _hmac.new(
+                                        _settings.AUTH_SECRET_KEY.encode(),
+                                        str(run_id).encode(),
+                                        _hashlib.sha256,
+                                    ).hexdigest()
+                                    _callback_url = f"{_callback_url}?token={_token}"
+                                _wf_params = {**rendered_params, "callback_url": _callback_url}
+
+                                logger.info(
+                                    "Workflow async dispatch: action=%s agent=%s callback=%s",
+                                    step.action, binding.ref, _callback_url,
+                                )
+
+                                # Fire-and-forget — do NOT await the full response
+                                async def _fire_workflow():
+                                    try:
+                                        async with _httpx.AsyncClient(timeout=10.0) as _c:
+                                            await _c.post(
+                                                f"{binding.ref.rstrip('/')}/execute",
+                                                json={
+                                                    "action": step.action,
+                                                    "params": _wf_params,
+                                                    "run_id": run_id,
+                                                    "node_id": node.node_id,
+                                                    "step_id": step.step_id,
+                                                },
+                                                timeout=10.0,
+                                            )
+                                    except Exception as _exc:
+                                        logger.warning("Workflow fire-and-forget error: %s", _exc)
+
+                                asyncio.create_task(_fire_workflow())
+
+                                # Record the pending state
                                 if db_factory is not None and run_id:
                                     async with db_factory() as db:
                                         await run_service.emit_event(
-                                            db, run_id, "step_timeout",
+                                            db, run_id, "workflow_delegated",
                                             node_id=node.node_id, step_id=step.step_id,
-                                            payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "mcp_tool"},
+                                            payload={
+                                                "action": step.action,
+                                                "agent_url": binding.ref,
+                                                "callback_url": _callback_url,
+                                                "resume_node_id": node.node_id,
+                                                "resume_step_id": step.step_id,
+                                                "dispatch_mode": "async",
+                                            },
                                         )
+                                        # Update run status to paused so scheduler doesn't re-pick it
+                                        from app.db.models import Run as _RunModel
+                                        from sqlalchemy import select as _sel
+                                        _run_row = (await db.execute(_sel(_RunModel).where(_RunModel.run_id == run_id))).scalar_one_or_none()
+                                        if _run_row:
+                                            _run_row.status = "paused"
                                         await db.commit()
-                                raise TimeoutError(
-                                    f"Step {step.step_id} timed out after {step.timeout_ms}ms"
-                                )
-                        else:
-                            result = await _mcp_coro
-                    else:
-                        logger.warning("Unsupported binding kind '%s' for step %s", binding.kind, step.step_id)
-                        result = {"action": step.action, "params": rendered_params}
-                else:
-                    # No db_factory — fallback to internal handler (dev/test mode)
-                    logger.warning("No db_factory available; falling back to internal handler for step %s", step.step_id)
-                    result = await _execute_step_action(step.action, rendered_params, vs)
-                
-                # Execution succeeded - exit retry loop
-                record_step_execution(node.node_id, "completed")
-                break
-                
-            except Exception as exc:
-                # Apply retry policy if enabled
-                if step.retry_on_failure and attempt < max_retries:
-                    delay_ms = retry_config.get("retry_delay_ms", 1000)
-                    multiplier = retry_config.get("backoff_multiplier", 2.0)
-                    actual_delay = delay_ms * (multiplier ** attempt) / 1000.0
-                    
-                    # Record retry attempt
-                    record_retry_attempt(node.node_id, step.step_id)
-                    
-                    logger.warning(
-                        "Step %s/%s failed (attempt %d/%d), retrying after %.2fs: %s",
-                        node.node_id,
-                        step.step_id,
-                        attempt + 1,
-                        max_retries,
-                        actual_delay,
-                        exc,
-                    )
-                    await asyncio.sleep(actual_delay)
-                    attempt += 1
-                    continue  # Retry the step (continue while loop)
-                
-                # Final failure after retries exhausted or retry not enabled
-                record_step_execution(node.node_id, "failed")
-                if db_factory is not None and run_id:
-                    async with db_factory() as db:
-                        await _mark_step_failed(db, run_id, node.node_id, step.step_id)
-                        await db.commit()
-                # screenshot_on_fail: emit screenshot_requested event if global_config flag is set
-                _screenshot_flag = (state.get("global_config") or {}).get("screenshot_on_fail", False)
-                if _screenshot_flag and db_factory is not None and run_id:
-                    try:
-                        async with db_factory() as _sdb:
-                            await run_service.emit_event(
-                                _sdb, run_id, "screenshot_requested",
-                                node_id=node.node_id, step_id=step.step_id,
-                                payload={"reason": "screenshot_on_fail", "error": str(exc)},
-                            )
-                            await _sdb.commit()
-                    except Exception:
-                        logger.warning("Failed to emit screenshot_requested event", exc_info=True)
-                # Check error_handlers for a matching handler
-                _eh_matched = False
-                _eh_retry_step = False
-                for _eh in (getattr(payload, "error_handlers", None) or []):
-                    _et = getattr(_eh, "error_type", None)
-                    if _et and _et not in (type(exc).__name__,):
-                        continue
-                    _eh_matched = True
-                    _eh_action = (getattr(_eh, "action", None) or "ignore").lower()
 
-                    # Execute recovery steps first (regardless of action)
-                    for _rs in (getattr(_eh, "recovery_steps", None) or []):
-                        _rs_rendered = render_template_dict(_rs.params or {}, vs)
-                        await _execute_step_action(_rs.action, _rs_rendered, vs)
+                                # Return state with workflow_pending flag — LangGraph will terminate this node
+                                state_patch = dict(state)
+                                state_patch["variables"] = vs
+                                state_patch["_workflow_pending"] = True
+                                state_patch["_workflow_resume_node"] = node.node_id
+                                state_patch["_workflow_resume_step"] = step.step_id
+                                return state_patch
 
-                    # notify_on_error: emit a step_error_notification event + fire alert webhook
-                    if getattr(_eh, "notify_on_error", False):
-                        if db_factory is not None and run_id:
-                            try:
-                                async with db_factory() as _ndb:
-                                    await run_service.emit_event(
-                                        _ndb,
-                                        run_id,
-                                        "step_error_notification",
+                        elif binding.kind == "agent_http":
+                            lease_id: str | None = None
+                            if run_id and binding.ref:
+                                async with db_factory() as db:
+                                    lease_id = await _acquire_agent_lease(
+                                        db,
+                                        agent_url=binding.ref,
+                                        run_id=run_id,
                                         node_id=node.node_id,
                                         step_id=step.step_id,
-                                        payload={
-                                            "error_type": _et,
-                                            "error": str(exc),
-                                            "handler_action": _eh_action,
-                                        },
                                     )
-                                    await _ndb.commit()
-                            except Exception:  # never abort handler logic
-                                logger.warning("notify_on_error: failed to emit event", exc_info=True)
-                        try:
-                            from app.services.execution_service import _fire_alert_webhook  # noqa: PLC0415
-                            asyncio.ensure_future(_fire_alert_webhook(run_id or "", exc))
-                        except Exception:
-                            logger.warning("notify_on_error: failed to fire alert webhook", exc_info=True)
+                                    await db.commit()
 
-                    # action: "retry" — apply handler's own retry policy
-                    if _eh_action == "retry":
-                        _eh_max = int(getattr(_eh, "max_retries", 0) or 0)
-                        _eh_delay = int(getattr(_eh, "delay_ms", 1000) or 1000)
-                        if attempt < _eh_max:
-                            record_retry_attempt(node.node_id, step.step_id)
-                            await asyncio.sleep(_eh_delay / 1000.0)
-                            attempt += 1
-                            _eh_retry_step = True
-                            break
-                        raise  # handler retries exhausted
-
-                    # action: "screenshot_and_fail" — log then re-raise
-                    if _eh_action == "screenshot_and_fail":
-                        logger.warning(
-                            "screenshot_and_fail: step %s/%s",
-                            node.node_id, step.step_id,
-                        )
-                        raise
-
-                    # action: "fail" — re-raise
-                    if _eh_action == "fail":
-                        raise
-
-                    # action: "escalate" or "ignore" — route via fallback_node or suppress
-                    if getattr(_eh, "fallback_node", None):
-                        _fb_state = dict(state)
-                        _fb_state["vars"] = vs
-                        _fb_state["next_node_id"] = _eh.fallback_node
-                        _fb_state["current_node_id"] = node.node_id
-                        return _fb_state  # type: ignore[return-value]
-
-                    # "ignore" — suppress error, null-out output var
-                    if step.output_variable:
-                        vs[step.output_variable] = None
+                            try:
+                                _dispatch_coro = dispatch_to_agent(
+                                    agent_url=binding.ref,
+                                    action=step.action,
+                                    params=rendered_params,
+                                    run_id=run_id,
+                                    node_id=node.node_id,
+                                    step_id=step.step_id,
+                                )
+                                if step.timeout_ms and step.timeout_ms > 0:
+                                    try:
+                                        result = await asyncio.wait_for(
+                                            _dispatch_coro, timeout=step.timeout_ms / 1000.0
+                                        )
+                                    except asyncio.TimeoutError:
+                                        record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
+                                        if db_factory is not None and run_id:
+                                            async with db_factory() as db:
+                                                await run_service.emit_event(
+                                                    db, run_id, "step_timeout",
+                                                    node_id=node.node_id, step_id=step.step_id,
+                                                    payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "agent_http"},
+                                                )
+                                                await db.commit()
+                                        raise TimeoutError(
+                                            f"Step {step.step_id} timed out after {step.timeout_ms}ms"
+                                        )
+                                else:
+                                    result = await _dispatch_coro
+                            finally:
+                                if lease_id and db_factory is not None:
+                                    async with db_factory() as db:
+                                        await _release_lease(db, lease_id)
+                                        await db.commit()
+                        elif binding.kind == "mcp_tool":
+                            _mcp_coro = dispatch_to_mcp(
+                                mcp_url=binding.ref,
+                                tool_name=step.action,
+                                arguments=rendered_params,
+                                run_id=run_id,
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                            )
+                            if step.timeout_ms and step.timeout_ms > 0:
+                                try:
+                                    result = await asyncio.wait_for(
+                                        _mcp_coro, timeout=step.timeout_ms / 1000.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    record_step_timeout(node.node_id, step.step_id, step.timeout_ms)
+                                    if db_factory is not None and run_id:
+                                        async with db_factory() as db:
+                                            await run_service.emit_event(
+                                                db, run_id, "step_timeout",
+                                                node_id=node.node_id, step_id=step.step_id,
+                                                payload={"timeout_ms": step.timeout_ms, "action": step.action, "binding": "mcp_tool"},
+                                            )
+                                            await db.commit()
+                                    raise TimeoutError(
+                                        f"Step {step.step_id} timed out after {step.timeout_ms}ms"
+                                    )
+                            else:
+                                result = await _mcp_coro
+                        else:
+                            logger.warning("Unsupported binding kind '%s' for step %s", binding.kind, step.step_id)
+                            result = {"action": step.action, "params": rendered_params}
+                    else:
+                        # No db_factory — fallback to internal handler (dev/test mode)
+                        logger.warning("No db_factory available; falling back to internal handler for step %s", step.step_id)
+                        result = await _execute_step_action(step.action, rendered_params, vs)
+                
+                    # Execution succeeded - exit retry loop
+                    record_step_execution(node.node_id, "completed")
                     break
-
-                if not _eh_matched:
-                    raise  # no handler matched
-                if _eh_retry_step:
-                    continue  # restart while loop to retry the step
-                break  # handler suppressed error; move to next step
-
-        if step.output_variable and result is not None:
-            vs[step.output_variable] = result
-
-        if db_factory is not None and run_id and result is not None:
-            artifacts = _extract_artifacts_from_result(result)
-            if artifacts:
-                async with db_factory() as db:
-                    for artifact in artifacts:
-                        kind = str(artifact.get("kind") or "artifact")
-                        uri = artifact.get("uri")
-                        if not isinstance(uri, str) or not uri:
+                
+                except Exception as exc:
+                    # Apply retry policy if enabled
+                    if step.retry_on_failure and attempt < max_retries:
+                        delay_ms = retry_config.get("retry_delay_ms", 1000)
+                        multiplier = retry_config.get("backoff_multiplier", 2.0)
+                        actual_delay = delay_ms * (multiplier ** attempt) / 1000.0
+                    
+                        # Record retry attempt
+                        record_retry_attempt(node.node_id, step.step_id)
+                    
+                        logger.warning(
+                            "Step %s/%s failed (attempt %d/%d), retrying after %.2fs: %s",
+                            node.node_id,
+                            step.step_id,
+                            attempt + 1,
+                            max_retries,
+                            actual_delay,
+                            exc,
+                        )
+                        await asyncio.sleep(actual_delay)
+                        attempt += 1
+                        continue  # Retry the step (continue while loop)
+                
+                    # Final failure after retries exhausted or retry not enabled
+                    record_step_execution(node.node_id, "failed")
+                    if db_factory is not None and run_id:
+                        async with db_factory() as db:
+                            await _mark_step_failed(db, run_id, node.node_id, step.step_id)
+                            await db.commit()
+                    # screenshot_on_fail: emit screenshot_requested event if global_config flag is set
+                    _screenshot_flag = (state.get("global_config") or {}).get("screenshot_on_fail", False)
+                    if _screenshot_flag and db_factory is not None and run_id:
+                        try:
+                            async with db_factory() as _sdb:
+                                await run_service.emit_event(
+                                    _sdb, run_id, "screenshot_requested",
+                                    node_id=node.node_id, step_id=step.step_id,
+                                    payload={"reason": "screenshot_on_fail", "error": str(exc)},
+                                )
+                                await _sdb.commit()
+                        except Exception:
+                            logger.warning("Failed to emit screenshot_requested event", exc_info=True)
+                    # Check error_handlers for a matching handler
+                    _eh_matched = False
+                    _eh_retry_step = False
+                    for _eh in (getattr(payload, "error_handlers", None) or []):
+                        _et = getattr(_eh, "error_type", None)
+                        if _et and _et not in (type(exc).__name__,):
                             continue
-                        created = await run_service.create_artifact(
-                            db,
-                            run_id=run_id,
-                            node_id=node.node_id,
-                            step_id=step.step_id,
-                            kind=kind,
-                            uri=uri,
-                        )
-                        await run_service.emit_event(
-                            db,
-                            run_id,
-                            "artifact_created",
-                            node_id=node.node_id,
-                            step_id=step.step_id,
-                            payload={
-                                "artifact_id": created.artifact_id,
-                                "kind": created.kind,
-                                "uri": created.uri,
-                            },
-                        )
+                        _eh_matched = True
+                        _eh_action = (getattr(_eh, "action", None) or "ignore").lower()
+
+                        # Execute recovery steps first (regardless of action)
+                        for _rs in (getattr(_eh, "recovery_steps", None) or []):
+                            _rs_rendered = render_template_dict(_rs.params or {}, vs)
+                            await _execute_step_action(_rs.action, _rs_rendered, vs)
+
+                        # notify_on_error: emit a step_error_notification event + fire alert webhook
+                        if getattr(_eh, "notify_on_error", False):
+                            if db_factory is not None and run_id:
+                                try:
+                                    async with db_factory() as _ndb:
+                                        await run_service.emit_event(
+                                            _ndb,
+                                            run_id,
+                                            "step_error_notification",
+                                            node_id=node.node_id,
+                                            step_id=step.step_id,
+                                            payload={
+                                                "error_type": _et,
+                                                "error": str(exc),
+                                                "handler_action": _eh_action,
+                                            },
+                                        )
+                                        await _ndb.commit()
+                                except Exception:  # never abort handler logic
+                                    logger.warning("notify_on_error: failed to emit event", exc_info=True)
+                            try:
+                                from app.services.execution_service import _fire_alert_webhook  # noqa: PLC0415
+                                asyncio.ensure_future(_fire_alert_webhook(run_id or "", exc))
+                            except Exception:
+                                logger.warning("notify_on_error: failed to fire alert webhook", exc_info=True)
+
+                        # action: "retry" — apply handler's own retry policy
+                        if _eh_action == "retry":
+                            _eh_max = int(getattr(_eh, "max_retries", 0) or 0)
+                            _eh_delay = int(getattr(_eh, "delay_ms", 1000) or 1000)
+                            if attempt < _eh_max:
+                                record_retry_attempt(node.node_id, step.step_id)
+                                await asyncio.sleep(_eh_delay / 1000.0)
+                                attempt += 1
+                                _eh_retry_step = True
+                                break
+                            raise  # handler retries exhausted
+
+                        # action: "screenshot_and_fail" — log then re-raise
+                        if _eh_action == "screenshot_and_fail":
+                            logger.warning(
+                                "screenshot_and_fail: step %s/%s",
+                                node.node_id, step.step_id,
+                            )
+                            raise
+
+                        # action: "fail" — re-raise
+                        if _eh_action == "fail":
+                            raise
+
+                        # action: "escalate" or "ignore" — route via fallback_node or suppress
+                        if getattr(_eh, "fallback_node", None):
+                            _fb_state = dict(state)
+                            _fb_state["vars"] = vs
+                            _fb_state["next_node_id"] = _eh.fallback_node
+                            _fb_state["current_node_id"] = node.node_id
+                            return _fb_state  # type: ignore[return-value]
+
+                        # "ignore" — suppress error, null-out output var
+                        if step.output_variable:
+                            vs[step.output_variable] = None
+                        break
+
+                    if not _eh_matched:
+                        raise  # no handler matched
+                    if _eh_retry_step:
+                        continue  # restart while loop to retry the step
+                    break  # handler suppressed error; move to next step
+
+            if step.output_variable and result is not None:
+                vs[step.output_variable] = result
+
+            if db_factory is not None and run_id and result is not None:
+                artifacts = _extract_artifacts_from_result(result)
+                if artifacts:
+                    async with db_factory() as db:
+                        for artifact in artifacts:
+                            kind = str(artifact.get("kind") or "artifact")
+                            uri = artifact.get("uri")
+                            if not isinstance(uri, str) or not uri:
+                                continue
+                            created = await run_service.create_artifact(
+                                db,
+                                run_id=run_id,
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                                kind=kind,
+                                uri=uri,
+                            )
+                            await run_service.emit_event(
+                                db,
+                                run_id,
+                                "artifact_created",
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                                payload={
+                                    "artifact_id": created.artifact_id,
+                                    "kind": created.kind,
+                                    "uri": created.uri,
+                                },
+                            )
+                        await db.commit()
+
+            if db_factory is not None and run_id:
+                async with db_factory() as db:
+                    _step_duration_ms = int((__import__('time').monotonic() - _step_start_time) * 1000)
+                    _node_telemetry = node.telemetry or {}
+                    _telemetry_payload: dict = {
+                        "action": step.action,
+                        "output_variable": step.output_variable,
+                        "cached": False,
+                    }
+                    if _node_telemetry.get("track_duration"):
+                        _telemetry_payload["duration_ms"] = _step_duration_ms
+                    if _node_telemetry.get("track_retries") and attempt > 0:
+                        _telemetry_payload["retry_count"] = attempt
+                    await _mark_step_completed(db, run_id, node.node_id, step.step_id, result)
+                    await run_service.emit_event(
+                        db,
+                        run_id,
+                        "step_completed",
+                        node_id=node.node_id,
+                        step_id=step.step_id,
+                        payload=_telemetry_payload,
+                    )
                     await db.commit()
 
-        if db_factory is not None and run_id:
-            async with db_factory() as db:
-                _step_duration_ms = int((__import__('time').monotonic() - _step_start_time) * 1000)
-                _node_telemetry = node.telemetry or {}
-                _telemetry_payload: dict = {
-                    "action": step.action,
-                    "output_variable": step.output_variable,
-                    "cached": False,
-                }
-                if _node_telemetry.get("track_duration"):
-                    _telemetry_payload["duration_ms"] = _step_duration_ms
-                if _node_telemetry.get("track_retries") and attempt > 0:
-                    _telemetry_payload["retry_count"] = attempt
-                await _mark_step_completed(db, run_id, node.node_id, step.step_id, result)
-                await run_service.emit_event(
-                    db,
-                    run_id,
-                    "step_completed",
-                    node_id=node.node_id,
-                    step_id=step.step_id,
-                    payload=_telemetry_payload,
-                )
-                await db.commit()
+            # wait_after_ms: pause after this step completes
+            if step.wait_after_ms and isinstance(step.wait_after_ms, (int, float)) and step.wait_after_ms > 0:
+                logger.debug("Step %s: waiting %dms after execution", step.step_id, step.wait_after_ms)
+                await asyncio.sleep(step.wait_after_ms / 1000.0)
 
-        # wait_after_ms: pause after this step completes
-        if step.wait_after_ms and isinstance(step.wait_after_ms, (int, float)) and step.wait_after_ms > 0:
-            logger.debug("Step %s: waiting %dms after execution", step.step_id, step.wait_after_ms)
-            await asyncio.sleep(step.wait_after_ms / 1000.0)
-
+        finally:
+            span.end()
+            context.detach(token_trace)
+            ctx_step_id.reset(token_step)
     # SLA check: emit sla_breached event if node took longer than sla.max_duration_ms
     if _sla_max_ms and _sla_max_ms > 0:
         _node_duration_ms = int((_time_mod.monotonic() - _node_start_wall) * 1000)
@@ -964,6 +1049,7 @@ def execute_human_approval(node: IRNode, state: OrchestratorState) -> Orchestrat
     approval_request = {
         "run_id": state.get("run_id"),
         "node_id": node.node_id,
+        "node_name": node.description or node.node_id,
         "prompt": payload.prompt,
         "decision_type": payload.decision_type,
         "options": payload.options,

@@ -42,6 +42,7 @@ export default function AuditPage() {
 
   // Expanded row
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [auditPage, setAuditPage] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,8 +66,13 @@ export default function AuditPage() {
     load();
   }, [load]);
 
+  useEffect(() => { setAuditPage(0); }, [search, category, action]);
+
   const categories = Object.keys(CATEGORY_META);
   const actions = ["create", "update", "delete", "login", "login_failed", "patch"];
+  const AUDIT_PAGE_SIZE = 25;
+  const totalAuditPages = Math.ceil(events.length / AUDIT_PAGE_SIZE);
+  const pagedEvents = events.slice(auditPage * AUDIT_PAGE_SIZE, (auditPage + 1) * AUDIT_PAGE_SIZE);
 
   return (
     <div className="space-y-6 p-6">
@@ -164,7 +170,7 @@ export default function AuditPage() {
                 </td>
               </tr>
             )}
-            {events.map((ev) => {
+            {pagedEvents.map((ev) => {
               const meta = CATEGORY_META[ev.category];
               const isExpanded = expandedId === ev.event_id;
               return (
@@ -214,6 +220,22 @@ export default function AuditPage() {
           </tbody>
         </table>
       </div>
+      {totalAuditPages > 1 && (
+        <div className="flex items-center justify-between px-2 py-1">
+          <span className="text-xs text-gray-400">{auditPage * AUDIT_PAGE_SIZE + 1}–{Math.min((auditPage + 1) * AUDIT_PAGE_SIZE, events.length)} of {events.length} events</span>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setAuditPage((p) => Math.max(0, p - 1))} disabled={auditPage === 0}
+              className="rounded px-2.5 py-1.5 text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+              ← Prev
+            </button>
+            <span className="text-xs text-gray-500 px-2">{auditPage + 1} / {totalAuditPages}</span>
+            <button onClick={() => setAuditPage((p) => Math.min(totalAuditPages - 1, p + 1))} disabled={auditPage >= totalAuditPages - 1}
+              className="rounded px-2.5 py-1.5 text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -35,7 +35,7 @@ class TestAgentInstanceOutCapabilities:
             "registered_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00",
         })
-        assert obj.capabilities == ["click", "type", "scroll"]
+        assert [c.name for c in obj.capabilities] == ["click", "type", "scroll"]
 
     def test_capabilities_from_list(self):
         from app.schemas.agents import AgentInstanceOut
@@ -52,7 +52,7 @@ class TestAgentInstanceOutCapabilities:
             "registered_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00",
         })
-        assert obj.capabilities == ["click", "type"]
+        assert [c.name for c in obj.capabilities] == ["click", "type"]
 
     def test_capabilities_none_returns_empty_list(self):
         from app.schemas.agents import AgentInstanceOut
@@ -103,7 +103,7 @@ class TestAgentInstanceOutCapabilities:
             "registered_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00",
         })
-        assert obj.capabilities == ["click", "type", "scroll"]
+        assert [c.name for c in obj.capabilities] == ["click", "type", "scroll"]
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +132,8 @@ class TestAgentInstanceUpdate:
     def test_capabilities_as_list(self):
         from app.schemas.agents import AgentInstanceUpdate
 
-        upd = AgentInstanceUpdate(capabilities=["click", "type"])
-        assert upd.capabilities == ["click", "type"]
+        upd = AgentInstanceUpdate(capabilities=[{"name": "click"}, {"name": "type"}])
+        assert [c.name for c in upd.capabilities] == ["click", "type"]
 
 
 # ---------------------------------------------------------------------------

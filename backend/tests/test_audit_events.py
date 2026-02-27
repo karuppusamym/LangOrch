@@ -102,7 +102,7 @@ async def test_user_create_emits_audit(client: httpx.AsyncClient):
 
     resp = await client.post(
         "/api/users",
-        json={"username": username, "password": "TestP@ss123", "role": "viewer"},
+        json={"username": username,  "email": f"{username}@test.com" , "password": "TestP@ss123", "role": "viewer"},
     )
     # May get 200/201 or 403 if auth is enforced — skip if auth blocks
     if resp.status_code in (401, 403):

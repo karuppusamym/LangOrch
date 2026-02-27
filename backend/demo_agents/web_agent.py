@@ -41,7 +41,12 @@ class AgentSettings:
     # Self-registration: set ORCHESTRATOR_URL to enable auto-registration
     orchestrator_url: str = "http://127.0.0.1:8000"
     agent_id: str = "playwright-web-agent"
+    agent_name: str = "Local Playwright Agent"
     agent_port: int = 9000
+    channel: str = "web"
+    pool_id: str = "web_pool_1"
+    resource_key: str = "web_default"
+    concurrency_limit: int = 1
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -55,7 +60,12 @@ SETTINGS = AgentSettings(
     headless=_as_bool(os.getenv("WEB_AGENT_HEADLESS"), True),
     orchestrator_url=os.getenv("ORCHESTRATOR_URL", "http://127.0.0.1:8000"),
     agent_id=os.getenv("WEB_AGENT_ID", "playwright-web-agent"),
+    agent_name=os.getenv("WEB_AGENT_NAME", "Local Playwright Agent"),
     agent_port=int(os.getenv("WEB_AGENT_PORT", "9000")),
+    channel=os.getenv("WEB_AGENT_CHANNEL", "web"),
+    pool_id=os.getenv("WEB_AGENT_POOL_ID", "web_pool_1"),
+    resource_key=os.getenv("WEB_AGENT_RESOURCE_KEY", "web_default"),
+    concurrency_limit=int(os.getenv("WEB_AGENT_CONCURRENCY", "1")),
 )
 
 
@@ -88,12 +98,12 @@ async def _set_agent_status(status: str) -> None:
                 register_url = f"{SETTINGS.orchestrator_url}/api/agents"
                 register_payload = {
                     "agent_id": SETTINGS.agent_id,
-                    "name": "Local Playwright Agent",
-                    "channel": "web",
+                    "name": SETTINGS.agent_name,
+                    "channel": SETTINGS.channel,
                     "base_url": f"http://127.0.0.1:{SETTINGS.agent_port}",
-                    "concurrency_limit": 1,
-                    "resource_key": "web_default",
-                    "pool_id": "web_pool_1",
+                    "concurrency_limit": SETTINGS.concurrency_limit,
+                    "resource_key": SETTINGS.resource_key,
+                    "pool_id": SETTINGS.pool_id,
                     "capabilities": CAPABILITIES
                 }
                 reg_resp = await client.post(register_url, json=register_payload)
@@ -141,7 +151,7 @@ async def capabilities() -> dict[str, Any]:
     """Describe the tools/actions this agent exposes."""
     return {
         "agent_id": SETTINGS.agent_id,
-        "channel": "web",
+        "channel": SETTINGS.channel,
         "capabilities": CAPABILITIES,
         "mode": "dry_run" if SETTINGS.dry_run else "playwright",
         "description": "Playwright-based web automation agent",

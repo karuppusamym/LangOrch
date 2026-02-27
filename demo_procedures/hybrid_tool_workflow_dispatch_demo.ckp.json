@@ -1,0 +1,72 @@
+{
+  "procedure_id": "hybrid-tool-workflow-dispatch-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Hybrid demo covering tool + workflow async + workflow sync dispatch in one run",
+  "global_config": {
+    "max_retries": 2,
+    "retry_delay_ms": 1000,
+    "timeout_ms": 300000
+  },
+  "variables_schema": {
+    "required": {
+      "target_url": {
+        "type": "string",
+        "description": "URL for tool navigation",
+        "origin": "user_strict",
+        "default": "https://example.com"
+      },
+      "username": {
+        "type": "string",
+        "description": "Username for workflow macro",
+        "origin": "user_strict",
+        "default": "demo_user"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "hybrid_sequence",
+    "nodes": {
+      "hybrid_sequence": {
+        "agent": "HYBRID",
+        "type": "sequence",
+        "description": "Tool + async workflow + sync workflow",
+        "steps": [
+          {
+            "step_id": "tool_navigate",
+            "action": "browser.navigate",
+            "params": {
+              "url": "{{target_url}}"
+            }
+          },
+          {
+            "step_id": "workflow_async",
+            "action": "run_full_salesforce_login",
+            "workflow_dispatch_mode": "async",
+            "params": {
+              "username": "{{username}}"
+            }
+          },
+          {
+            "step_id": "workflow_sync",
+            "action": "run_full_salesforce_login",
+            "workflow_dispatch_mode": "sync",
+            "params": {
+              "username": "{{username}}"
+            }
+          }
+        ],
+        "next_node": "done"
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "mode": "hybrid_dispatch",
+          "target": "{{target_url}}",
+          "user": "{{username}}"
+        }
+      }
+    }
+  }
+}

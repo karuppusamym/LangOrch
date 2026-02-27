@@ -1,6 +1,7 @@
 # LangOrch Future Plan (Code-Aligned)
 
-Last updated: 2026-02-24 (Batch 37: 9-Issue Sprint Completion —
+Last updated: 2026-02-26 (Validation Addendum: Full Feature Walkthrough audit + targeted test verification; `backend/tests/test_p2_agent_features.py` executed with 8 passing tests)
+Previous major update: 2026-02-24 (Batch 37: 9-Issue Sprint Completion —
 **P0** `frontend/src/components/WorkflowBuilder.tsx`: Fixed visual builder typing bug and moved Config to DB;
 **P1** `backend/app/services/validator.py`: Added variable name cross-validation, default CKP generation, and Apigee integration;
 **P2** `backend/app/api/agent_credentials.py` & `backend/app/api/agents.py`: Implemented encrypted credential assets, secure agent credential pull model (JWT grants), and agent bootstrap/heartbeats;
@@ -22,8 +23,24 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 | Procedure promotion/canary/rollback | Versioning + status lifecycle (PATCH `/status` endpoint) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |
 | LLM fallback-model routing | Hard budget abort (`max_cost_usd`) now implemented; fallback-model routing policy (cost-based model selection) is pending | P1 |
 | Compliance controls | No PII tokenization pre-LLM, GDPR erase flow, or policy-as-code compile checks | P2 |
-| Agent pool capacity signals | `pool_id` + round-robin + `GET /api/agents/pools` stats (agent count, active leases, available capacity, circuit-open count) done (**Batch 34**); `pool_saturated` event emission and autoscale hint are pending | P2 |
+| Agent pool capacity signals | `pool_id` + persistent round-robin + `GET /api/agents/pools` stats + `pool_saturated` run-event emission are implemented; autoscaler consumption policy and capability-version governance policy are pending | P2 |
 | Test hardening breadth | Strong unit coverage + core Playwright flows; broader load/soak and failure-path e2e coverage are pending | P2 |
+
+---
+
+## 2026-02-26 validation addendum (feature walkthrough)
+
+Validated against current codebase + targeted test run:
+
+- ✅ Agent affinity (`_run_agent_affinity`) is active and cleaned on run termination.
+- ✅ Pool saturation emits `pool_saturated` before lease-acquire failure raises.
+- ✅ System health stack is wired end-to-end: worker registry, leader demotion behavior, `/api/orchestrators`, and frontend `/health` polling.
+- ✅ Azure AD `SSO_ROLE_MAPPING` privilege resolution is implemented and synchronized on subsequent logins.
+- ✅ Capability schema migration to structured objects is implemented backend + frontend; hybrid demo agent reflects tool/workflow split.
+- ✅ Async webhook architecture is implemented (delegate/pause/callback/requeue/timeout).
+- ✅ Hardened: delegated `callback_url` now includes token query param when `AUTH_SECRET_KEY` is configured.
+- ✅ Hardened: workflow callback/output merge now accepts and emits both `output` and `output_vars` keys for compatibility.
+- ✅ Cleanup complete: stale temp file `backend/test_out.txt` removed.
 
 ---
 
@@ -188,7 +205,178 @@ When a step requires an agent executor, the orchestrator automatically routes th
 1. **Capability Matching**: The system filters the registry for "online" agents whose `channel` matches the node's declared agent channel, and whose `capabilities` list includes the specific action being requested (or `*`).
 2. **Health Check**: Agents with an open circuit breaker (due to consecutive failures) are excluded from the candidate pool until the `_CIRCUIT_RESET_SECONDS` timeout expires.
 3. **Pool Grouping**: The remaining candidate agents are grouped by `pool_id` (forming an implicit `standalone` pool if `pool_id` is null). The system selects the numerically/alphabetically first pool that contains at least one healthy, capable agent.
-4. **Round-Robin Distribution**: Within the selected pool, the system maintains an in-memory counter (`_pool_counters`) to distribute tasks using a monotonic round-robin strategy (`counter % pool_size`). This ensures equitable load distribution among all identical agents in a saturated pool.
+4. **Round-Robin Distribution**: Within the selected pool, the system uses persistent DB-backed counters (`AgentDispatchCounter`) to distribute tasks via monotonic round-robin (`counter % pool_size`). This preserves fairness across process restarts and horizontal scale.
+5. **Run Affinity + Saturation Telemetry**: Once assigned, a run/channel pair is pinned to the same agent (`_run_agent_affinity`) until completion, and lease-acquire failures emit `pool_saturated` events for autoscaler observability.
+
+---
+
+## Runtime Execution Contract (CKP ↔ Orchestrator ↔ Agent Registry)
+
+This section captures the actual runtime contract implemented in code so engineering, QA, and SRE can reason about behavior consistently.
+
+### Validation snapshot (2026-02-26)
+
+- `workflow_dispatch_mode` is now active runtime behavior for `workflow` capabilities:
+  - `sync`: inline wait semantics;
+  - `async` (default): pause/resume callback semantics.
+- Callback contract hardening is in place: callback token propagation + `output`/`output_vars` compatibility.
+- Targeted verification executed and passing: `test_batch16.py`, `test_batch22.py`, `test_batch23.py`, `test_workflow_dispatch_mode.py`, `test_parser.py`, `test_validator.py` (**127 passed**).
+
+### 1) End-to-end call flow
+
+1. **Procedure import** stores CKP JSON as source of truth (not precompiled artifact).
+2. **Run create** persists `Run`, emits `run_created`, and atomically enqueues `RunJob`.
+3. **Worker claim loop** picks `queued/retrying` jobs and calls `execute_run(run_id)`.
+4. **Execution compile phase** in worker: `parse_ckp` → `validate_ir` → `bind_executors`.
+5. **Graph build** maps each node type to executor and wires conditional routes.
+6. **Sequence step dispatch**:
+  - internal actions: in-process execution;
+  - external actions: dynamic executor resolution from `agent_instances` registry.
+7. **Registry resolution** selects healthy/capable agent with pool round-robin + run affinity.
+8. **Completion path** updates run status/events/outputs and clears run affinity.
+
+### 2) Tool vs Workflow capability contract
+
+Capability object shape (stored in `agent_instances.capabilities` JSON):
+
+```json
+{
+  "name": "run_full_salesforce_login",
+  "type": "workflow",
+  "estimated_duration_s": 15,
+  "is_batch": false
+}
+```
+
+Dispatch meaning:
+
+| Capability type | Orchestrator behavior | Run state impact |
+|---|---|---|
+| `tool` | Synchronous step call to agent `/execute`, waits for result in-step | Run stays `running` |
+| `workflow` + `workflow_dispatch_mode=sync` | Synchronous step call to agent `/execute`, waits for result in-step | Run stays `running` |
+| `workflow` + `workflow_dispatch_mode=async` (default) | Fire-and-forget call with `callback_url`, emits `workflow_delegated` | Run set to `paused`, resumed by callback |
+
+Workflow callback contract:
+
+- Callback endpoint: `POST /api/runs/{run_id}/callback`
+- Token validation: HMAC token required when `AUTH_SECRET_KEY` is set.
+- Output compatibility: both `output` and `output_vars` accepted; normalized into `workflow_output_ready` event for resume merge.
+
+### 3) Step vs Batch execution (current implementation truth)
+
+Current runtime is **step-centric**.
+
+Terminology (authoritative):
+
+| Term | What it means in LangOrch | Current status |
+|---|---|---|
+| **Step mode** | Orchestrator executes one `IRStep` at a time, in node order, and tracks retry/idempotency/events per step | ✅ Active |
+| **Sync workflow step** | A single step whose capability type is `workflow` with `workflow_dispatch_mode=sync`; orchestrator waits for response inline | ✅ Active |
+| **Async workflow step** | A single step whose capability type is `workflow` with `workflow_dispatch_mode=async`; orchestrator delegates, pauses run, resumes on callback | ✅ Active |
+| **Batch mode** | Orchestrator groups multiple work items/steps into one batch execution contract and schedules/commits them as a batch unit | ❌ Not implemented |
+
+Important clarification:
+
+- **Fire-and-forget workflow is NOT batch mode.**
+- It is still **one step** in orchestration terms; the difference is sync vs async completion semantics:
+  - `tool` capability: step completes synchronously in the same execution window.
+  - `workflow` capability + `workflow_dispatch_mode=sync`: step completes synchronously in the same execution window.
+  - `workflow` capability + `workflow_dispatch_mode=async` (default): step delegates asynchronously, run goes `paused`, then continues after callback.
+
+| Concern | Current behavior |
+|---|---|
+| `IRStep` execution unit | Executed one-by-one inside `execute_sequence` |
+| `ExecutorBinding.mode` | `mode="step"` is used; no active runtime branch for `mode="batch"` |
+| Capability `is_batch` | Stored and transported in schemas, but not used by dispatcher policy |
+| `parallel` node | Branches are currently iterated sequentially in code (not `asyncio.gather`) |
+
+Implication: “batch” today is metadata/forward-compatibility, not an active scheduler/executor strategy.
+
+Concrete examples:
+
+1. **Tool step example**
+  - CKP step action: `browser.click`
+  - Capability type: `tool`
+  - Orchestrator behavior: calls agent `/execute`, waits, emits `step_completed`, proceeds to next step.
+
+2. **Workflow step example (fire-and-forget)**
+  - CKP step action: `run_full_salesforce_login`
+  - Capability type: `workflow`
+  - Dispatch mode: `workflow_dispatch_mode=async` (or omitted, default)
+  - Orchestrator behavior: sends `callback_url`, emits `workflow_delegated`, sets run `paused`, later callback requeues run and execution resumes.
+
+2b. **Workflow step example (synchronous)**
+  - CKP step action: `run_full_salesforce_login`
+  - Capability type: `workflow`
+  - Dispatch mode: `workflow_dispatch_mode=sync`
+  - Orchestrator behavior: calls agent `/execute`, waits for result inline, then proceeds to next step without pausing run.
+
+3. **What batch would look like (not present yet)**
+  - CKP would declare multiple items as one batch contract (single batch id, partial-failure policy, batch ack/commit semantics).
+  - Runtime would need a dedicated `mode="batch"` dispatch path and corresponding worker/event model.
+
+### 4) Retry model (two layers)
+
+#### A. Step-level retry (inside sequence executor)
+
+Gate condition:
+
+- Retries only occur when `step.retry_on_failure == true` and attempt count is below configured max.
+
+Config precedence:
+
+1. step `retry_config`
+2. global `retry_policy` / fallback global fields
+3. hard defaults
+
+Backoff model:
+
+$$
+delay_s = \frac{retry\_delay\_ms \cdot backoff\_multiplier^{attempt}}{1000}
+$$
+
+#### B. Job-level retry (worker queue)
+
+- If `execute_run()` raises at job scope, worker marks job `retrying` until max attempts, then `failed`.
+- Stalled `running` jobs (expired lock) are reclaimed and requeued/final-failed by maintenance loop.
+
+### 5) Exception and handler resolution order
+
+For sequence step failures, effective order is:
+
+1. **Primary step retry** (`retry_on_failure` loop)
+2. **Error handler matching** (`error_type` vs exception class name)
+3. **Recovery steps** execution (if configured)
+4. **Handler action**:
+  - `retry`: handler retry policy applies
+  - `ignore`: suppress and continue
+  - `fail` / `screenshot_and_fail`: re-raise
+  - `fallback_node`: immediate route override
+5. **No matching handler**: raise to run scope
+6. **Run-scope recovery**: global `on_failure` node (if configured)
+7. **Final run failure**: status/events updated, alert webhook path may fire
+
+### 6) State transition truth table (runtime-critical)
+
+| Scenario | Run status transition | Key events |
+|---|---|---|
+| New run accepted | `created` → `queued` | `run_created` |
+| Worker starts execution | `queued` → `running` | `execution_started` |
+| Tool step success | stays `running` | `step_started`, `step_completed` |
+| Tool step retries | stays `running` | retry metrics/events via retry path |
+| Workflow step delegated | `running` → `paused` | `workflow_delegated` |
+| Workflow callback success | `paused` → `queued` | `workflow_callback_received`, `workflow_output_ready` |
+| Workflow callback failure | `paused` → `failed` | `workflow_callback_received`, `run_failed` |
+| Approval wait | `running` → `waiting_approval` | `approval_requested` |
+| Approval decision resume | `waiting_approval` → `queued` | approval decision events + requeue |
+| Terminal success | `running` → `completed` | `run_completed` |
+| Terminal failure | `running` → `failed` | `run_failed` or `error` |
+
+### 7) Operational caveats for roadmap planning
+
+1. **Batch execution is not active behavior yet** (only schema metadata).
+2. **Parallel node is structurally parallel but currently sequentially iterated implementation-wise.**
+3. **Workflow callbacks are now hardened for token + payload-key compatibility**, but end-to-end chaos testing for callback loss/reorder should be expanded in test hardening backlog.
 
 ---
 

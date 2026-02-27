@@ -36,6 +36,8 @@ _IMPLICIT_RUNTIME_VARS: frozenset[str] = frozenset({
     "llm_output",
 })
 
+_VALID_WORKFLOW_DISPATCH_MODES: frozenset[str] = frozenset({"async", "sync"})
+
 
 class ValidationError(Exception):
     def __init__(self, errors: list[str]):
@@ -110,6 +112,16 @@ def validate_ir(ir: IRProcedure) -> list[str]:
     if ir.trigger and ir.trigger.type == "webhook" and not ir.trigger.webhook_secret:
         errors.append("trigger.type 'webhook' requires 'webhook_secret' for HMAC verification.")
 
+    _global_wf_mode = (ir.global_config or {}).get("workflow_dispatch_mode")
+    if _global_wf_mode is not None:
+        _global_wf_mode_str = str(_global_wf_mode).strip().lower()
+        if _global_wf_mode_str not in _VALID_WORKFLOW_DISPATCH_MODES:
+            errors.append(
+                "global_config.workflow_dispatch_mode "
+                f"'{_global_wf_mode}' is invalid. Must be one of: "
+                f"{sorted(_VALID_WORKFLOW_DISPATCH_MODES)}."
+            )
+
     # ── Unreachable node detection ──────────────────────────────
     if ir.start_node_id and ir.start_node_id in all_node_ids:
         reachable: set[str] = set()
@@ -183,6 +195,15 @@ def validate_ir(ir: IRProcedure) -> list[str]:
                         errors.append(
                             f"Node '{nid}', step '{step.step_id}': template references "
                             f"undeclared variable '{{{{{_var}}}}}'."
+                        )
+                _wf_mode = getattr(step, "workflow_dispatch_mode", None)
+                if _wf_mode is not None:
+                    _wf_mode_str = str(_wf_mode).strip().lower()
+                    if _wf_mode_str not in _VALID_WORKFLOW_DISPATCH_MODES:
+                        errors.append(
+                            f"Node '{nid}', step '{step.step_id}': workflow_dispatch_mode "
+                            f"'{_wf_mode}' is invalid. Must be one of: "
+                            f"{sorted(_VALID_WORKFLOW_DISPATCH_MODES)}."
                         )
         elif isinstance(payload, IRLlmActionPayload):
             _llm_text = (payload.prompt or "") + " " + (payload.system_prompt or "")

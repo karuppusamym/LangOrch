@@ -34,8 +34,8 @@ from app.api.config import router as config_router
 from app.api.audit import router as audit_router
 from app.api.agent_credentials import router as agent_credentials_router
 
-logger = logging.getLogger("langorch.main")
-
+from app.utils.logger import setup_logger
+logger = setup_logger(log_format=settings.LOG_FORMAT, log_level="DEBUG" if settings.DEBUG else "INFO")
 _EXPIRY_POLL_INTERVAL = 30  # seconds
 _HEALTH_POLL_INTERVAL = 60  # seconds
 
@@ -134,6 +134,30 @@ async def _approval_expiry_loop() -> None:
                     logger.info("Auto-timed-out %d approval(s)", len(expired))
         except Exception:
             logger.exception("Error in approval expiry loop")
+
+
+async def _workflow_timeout_loop() -> None:
+    """Background task: auto-timeout stalled paused workflow runs.
+
+    Only the current scheduler leader runs this loop. Under multi-replica
+    deployments non-leaders skip each cycle to avoid double-timeouts.
+    """
+    from app.runtime.leader import leader_election
+    from app.services.run_service import auto_fail_stalled_workflows
+
+    while True:
+        await asyncio.sleep(_EXPIRY_POLL_INTERVAL)
+        if not leader_election.is_leader:
+            continue
+        try:
+            async with async_session() as db:
+                timeout_mins = settings.WORKFLOW_CALLBACK_TIMEOUT_MINUTES
+                if timeout_mins and timeout_mins > 0:
+                    failed_runs = await auto_fail_stalled_workflows(db, timeout_mins)
+                    if failed_runs:
+                        logger.info("Auto-timed-out %d stalled workflow(s): %s", len(failed_runs), failed_runs)
+        except Exception:
+            logger.exception("Error in workflow timeout loop")
 
 
 _RETENTION_POLL_INTERVAL = 3600  # hourly
@@ -462,6 +486,15 @@ async def lifespan(app: FastAPI):
                 "  expires_at DATETIME NOT NULL"
                 ")"
             ),
+            # OrchestratorWorker registry table (migration 194a461733a3)
+            (
+                "CREATE TABLE IF NOT EXISTS orchestrator_workers ("
+                "  worker_id VARCHAR(256) PRIMARY KEY, "
+                "  status VARCHAR(32) NOT NULL, "
+                "  is_leader BOOLEAN NOT NULL DEFAULT 0, "
+                "  last_heartbeat_at DATETIME NOT NULL"
+                ")"
+            ),
             # Batch 35: audit_events table
             (
                 "CREATE TABLE IF NOT EXISTS audit_events ("
@@ -481,6 +514,14 @@ async def lifespan(app: FastAPI):
                 "  key VARCHAR(128) PRIMARY KEY, "
                 "  value_json TEXT NOT NULL, "
                 "  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ),
+            # Batch 38: persistent agent dispatch counters
+            (
+                "CREATE TABLE IF NOT EXISTS agent_dispatch_counters ("
+                "  pool_id VARCHAR(128) PRIMARY KEY, "
+                "  counter_value INTEGER NOT NULL DEFAULT 0, "
+                "  updated_at DATETIME NOT NULL"
                 ")"
             ),
         ]
@@ -539,6 +580,7 @@ async def lifespan(app: FastAPI):
     
     # Start background loops
     _expiry_task = asyncio.create_task(_approval_expiry_loop())
+    _workflow_t_task = asyncio.create_task(_workflow_timeout_loop())
     _health_task = asyncio.create_task(_agent_health_loop())
     _retention_task = asyncio.create_task(_checkpoint_retention_loop())
     _artifact_retention_task = asyncio.create_task(_artifact_retention_loop())
@@ -573,6 +615,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _expiry_task.cancel()
+        _workflow_t_task.cancel()
         _health_task.cancel()
         _retention_task.cancel()
         _artifact_retention_task.cancel()
@@ -586,12 +629,17 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
+from app.utils.tracing import setup_tracing
+
 app = FastAPI(
     title="LangOrch",
     description="CKP-driven durable agentic orchestrator",
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Initialize OpenTelemetry setup (if endpoint is provided in config)
+setup_tracing(app, settings.OTLP_ENDPOINT)
 
 # CORS
 app.add_middleware(

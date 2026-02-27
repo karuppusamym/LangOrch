@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from sqlalchemy import select, desc
+
 from app.db.engine import async_session, get_db
+from app.db.models import RunEvent
 from app.schemas.approvals import ApprovalDecision, ApprovalOut
 from app.services import approval_service, run_service
 from app.worker.enqueue import requeue_run
@@ -21,7 +24,7 @@ router = APIRouter()
 
 @router.get("", response_model=list[ApprovalOut])
 async def list_approvals(status: str | None = None, db: AsyncSession = Depends(get_db)):
-    return await approval_service.list_approvals(db, status)
+    return await approval_service.list_approvals_enriched(db, status)
 
 
 @router.get("/stream")
@@ -94,13 +97,38 @@ async def submit_decision(
         current_input["__approval_decisions"] = decisions
         run.input_vars_json = json.dumps(current_input)
 
+        # Look up node_name from the prior approval_requested event for this node
+        _node_name_row = await db.execute(
+            select(RunEvent.payload_json)
+            .where(
+                RunEvent.run_id == run.run_id,
+                RunEvent.event_type == "approval_requested",
+                RunEvent.node_id == approval.node_id,
+            )
+            .order_by(desc(RunEvent.created_at))
+            .limit(1)
+        )
+        _node_name_json = _node_name_row.scalar()
+        _node_name: str = approval.node_id
+        if _node_name_json:
+            try:
+                _pl = json.loads(_node_name_json) if isinstance(_node_name_json, str) else _node_name_json
+                _node_name = _pl.get("node_name") or approval.node_id
+            except Exception:
+                pass
+
         await run_service.update_run_status(db, run.run_id, "created")
         await run_service.emit_event(
             db,
             run.run_id,
             "approval_decision_received",
             node_id=approval.node_id,
-            payload={"approval_id": approval.approval_id, "decision": approval.status},
+            payload={
+                "approval_id": approval.approval_id,
+                "decision": approval.status,
+                "decided_by": decided_by,
+                "node_name": _node_name,
+            },
         )
 
         # Requeue the run so the worker resumes it promptly (priority=10).

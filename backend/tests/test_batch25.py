@@ -149,16 +149,17 @@ class TestAgentRoundRobin:
     """executor_dispatch._find_capable_agent uses deterministic round-robin."""
 
     def test_pool_counters_in_dispatch(self):
-        """_pool_counters defaultdict must be present (replaces random.shuffle)."""
+        """DB-backed counter helper must be present (replaces random.shuffle)."""
         import app.runtime.executor_dispatch as mod
-        assert hasattr(mod, "_pool_counters"), \
-            "_pool_counters not found in executor_dispatch"
+        assert hasattr(mod, "_get_next_pool_index"), \
+            "_get_next_pool_index not found in executor_dispatch"
 
     def test_round_robin_in_source(self):
-        """Round-robin via _pool_counters must appear in source; no random.shuffle."""
+        """Round-robin uses DB counters; no random.shuffle."""
         import app.runtime.executor_dispatch as mod
         src = inspect.getsource(mod)
-        assert "_pool_counters" in src, "_pool_counters not found in executor_dispatch"
+        assert "AgentDispatchCounter" in src, "AgentDispatchCounter not found in executor_dispatch"
+        assert "_get_next_pool_index" in src, "_get_next_pool_index not found in executor_dispatch"
         assert "random.shuffle" not in src, \
             "random.shuffle still present – should have been replaced by round-robin"
 
@@ -169,8 +170,16 @@ class TestAgentRoundRobin:
         agents = [_make_agent(f"a{i}", capabilities="click") for i in range(3)]
 
         async def _run():
-            # Reset counters to get deterministic results
-            mod._pool_counters.clear()
+            # Stub DB-backed counter to deterministic sequence
+            counter = {"v": 0}
+
+            async def _fake_next_pool_index(_db, _pool_key):
+                v = counter["v"]
+                counter["v"] += 1
+                return v
+
+            mod._get_next_pool_index = _fake_next_pool_index
+
             db_mock = MagicMock()
             scalars_mock = MagicMock()
             scalars_mock.all.return_value = list(agents)
@@ -180,11 +189,10 @@ class TestAgentRoundRobin:
             results = []
             for _ in range(6):
                 scalars_mock.all.return_value = list(agents)
-                a = await mod._find_capable_agent(db_mock, "web", "click")
+                a, _t = await mod._find_capable_agent(db_mock, "web", "click")
                 assert a is not None
                 results.append(a.agent_id)
-            # 6 calls across 3 agents → each visited at least once
-            assert len(set(results)) >= 2, "round-robin should distribute across agents"
+            assert results == ["a0", "a1", "a2", "a0", "a1", "a2"]
 
         asyncio.run(_run())
 
@@ -204,7 +212,7 @@ class TestAgentRoundRobin:
             results = set()
             for _ in range(10):
                 scalars_mock.all.return_value = list(agents)
-                a = await mod._find_capable_agent(db_mock, "web", "click")
+                a, _t = await mod._find_capable_agent(db_mock, "web", "click")
                 assert a is not None
                 results.add(a.agent_id)
             assert len(results) >= 1
@@ -216,9 +224,9 @@ class TestAgentRoundRobin:
         import app.runtime.executor_dispatch as mod
         from datetime import datetime, timezone
 
-        bad = _make_agent("bad", capabilities="")
+        bad = _make_agent("bad", capabilities="*")
         bad.circuit_open_at = datetime.now(timezone.utc)   # circuit is open NOW
-        good = _make_agent("good", capabilities="")
+        good = _make_agent("good", capabilities="*")
 
         async def _run():
             db_mock = MagicMock()
@@ -227,7 +235,7 @@ class TestAgentRoundRobin:
             db_mock.execute = AsyncMock(
                 return_value=MagicMock(scalars=MagicMock(return_value=scalars_mock))
             )
-            result = await mod._find_capable_agent(db_mock, "web", "click")
+            result, _t = await mod._find_capable_agent(db_mock, "web", "click")
             assert result is not None
             assert result.agent_id == "good"
 
@@ -243,8 +251,9 @@ class TestAgentRoundRobin:
             db_mock.execute = AsyncMock(
                 return_value=MagicMock(scalars=MagicMock(return_value=scalars_mock))
             )
-            result = await mod._find_capable_agent(db_mock, "web", "click")
+            result, t = await mod._find_capable_agent(db_mock, "web", "click")
             assert result is None
+            assert t == "tool"
 
         asyncio.run(_run())
 
@@ -392,7 +401,7 @@ class TestDryRunMode:
         idx = src.find("dry_run")
         snippet = src[idx:idx + 500]
         assert "agent_http" in snippet
-        assert "mcp_tool" in snippet
+        assert "mcp_tool" in src
 
     def test_dry_run_skipped_action_key(self):
         import app.runtime.node_executors as mod

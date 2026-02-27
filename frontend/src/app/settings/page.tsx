@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { getConfig, patchConfig, listRuns, listAgents, listProcedures, listProjects } from "@/lib/api";
+import { getConfig, patchConfig, testLlmConnection, listRuns, listAgents, listProcedures, listProjects } from "@/lib/api";
 import type { PlatformConfig } from "@/lib/types";
 
 type Tab = "general" | "execution" | "security" | "llm" | "retention";
@@ -71,6 +71,8 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [llmTesting, setLlmTesting] = useState(false);
+  const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; model?: string; response?: string; error?: string } | null>(null);
 
   const dirty = Object.keys(draft).length > 0;
 
@@ -368,6 +370,47 @@ export default function SettingsPage() {
                   )}
                 </div>
               </Field>
+            </div>
+            {/* Test Connection */}
+            <div className="mt-5 flex items-center gap-3 pt-4 border-t border-neutral-100 dark:border-neutral-800">
+              <button
+                onClick={async () => {
+                  setLlmTesting(true);
+                  setLlmTestResult(null);
+                  try {
+                    const res = await testLlmConnection();
+                    setLlmTestResult(res);
+                  } catch (e) {
+                    setLlmTestResult({ ok: false, error: e instanceof Error ? e.message : "Request failed" });
+                  } finally {
+                    setLlmTesting(false);
+                  }
+                }}
+                disabled={llmTesting}
+                className="flex items-center gap-2 rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-60 transition-colors"
+              >
+                {llmTesting ? (
+                  <><span className="h-3.5 w-3.5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />Testing…</>
+                ) : (
+                  <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" /></svg>Test Connection</>
+                )}
+              </button>
+              {llmTestResult && (
+                <div className={`flex flex-col gap-0.5 text-xs rounded-lg px-3 py-2 border ${
+                  llmTestResult.ok
+                    ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400"
+                    : "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400"
+                }`}>
+                  {llmTestResult.ok ? (
+                    <>
+                      <span className="font-semibold">✓ Connected — model: {llmTestResult.model}</span>
+                      {llmTestResult.response && <span className="opacity-70">Response: “{llmTestResult.response}”</span>}
+                    </>
+                  ) : (
+                    <span className="font-medium">✗ {llmTestResult.error}</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

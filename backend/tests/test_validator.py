@@ -204,3 +204,77 @@ class TestValidateInvalid:
         ir = parse_ckp(ckp)
         errors = validate_ir(ir)
         assert len(errors) >= 3  # missing procedure_id, version, start_node
+
+
+class TestValidateWorkflowDispatchMode:
+    def test_valid_step_workflow_dispatch_mode(self):
+        ckp = {
+            "procedure_id": "wf_mode_valid",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                                "workflow_dispatch_mode": "sync",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        errors = validate_ir(parse_ckp(ckp))
+        assert errors == []
+
+    def test_invalid_step_workflow_dispatch_mode(self):
+        ckp = {
+            "procedure_id": "wf_mode_invalid",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                                "workflow_dispatch_mode": "blocking",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        errors = validate_ir(parse_ckp(ckp))
+        assert any("workflow_dispatch_mode" in e for e in errors)
+
+    def test_invalid_global_workflow_dispatch_mode(self):
+        ckp = {
+            "procedure_id": "wf_mode_invalid_global",
+            "version": "1.0.0",
+            "global_config": {"workflow_dispatch_mode": "blocking"},
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "steps": [{"step_id": "s1", "action": "log", "message": "ok"}],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        errors = validate_ir(parse_ckp(ckp))
+        assert any("global_config.workflow_dispatch_mode" in e for e in errors)

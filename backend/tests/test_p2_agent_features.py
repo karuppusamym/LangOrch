@@ -130,7 +130,7 @@ class TestAgentRoutingAndAffinity:
         clear_run_affinity(run_id)
 
         # 1. First dispatch establishes affinity
-        first_agent = await _find_capable_agent(mock_db, channel, "navigate", run_id=run_id)
+        first_agent, cap_type = await _find_capable_agent(mock_db, channel, "navigate", run_id=run_id)
         assert first_agent is not None
         assert first_agent.agent_id in ["web_1", "web_2"]
         
@@ -139,13 +139,13 @@ class TestAgentRoutingAndAffinity:
         assert _run_agent_affinity[f"{run_id}:{channel}"] == assigned_agent_id
 
         # 2. Second dispatch for SAME run_id MUST return the SAME agent, bypassing round-robin
-        second_agent = await _find_capable_agent(mock_db, channel, "extract", run_id=run_id)
+        second_agent, second_cap_type = await _find_capable_agent(mock_db, channel, "extract", run_id=run_id)
         assert second_agent is not None
         assert second_agent.agent_id == assigned_agent_id
 
         # 3. Dispatch for DIFFERENT run_id will likely get the OTHER agent due to round-robin
         run_id_2 = "test_run_other"
-        third_agent = await _find_capable_agent(mock_db, channel, "navigate", run_id=run_id_2)
+        third_agent, third_cap_type = await _find_capable_agent(mock_db, channel, "navigate", run_id=run_id_2)
         assert third_agent is not None
         # It should round balance to the other one (though theoretically could be same depending on counter init, 
         # but affinity guarantees run_id_1 stays on assigned_agent_id)
@@ -208,3 +208,73 @@ class TestAgentRoutingAndAffinity:
                 "pool_id": "pool_1"
             }
         )
+
+class TestAgentCapabilityParsing:
+    def test_has_capability_json_matching(self):
+        from app.runtime.executor_dispatch import _has_capability
+        from app.db.models import AgentInstance
+        import json
+
+        # 1. Test JSON matching tool
+        agent_json = AgentInstance(
+            agent_id="test_1",
+            capabilities=json.dumps([{"name": "my_action", "type": "tool"}])
+        )
+        has_cap, cap_type = _has_capability(agent_json, "my_action")
+        assert has_cap is True
+        assert cap_type == "tool"
+
+        # 2. Test JSON matching workflow
+        agent_wf = AgentInstance(
+            agent_id="test_2",
+            capabilities=json.dumps([{"name": "my_workflow", "type": "workflow"}])
+        )
+        has_cap, cap_type = _has_capability(agent_wf, "my_workflow")
+        assert has_cap is True
+        assert cap_type == "workflow"
+
+        # 3. Test JSON non-matching
+        has_cap, cap_type = _has_capability(agent_json, "other_action")
+        assert has_cap is False
+
+        # 4. Test Legacy CSV matching
+        agent_csv = AgentInstance(
+            agent_id="test_3",
+            capabilities="action_a, my_action, action_b"
+        )
+        has_cap, cap_type = _has_capability(agent_csv, "my_action")
+        assert has_cap is True
+        assert cap_type == "tool"  # CSV relies on fallback logic which defaults to tool
+
+        # 5. Test empty capabilities in strict mode -> denies by default
+        agent_empty = AgentInstance(
+            agent_id="test_4",
+            capabilities=""
+        )
+        has_cap, cap_type = _has_capability(agent_empty, "some_action")
+        assert has_cap is False
+        assert cap_type == "tool"
+
+        # 6. Test wildcard capability
+        agent_wildcard = AgentInstance(
+            agent_id="test_5",
+            capabilities=json.dumps([{"name": "*", "type": "tool"}])
+        )
+        has_cap, cap_type = _has_capability(agent_wildcard, "any_action_at_all")
+        assert has_cap is True
+        assert cap_type == "tool"
+
+    def test_has_capability_empty_permissive_mode(self):
+        from app.runtime.executor_dispatch import _has_capability
+        from app.db.models import AgentInstance
+        from app.config import settings
+
+        previous = settings.AGENT_REQUIRE_EXPLICIT_CAPABILITIES
+        try:
+            object.__setattr__(settings, "AGENT_REQUIRE_EXPLICIT_CAPABILITIES", False)
+            agent_empty = AgentInstance(agent_id="test_perm", capabilities="")
+            has_cap, cap_type = _has_capability(agent_empty, "some_action")
+            assert has_cap is True
+            assert cap_type == "tool"
+        finally:
+            object.__setattr__(settings, "AGENT_REQUIRE_EXPLICIT_CAPABILITIES", previous)

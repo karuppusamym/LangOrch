@@ -106,12 +106,13 @@ export interface Approval {
   prompt: string;
   decision_type: string;
   options: string[] | null;
-  status: "pending" | "approved" | "rejected" | "timed_out" | "timeout";
+  status: "pending" | "approved" | "rejected" | "timed_out" | "timeout" | "cancelled";
   decided_by: string | null;
   decided_at: string | null;
   expires_at: string | null;
   context_data: Record<string, unknown> | null;
   created_at: string;
+  run_status?: string | null;
 }
 
 export interface AgentCapability {

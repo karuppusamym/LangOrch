@@ -21,6 +21,7 @@ class ApprovalOut(BaseModel):
     decision_json: Any | None = None
     created_at: datetime
     decided_at: datetime | None = None
+    run_status: str | None = None
 
     model_config = {"from_attributes": True}
 

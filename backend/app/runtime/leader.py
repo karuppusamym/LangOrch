@@ -111,6 +111,7 @@ class LeaderElection:
 
     async def _loop(self) -> None:
         while True:
+            acquired = False
             try:
                 acquired = await self._try_acquire_or_renew()
                 if acquired and not self._is_leader:
@@ -124,16 +125,24 @@ class LeaderElection:
                         self._name, self._leader_id,
                     )
                 self._is_leader = acquired
-
-                # Always heartbeat our existence to the registry (standby or active)
-                await self._heartbeat_worker_registry(acquired)
-
             except Exception:
                 logger.exception(
                     "LeaderElection: unexpected error during acquire/renew (lease=%s)",
                     self._name,
                 )
                 self._is_leader = False
+
+            # Always heartbeat our existence to the registry (standby or active)
+            # even if the leader-lease acquisition failed — this keeps the worker
+            # visible on the System Health page.
+            try:
+                await self._heartbeat_worker_registry(self._is_leader)
+            except Exception:
+                logger.exception(
+                    "LeaderElection: failed to update worker registry (lease=%s id=%s)",
+                    self._name, self._leader_id,
+                )
+
             await asyncio.sleep(_RENEW_INTERVAL)
 
     # ── DB operations ─────────────────────────────────────────

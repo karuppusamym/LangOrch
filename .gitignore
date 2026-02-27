@@ -45,9 +45,22 @@ backend/demo_agents/*.png
 backend/demo_agents/*.jpg
 backend/demo_agents/*.jpeg
 
-# ---- Temporary local scripts ----
+# ---- Temporary / one-off local scripts ----
 backend/tmp_*.py
 tmp_*.py
+backend/fix_*.py
+backend/check_*.py
+backend/do_*.py
+backend/parse_*.py
+
+# ---- Test/debug output text files ----
+backend/*.txt
+backend/test_out.txt
+
+# ---- Runtime / generated artifacts ----
+backend/artifacts/
+artifacts/
+demo_procedures/*.csv
 
 # ---- Misc ----
 *.tmp

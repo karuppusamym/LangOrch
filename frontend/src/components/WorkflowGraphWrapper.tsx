@@ -13,9 +13,11 @@ import type { NodeStatus } from "./WorkflowGraph";
 export default function WorkflowGraphWrapper({
   graph,
   nodeStates,
+  edgeCounts,
 }: {
   graph: { nodes: any[]; edges: any[] };
   nodeStates?: Record<string, NodeStatus>;
+  edgeCounts?: Record<string, number>;
 }) {
   const [mounted, setMounted] = useState(false);
 
@@ -27,5 +29,5 @@ export default function WorkflowGraphWrapper({
     return <p className="text-sm text-gray-400">Loading graph...</p>;
   }
 
-  return <WorkflowGraph graph={graph} nodeStates={nodeStates} />;
+  return <WorkflowGraph graph={graph} nodeStates={nodeStates} edgeCounts={edgeCounts} />;
 }

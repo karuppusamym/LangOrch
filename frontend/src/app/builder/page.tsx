@@ -27,6 +27,10 @@ export default function BuilderPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedProc, setSelectedProc] = useState<Procedure | null>(null);
+  const [refreshed, setRefreshed] = useState(false);
+  // Pagination for quick-access grid
+  const [procPage, setProcPage] = useState(0);
+  const PROC_PAGE_SIZE = 9;
 
   useEffect(() => {
     listProcedures()
@@ -45,11 +49,11 @@ export default function BuilderPage() {
     }
   }
 
-  async function doLoadGraph(id: string, version: string) {
+  async function doLoadGraph(id: string, version: string, { clearFirst = false } = {}) {
     if (!id) return;
     setLoading(true);
     setError("");
-    setGraphData(null);
+    if (clearFirst) setGraphData(null);
     try {
       const data = await getGraph(id, version);
       setGraphData(data as { nodes: unknown[]; edges: unknown[] });
@@ -65,16 +69,17 @@ export default function BuilderPage() {
     setSelectedVersion("latest");
     setGraphData(null);
     setVersions([]);
+    setProcPage(0);
     const proc = procedures.find((p) => p.procedure_id === id) ?? null;
     setSelectedProc(proc);
     if (!id) return;
     await loadVersionsForProc(id);
-    await doLoadGraph(id, "latest");
+    await doLoadGraph(id, "latest", { clearFirst: true });
   }
 
   async function onVersionChange(v: string) {
     setSelectedVersion(v);
-    await doLoadGraph(selectedId, v);
+    await doLoadGraph(selectedId, v, { clearFirst: true });
   }
 
   // Resolve version string to actual version number (for editor link)
@@ -130,14 +135,20 @@ export default function BuilderPage() {
           {/* Refresh */}
           {selectedId && (
             <button
-              onClick={() => { void doLoadGraph(selectedId, selectedVersion); }}
+              onClick={() => {
+                setRefreshed(false);
+                void doLoadGraph(selectedId, selectedVersion).then(() => {
+                  setRefreshed(true);
+                  setTimeout(() => setRefreshed(false), 2000);
+                });
+              }}
               disabled={loading}
-              className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 transition-colors"
             >
-              <svg className={`inline w-3.5 h-3.5 mr-1 ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <svg className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
-              Refresh
+              {refreshed ? <span className="text-emerald-600">Refreshed ✓</span> : "Refresh"}
             </button>
           )}
 
@@ -206,16 +217,41 @@ export default function BuilderPage() {
               </p>
             </div>
             {procedures.length > 0 && (
-              <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-lg w-full">
-                {procedures.slice(0, 6).map((p) => (
-                  <button
-                    key={p.procedure_id}
-                    onClick={() => { void onProcedureChange(p.procedure_id); }}
-                    className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-blue-50 dark:hover:bg-neutral-700 hover:border-blue-200 transition-colors text-left truncate"
-                  >
-                    {p.name}
-                  </button>
-                ))}
+              <div className="mt-4 w-full max-w-2xl">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {procedures
+                    .slice(procPage * PROC_PAGE_SIZE, (procPage + 1) * PROC_PAGE_SIZE)
+                    .map((p) => (
+                      <button
+                        key={p.procedure_id}
+                        onClick={() => { void onProcedureChange(p.procedure_id); }}
+                        className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-blue-50 dark:hover:bg-neutral-700 hover:border-blue-200 transition-colors text-left truncate"
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                </div>
+                {Math.ceil(procedures.length / PROC_PAGE_SIZE) > 1 && (
+                  <div className="flex items-center justify-center gap-3 mt-3">
+                    <button
+                      onClick={() => setProcPage((p) => Math.max(0, p - 1))}
+                      disabled={procPage === 0}
+                      className="rounded-lg border border-neutral-200 px-3 py-1 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40 transition-colors"
+                    >
+                      ‹ Prev
+                    </button>
+                    <span className="text-sm text-neutral-500">
+                      {procPage + 1} / {Math.ceil(procedures.length / PROC_PAGE_SIZE)}
+                    </span>
+                    <button
+                      onClick={() => setProcPage((p) => Math.min(Math.ceil(procedures.length / PROC_PAGE_SIZE) - 1, p + 1))}
+                      disabled={procPage >= Math.ceil(procedures.length / PROC_PAGE_SIZE) - 1}
+                      className="rounded-lg border border-neutral-200 px-3 py-1 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40 transition-colors"
+                    >
+                      Next ›
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

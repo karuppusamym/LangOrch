@@ -48,6 +48,7 @@ export default function TriggersPage() {
   const [search, setSearch] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<TriggerRegistration | null>(null);
   const [confirmFire, setConfirmFire] = useState<TriggerRegistration | null>(null);
+  const [trigPage, setTrigPage] = useState(0);
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -62,6 +63,7 @@ export default function TriggersPage() {
   }, [toast]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setTrigPage(0); }, [filterType, filterEnabled, search]);
 
   function handleFire(trigger: TriggerRegistration) {
     setConfirmFire(trigger);
@@ -133,6 +135,9 @@ export default function TriggersPage() {
     if (search && !t.procedure_id.toLowerCase().includes(search.toLowerCase()) && !t.version.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
+  const TRIG_PAGE_SIZE = 15;
+  const totalTrigPages = Math.ceil(filtered.length / TRIG_PAGE_SIZE);
+  const pagedTriggers = filtered.slice(trigPage * TRIG_PAGE_SIZE, (trigPage + 1) * TRIG_PAGE_SIZE);
 
   const stats = {
     total: triggers.length,
@@ -237,7 +242,7 @@ export default function TriggersPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {filtered.map((trigger) => {
+                {pagedTriggers.map((trigger) => {
                   const key = `${trigger.procedure_id}:${trigger.version}`;
                   const isFiring = firing === key;
                   const isDeleting = deleting === key;
@@ -302,6 +307,22 @@ export default function TriggersPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+      {!loading && totalTrigPages > 1 && (
+        <div className="flex items-center justify-between px-2 py-1">
+          <span className="text-xs text-neutral-400">{trigPage * TRIG_PAGE_SIZE + 1}–{Math.min((trigPage + 1) * TRIG_PAGE_SIZE, filtered.length)} of {filtered.length} triggers</span>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setTrigPage((p) => Math.max(0, p - 1))} disabled={trigPage === 0}
+              className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+              ← Prev
+            </button>
+            <span className="text-xs text-neutral-500 px-2">{trigPage + 1} / {totalTrigPages}</span>
+            <button onClick={() => setTrigPage((p) => Math.min(totalTrigPages - 1, p + 1))} disabled={trigPage >= totalTrigPages - 1}
+              className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+              Next →
+            </button>
           </div>
         </div>
       )}

@@ -109,6 +109,18 @@ class Run(Base):
     events: Mapped[list[RunEvent]] = relationship(back_populates="run", lazy="noload")
 
 
+# ── Agent Dispatch Counters (Persistent Round-Robin) ───────────
+
+
+class AgentDispatchCounter(Base):
+    """Tracks round-robin pool indices persistently across worker restarts."""
+    __tablename__ = "agent_dispatch_counters"
+
+    pool_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    counter_value: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 # ── Run events (append-only timeline) ──────────────────────────
 
 

@@ -12,11 +12,14 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def _create_test_tables():
-    """Create all DB tables once before any test in the session.
+    """Rebuild DB tables once before any test in the session.
 
     ``ASGITransport`` does not trigger the ASGI lifespan, so the
     ``Base.metadata.create_all`` call inside ``app.main.lifespan`` never
     runs during unit tests.  This session-scoped fixture fills that gap.
+
+    We intentionally drop then recreate all tables so schema changes in models
+    are reflected even when a prior SQLite file already exists.
     """
     from sqlalchemy.ext.asyncio import create_async_engine
     from app.config import settings
@@ -25,6 +28,7 @@ def _create_test_tables():
     async def _setup() -> None:
         eng = create_async_engine(settings.ORCH_DB_URL)
         async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         await eng.dispose()
 

@@ -236,8 +236,8 @@ class TestTemplateVariableEnforcement:
         template_errors = [e for e in errors if "run_id" in e]
         assert template_errors == [], f"Unexpected template error for run_id: {template_errors}"
 
-    def test_empty_schema_skips_enforcement(self):
-        """When variables_schema is empty, template checks are skipped."""
+    def test_empty_schema_still_enforces_templates(self):
+        """When variables_schema is empty, undeclared template vars still fail validation."""
         from app.compiler.ir import (
             IRNode, IRProcedure, IRSequencePayload, IRStep, IRTerminatePayload,
         )
@@ -267,7 +267,7 @@ class TestTemplateVariableEnforcement:
         )
         errors = validate_ir(ir)
         template_errors = [e for e in errors if "mystery_var" in e]
-        assert template_errors == [], f"Empty schema should skip template check, got: {template_errors}"
+        assert template_errors != [], "Expected undeclared template variable error for mystery_var"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -388,8 +388,9 @@ class TestCircuitBreakerDispatch:
         result_mock.scalars.return_value.all.return_value = [agent]
         db.execute.return_value = result_mock
 
-        found = await _find_capable_agent(db, "web", "click_button")
-        assert found is None, "Circuit-open agent should be skipped"
+        with patch("app.runtime.executor_dispatch._get_next_pool_index", new=AsyncMock(return_value=0)):
+            found = await _find_capable_agent(db, "web", "click_button")
+        assert found[0] is None, "Circuit-open agent should be skipped"
 
     @pytest.mark.asyncio
     async def test_circuit_expired_agent_is_returned(self):
@@ -405,8 +406,9 @@ class TestCircuitBreakerDispatch:
         result_mock.scalars.return_value.all.return_value = [agent]
         db.execute.return_value = result_mock
 
-        found = await _find_capable_agent(db, "web", "click_button")
-        assert found is agent, "Expired circuit agent should be returned"
+        with patch("app.runtime.executor_dispatch._get_next_pool_index", new=AsyncMock(return_value=0)):
+            found = await _find_capable_agent(db, "web", "click_button")
+        assert found[0] is agent, "Expired circuit agent should be returned"
 
     @pytest.mark.asyncio
     async def test_healthy_agent_returned(self):
@@ -419,8 +421,9 @@ class TestCircuitBreakerDispatch:
         result_mock.scalars.return_value.all.return_value = [agent]
         db.execute.return_value = result_mock
 
-        found = await _find_capable_agent(db, "web", "click_button")
-        assert found is agent
+        with patch("app.runtime.executor_dispatch._get_next_pool_index", new=AsyncMock(return_value=0)):
+            found = await _find_capable_agent(db, "web", "click_button")
+        assert found[0] is agent
 
 
 # ═══════════════════════════════════════════════════════════════

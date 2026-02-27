@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -11,6 +11,7 @@ import {
   Panel,
   MarkerType,
   BackgroundVariant,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeProps,
@@ -56,6 +57,7 @@ const STATE_BORDER: Record<string, string> = {
   failed: "#EF4444",
   sla_breached: "#F97316",
   pending: "#9CA3AF",
+  paused: "#D97706",
 };
 const STATE_RING: Record<string, string> = {
   current: "0 0 0 0 rgba(59,130,246,0), 0 0 16px 4px rgba(59,130,246,0.45)",
@@ -64,6 +66,7 @@ const STATE_RING: Record<string, string> = {
   failed: "0 0 0 3px rgba(239,68,68,0.45), 0 0 12px 2px rgba(239,68,68,0.3)",
   sla_breached: "0 0 0 3px rgba(249,115,22,0.45)",
   pending: "none",
+  paused: "0 0 0 3px rgba(217,119,6,0.45), 0 0 12px 4px rgba(217,119,6,0.25)",
 };
 const STATE_STATUS_ICON: Record<string, string> = {
   completed: "✓",
@@ -72,6 +75,7 @@ const STATE_STATUS_ICON: Record<string, string> = {
   current: "◌",
   sla_breached: "!",
   pending: "⌛",
+  paused: "⏸",
 };
 const STATE_LABEL_COLOR: Record<string, string> = {
   completed: "#16A34A",
@@ -80,6 +84,7 @@ const STATE_LABEL_COLOR: Record<string, string> = {
   current: "#2563EB",
   sla_breached: "#EA580C",
   pending: "#6B7280",
+  paused: "#B45309",
 };
 
 /* ── Edge styling by label keyword ──────────────────────────── */
@@ -140,6 +145,7 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
   const isLive = execState === "current" || execState === "running";
   const isFailed = execState === "failed";
   const isPending = execState === "pending";
+  const isPaused = execState === "paused";
 
   return (
     <>
@@ -150,13 +156,13 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
       />
 
       <div
-        className={`relative rounded-xl border-2 bg-white transition-all duration-300 ${isPending ? "opacity-60 grayscale-[0.2]" : ""}`}
+        className={`relative rounded-xl border-2 bg-white transition-all duration-300 ${isPending ? "opacity-60 grayscale-[0.2]" : ""} ${isPaused ? "opacity-90" : ""}`}
         style={{
           borderColor,
           boxShadow: shadow,
           width: NODE_W,
           minHeight: NODE_H,
-          animation: isLive ? "glow-pulse 1.6s ease-in-out infinite" : undefined,
+          animation: isLive ? "glow-pulse 1.6s ease-in-out infinite" : isPaused ? "paused-pulse 2.5s ease-in-out infinite" : undefined,
         }}
       >
         {/* Accent stripe */}
@@ -273,16 +279,77 @@ interface GraphData {
 }
 
 export interface NodeStatus {
-  state: "running" | "completed" | "failed" | "sla_breached" | "current" | "pending";
+  state: "running" | "completed" | "failed" | "sla_breached" | "current" | "pending" | "paused";
   loopCount?: string;
 }
 
 interface WorkflowGraphProps {
   graph: GraphData;
   nodeStates?: Record<string, NodeStatus>;
+  edgeCounts?: Record<string, number>;
 }
 
 /* ── Legends ─────────────────────────────────────────────────── */
+/* ── Export panel ──────────────────────────────────────────── */
+function ExportPanel({ containerRef }: { containerRef: { current: HTMLDivElement | null } }) {
+  const { fitView } = useReactFlow();
+  const [exporting, setExporting] = useState<string | null>(null);
+
+  async function doExport(format: "png" | "svg" | "pdf") {
+    if (!containerRef.current || exporting) return;
+    setExporting(format);
+    try {
+      fitView({ padding: 0.15 });
+      await new Promise((r) => setTimeout(r, 300));
+      if (format === "png" || format === "pdf") {
+        const { toPng } = await import("html-to-image");
+        const url = await toPng(containerRef.current, { backgroundColor: "#f8fafc", pixelRatio: 2 });
+        if (format === "png") {
+          const a = document.createElement("a"); a.download = "workflow-graph.png"; a.href = url; a.click();
+        } else {
+          // PDF via print dialog
+          const win = window.open("", "_blank", "width=900,height=600");
+          if (win) {
+            win.document.write(`<html><head><title>Workflow Graph</title><style>*{margin:0;padding:0} img{width:100%;display:block}</style></head><body><img src="${url}"/></body></html>`);
+            win.document.close();
+            setTimeout(() => { win.focus(); win.print(); }, 600);
+          }
+        }
+      } else {
+        const { toSvg } = await import("html-to-image");
+        const url = await toSvg(containerRef.current, { backgroundColor: "#f8fafc" });
+        const a = document.createElement("a"); a.download = "workflow-graph.svg"; a.href = url; a.click();
+      }
+    } catch (err) {
+      console.error("Export failed:", err);
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  const fmts = ["png", "svg", "pdf"] as const;
+  return (
+    <div className="flex items-center gap-1">
+      {fmts.map((fmt) => (
+        <button
+          key={fmt}
+          onClick={() => void doExport(fmt)}
+          disabled={!!exporting}
+          title={`Export as ${fmt.toUpperCase()}`}
+          className="flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase text-gray-600 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 disabled:opacity-40"
+        >
+          {exporting === fmt ? (
+            <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+          ) : (
+            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+          )}
+          {fmt}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 const EDGE_LEGEND = [
   { color: "#6366F1", label: "Flow" },
   { color: "#22C55E", label: "Approve / True" },
@@ -302,52 +369,71 @@ const EXEC_LEGEND = [
 ];
 
 /* ── Main component ─────────────────────────────────────────── */
-export default function WorkflowGraph({ graph, nodeStates }: WorkflowGraphProps) {
+export default function WorkflowGraph({ graph, nodeStates, edgeCounts }: WorkflowGraphProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const positions = useMemo(
     () => dagreLayout(graph.nodes, graph.edges),
     [graph.nodes, graph.edges],
   );
 
-  const hasExecState = nodeStates && Object.keys(nodeStates).length > 0;
+  const matchedNodeCount = useMemo(
+    () => graph.nodes.filter((n) => !!nodeStates?.[n.id]).length,
+    [graph.nodes, nodeStates],
+  );
+  const hasExecState = matchedNodeCount > 0;
+  const showPendingFallback = hasExecState;
 
   const rfNodes: Node<CkpNodeData>[] = useMemo(
     () =>
       graph.nodes.map((n) => {
         const state = nodeStates?.[n.id];
+        // Only inject execution state when nodeStates has been provided AND
+        // at least one graph node actually matched an execution state.
+        const execData = state
+          ? { _execState: state.state, _loopCount: state.loopCount }
+          : showPendingFallback
+            ? { _execState: "pending" as const }
+            : {};
         return {
           id: n.id,
           type: "ckpNode",
           position: positions.get(n.id) ?? n.position,
-          data: {
-            ...n.data,
-            ...(state ? { _execState: state.state, _loopCount: state.loopCount } : { _execState: "pending" })
-          },
+          data: { ...n.data, ...execData },
         };
       }),
-    [graph.nodes, nodeStates, positions],
+    [graph.nodes, nodeStates, positions, showPendingFallback],
   );
 
   const rfEdges: Edge[] = useMemo(
     () =>
       graph.edges.map((e) => {
         const animated = e.animated ?? false;
+        const traversedCount = edgeCounts?.[`${e.source}=>${e.target}`] ?? 0;
         const es = edgeStyle(e.label, animated);
+        const isTraversed = hasExecState && traversedCount > 0;
+        const displayLabel = isTraversed
+          ? `${e.label ?? "flow"} (${traversedCount})`
+          : (e.label || undefined);
         return {
           id: e.id,
           source: e.source,
           target: e.target,
-          label: e.label || undefined,
-          animated: e.label === "loop body" || animated,
+          label: displayLabel,
+          animated: isTraversed || e.label === "loop body" || animated,
           type: "bezier",
-          style: { ...es },
+          style: {
+            ...es,
+            strokeWidth: isTraversed ? Math.max((es.strokeWidth as number) + 0.8, 2.8) : es.strokeWidth,
+            opacity: hasExecState && !isTraversed ? 0.55 : 1,
+          },
           markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: es.stroke },
-          labelStyle: { fontSize: 10, fontWeight: 700, fill: es.stroke },
+          labelStyle: { fontSize: isTraversed ? 11 : 10, fontWeight: isTraversed ? 800 : 700, fill: es.stroke },
           labelBgStyle: { fill: "#fff", fillOpacity: 0.94 },
           labelBgPadding: [5, 3] as [number, number],
           labelBgBorderRadius: 4,
         };
       }),
-    [graph.edges],
+    [edgeCounts, graph.edges, hasExecState],
   );
 
   const miniNodeColor = useCallback(
@@ -361,15 +447,19 @@ export default function WorkflowGraph({ graph, nodeStates }: WorkflowGraphProps)
 
   return (
     <>
-      {/* Glow-pulse keyframes for running nodes */}
+      {/* Glow-pulse keyframes for running/paused nodes */}
       <style>{`
         @keyframes glow-pulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.45), 0 0 8px 2px rgba(59,130,246,0.2); }
           50%       { box-shadow: 0 0 0 4px rgba(59,130,246,0.15), 0 0 20px 6px rgba(59,130,246,0.4); }
         }
+        @keyframes paused-pulse {
+          0%, 100% { box-shadow: 0 0 0 3px rgba(217,119,6,0.4), 0 0 8px 2px rgba(217,119,6,0.2); }
+          50%       { box-shadow: 0 0 0 5px rgba(217,119,6,0.2), 0 0 18px 5px rgba(217,119,6,0.35); }
+        }
       `}</style>
 
-      <div className="h-[700px] w-full overflow-hidden rounded-xl border border-gray-200 bg-slate-50 shadow-sm">
+      <div ref={containerRef} className="h-full min-h-[420px] w-full overflow-hidden rounded-xl border border-gray-200 bg-slate-50 shadow-sm">
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -397,15 +487,18 @@ export default function WorkflowGraph({ graph, nodeStates }: WorkflowGraphProps)
             zoomable
           />
 
-          {/* Top-right — node/edge counts */}
+          {/* Top-right — export + counts */}
           <Panel position="top-right">
-            <div className="flex gap-2 text-[10px] font-semibold text-gray-500">
-              <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 shadow-sm">
-                {graph.nodes.length} nodes
-              </span>
-              <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 shadow-sm">
-                {graph.edges.length} edges
-              </span>
+            <div className="flex flex-col items-end gap-2">
+              <ExportPanel containerRef={containerRef} />
+              <div className="flex gap-2 text-[10px] font-semibold text-gray-500">
+                <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 shadow-sm">
+                  {graph.nodes.length} nodes
+                </span>
+                <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 shadow-sm">
+                  {graph.edges.length} edges
+                </span>
+              </div>
             </div>
           </Panel>
 

@@ -231,6 +231,7 @@ async def workflow_callback(
     run_id: str,
     body: dict,
     background_tasks: BackgroundTasks,
+    token: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Webhook callback endpoint for long-running workflow agents.
@@ -249,6 +250,23 @@ async def workflow_callback(
           "error":         "..."          # only on failure
         }
     """
+    from app.config import settings
+    if settings.AUTH_SECRET_KEY:
+        import hmac
+        import hashlib
+        
+        expected_token = hmac.new(
+            settings.AUTH_SECRET_KEY.encode(),
+            run_id.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not token or not hmac.compare_digest(token, expected_token):
+            raise HTTPException(
+                status_code=403, 
+                detail="Invalid or missing webhook callback token"
+            )
+
     run = await run_service.get_run(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -260,7 +278,7 @@ async def workflow_callback(
         )
 
     callback_status = body.get("status", "success")
-    output_vars = body.get("output") or {}
+    output_vars = body.get("output_vars") or body.get("output") or {}
     error_msg = body.get("error")
     resume_node = body.get("node_id")
     resume_step = body.get("step_id")
@@ -299,7 +317,7 @@ async def workflow_callback(
         await run_service.emit_event(
             db, run_id, "workflow_output_ready",
             node_id=resume_node, step_id=resume_step,
-            payload={"output_vars": output_vars},
+            payload={"output": output_vars, "output_vars": output_vars},
         )
 
     # Re-queue the run to resume execution from where it paused

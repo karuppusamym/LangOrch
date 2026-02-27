@@ -172,17 +172,17 @@ class TestPlaywrightNewActions:
 class TestCapabilities:
     def test_select_all_text_in_capabilities(self):
         from demo_agents.web_agent import CAPABILITIES
-        assert "select_all_text" in CAPABILITIES
+        assert any(c["name"] == "select_all_text" for c in CAPABILITIES)
 
     def test_get_attribute_in_capabilities(self):
         from demo_agents.web_agent import CAPABILITIES
-        assert "get_attribute" in CAPABILITIES
+        assert any(c["name"] == "get_attribute" for c in CAPABILITIES)
 
     def test_original_actions_still_present(self):
         from demo_agents.web_agent import CAPABILITIES
         for action in ("navigate", "click", "type", "wait_for_element",
                        "extract_text", "extract_table_data", "screenshot", "close"):
-            assert action in CAPABILITIES, f"Missing original action: {action}"
+            assert any(c["name"] == action for c in CAPABILITIES), f"Missing original action: {action}"
 
 
 # ---------------------------------------------------------------------------
@@ -525,8 +525,8 @@ class TestWebAgentEndpoints:
             r = await ac.get("/capabilities")
         assert r.status_code == 200
         data = r.json()
-        assert "select_all_text" in data["capabilities"]
-        assert "get_attribute" in data["capabilities"]
+        assert any(c["name"] == "select_all_text" for c in data["capabilities"])
+        assert any(c["name"] == "get_attribute" for c in data["capabilities"])
 
     @pytest.mark.asyncio
     async def test_execute_select_all_text_dry_run(self):

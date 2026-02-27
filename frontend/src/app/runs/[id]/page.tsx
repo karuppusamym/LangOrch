@@ -4,11 +4,11 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { getRun, listRunEvents, listRunArtifacts, cancelRun, retryRun, createRun, getRunDiagnostics, getGraph, listRunCheckpoints, getCheckpointState, getProcedure } from "@/lib/api";
+import { getRun, listRunEvents, listRunArtifacts, cancelRun, retryRun, createRun, getRunDiagnostics, getGraph, listRunCheckpoints, getCheckpointState, getProcedure, listApprovals, submitApprovalDecision } from "@/lib/api";
 import { subscribeToRunEvents } from "@/lib/sse";
 import { useToast } from "@/components/Toast";
 import { redactInputVars, isFieldSensitive, REDACTION_PLACEHOLDER, flattenVariablesSchema } from "@/lib/redact";
-import type { Run, RunEvent, Artifact, RunDiagnostics, CheckpointMetadata, CheckpointState, ProcedureDetail } from "@/lib/types";
+import type { Run, RunEvent, Artifact, RunDiagnostics, CheckpointMetadata, CheckpointState, ProcedureDetail, Approval } from "@/lib/types";
 
 const WorkflowGraph = dynamic(
   () => import("@/components/WorkflowGraphWrapper"),
@@ -26,8 +26,10 @@ const EVENT_LABELS: Record<string, string> = {
   run_cancelled: "Run Cancelled",
   run_retry_requested: "Retry Requested",
   execution_started: "Execution Started",
+  execution_resumed: "Execution Resumed",
   node_started: "Node Started",
   node_completed: "Node Completed",
+  node_paused: "Node Paused",
   node_error: "Node Error",
   step_started: "Step Started",
   step_completed: "Step Completed",
@@ -36,6 +38,8 @@ const EVENT_LABELS: Record<string, string> = {
   dry_run_step_skipped: "Step Skipped (Dry Run)",
   approval_requested: "Approval Requested",
   approval_decided: "Approval Decided",
+  approval_decision_received: "Approval Decision Received",
+  approval_decide_received: "Approval Decision Received",
   approval_expired: "Approval Expired",
   llm_usage: "LLM Usage",
   artifact_created: "Artifact Created",
@@ -73,31 +77,131 @@ async function copyText(text: string, toast: (msg: string, type: "success") => v
 }
 
 interface NodeStatus {
-  state: "running" | "completed" | "failed" | "sla_breached" | "current" | "pending";
+  state: "running" | "completed" | "failed" | "sla_breached" | "current" | "pending" | "paused";
   loopCount?: string;
 }
 
-function buildNodeStateMap(events: RunEvent[], currentNodeId: string | null): Record<string, NodeStatus> {
+function buildNodeStateMap(
+  events: RunEvent[],
+  currentNodeId: string | null,
+  runStatus: Run["status"]
+): Record<string, NodeStatus> {
   const map: Record<string, NodeStatus> = {};
+  const loopIterationsByNode: Record<string, number> = {};
+
   for (const ev of events) {
     if (!ev.node_id) continue;
-    if (!map[ev.node_id]) map[ev.node_id] = { state: "pending" };
 
-    if (ev.event_type === "node_started") map[ev.node_id].state = "running";
-    else if (ev.event_type === "node_completed") map[ev.node_id].state = "completed";
-    else if (["node_error", "run_failed"].includes(ev.event_type)) map[ev.node_id].state = "failed";
-    else if (ev.event_type === "sla_breached" && map[ev.node_id].state !== "failed") map[ev.node_id].state = "sla_breached";
-    else if (ev.event_type === "loop_iteration" && ev.payload) {
-      const payload = ev.payload as Record<string, unknown>;
-      if (payload.iteration !== undefined && payload.total !== undefined) {
-        map[ev.node_id].loopCount = `${Number(payload.iteration) + 1}/${Number(payload.total)}`;
-      } else if (payload.iteration !== undefined) {
-        map[ev.node_id].loopCount = `${Number(payload.iteration) + 1}`;
+    const nodeId = ev.node_id;
+    const prior = map[nodeId]?.state;
+
+    // 1. Error states — highest priority, sticky once set
+    if (["node_error", "step_error_notification", "step_timeout"].includes(ev.event_type)) {
+      map[nodeId] = { ...(map[nodeId] ?? {}), state: "failed" };
+      continue;
+    }
+
+    // 2. SLA breach — sticky unless already failed
+    if (ev.event_type === "sla_breached") {
+      if (prior !== "failed") {
+        map[nodeId] = { ...(map[nodeId] ?? {}), state: "sla_breached" };
       }
+      continue;
+    }
+
+    // 3. Completion — node_completed or step_completed both indicate the
+    //    node (or its last step) finished.  Can be overridden by a later
+    //    step_started for multi-step nodes.
+    if (["node_completed", "step_completed"].includes(ev.event_type)) {
+      if (prior !== "failed" && prior !== "sla_breached") {
+        map[nodeId] = { ...(map[nodeId] ?? {}), state: "completed" };
+      }
+      continue;
+    }
+
+    // 3b. Paused — approval node waiting for human decision
+    if (ev.event_type === "node_paused" || ev.event_type === "approval_requested") {
+      if (prior !== "failed" && prior !== "sla_breached") {
+        map[nodeId] = { ...(map[nodeId] ?? {}), state: "paused" };
+      }
+      continue;
+    }
+
+    // 4. Start events — set to running; overrides "completed" for multi-step nodes
+    if (["node_started", "step_started"].includes(ev.event_type)) {
+      if (prior !== "failed" && prior !== "sla_breached" && prior !== "paused") {
+        map[nodeId] = { ...(map[nodeId] ?? {}), state: "running" };
+      }
+      continue;
+    }
+
+    // 5. Loop iteration tracking
+    if (ev.event_type === "loop_iteration") {
+      const payload = (ev.payload as Record<string, unknown> | null) ?? {};
+      const total = payload.total !== undefined ? Number(payload.total) : undefined;
+      const iteration = payload.iteration !== undefined ? Number(payload.iteration) + 1 : undefined;
+
+      if (iteration !== undefined && Number.isFinite(iteration)) {
+        loopIterationsByNode[nodeId] = Math.max(loopIterationsByNode[nodeId] ?? 0, iteration);
+      } else {
+        loopIterationsByNode[nodeId] = (loopIterationsByNode[nodeId] ?? 0) + 1;
+      }
+
+      const loopCount = total && Number.isFinite(total)
+        ? `${loopIterationsByNode[nodeId]}/${total}`
+        : `${loopIterationsByNode[nodeId]}`;
+
+      map[nodeId] = { ...(map[nodeId] ?? { state: "running" }), loopCount };
     }
   }
-  if (currentNodeId && map[currentNodeId]?.state === "running") map[currentNodeId].state = "current";
+
+  // Override based on run terminal status + currentNodeId
+  if (currentNodeId) {
+    if (runStatus === "failed") {
+      map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "failed" };
+    } else if (runStatus === "completed") {
+      map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "completed" };
+    } else if (runStatus === "waiting_approval" && map[currentNodeId]?.state !== "failed") {
+      // Approval node is paused — show amber "waiting" state
+      map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "paused" };
+    } else if (["running", "created"].includes(runStatus) && map[currentNodeId]?.state !== "failed") {
+      map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "current" };
+    }
+  }
+
+  // If run is still active, mark the most-recently-started node as "current"
+  if (["running", "created"].includes(runStatus)) {
+    const lastStarted = [...events]
+      .reverse()
+      .find((ev) => ev.node_id && ["node_started", "step_started"].includes(ev.event_type));
+    if (lastStarted?.node_id && map[lastStarted.node_id]?.state === "running") {
+      map[lastStarted.node_id] = { ...map[lastStarted.node_id], state: "current" };
+    }
+  }
+
   return map;
+}
+
+function buildEdgeTraversalCounts(events: RunEvent[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const started = events
+    .filter((ev) => ev.event_type === "node_started" && !!ev.node_id)
+    .sort((a, b) => {
+      const at = new Date(a.created_at).getTime();
+      const bt = new Date(b.created_at).getTime();
+      if (at !== bt) return at - bt;
+      return String(a.event_id).localeCompare(String(b.event_id));
+    });
+
+  for (let i = 1; i < started.length; i += 1) {
+    const from = started[i - 1].node_id;
+    const to = started[i].node_id;
+    if (!from || !to) continue;
+    const key = `${from}=>${to}`;
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+
+  return counts;
 }
 
 type TimelineFilter = "all" | "errors" | "steps" | "nodes";
@@ -124,6 +228,12 @@ export default function RunDetailPage() {
   const [activeTab, setActiveTab] = useState<"timeline" | "graph" | "artifacts" | "diagnostics" | "checkpoints">("timeline");
   const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>("all");
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
+  // Pending approval for this run (populated when run.status === 'waiting_approval')
+  const [pendingApproval, setPendingApproval] = useState<Approval | null>(null);
+  const [approvalDeciding, setApprovalDeciding] = useState(false);
+  const [approverName, setApproverName] = useState(() =>
+    typeof window !== "undefined" ? (localStorage.getItem("approver_name") ?? "") : ""
+  );
   const timelineRef = useRef<HTMLDivElement>(null);
 
   // Retry-with-modified-inputs modal state
@@ -150,6 +260,15 @@ export default function RunDetailPage() {
         listRunCheckpoints(runId).then(setCheckpoints).catch(() => null);
         // Load procedure detail for schema-based sensitive-field detection
         getProcedure(r.procedure_id, r.procedure_version).then(setProcedureDetail).catch(() => null);
+        // Load pending approval if run is waiting
+        if (r.status === "waiting_approval") {
+          listApprovals()
+            .then((all) => {
+              const pa = all.find((a) => a.run_id === runId && a.status === "pending") ?? null;
+              setPendingApproval(pa);
+            })
+            .catch(() => null);
+        }
       } catch (err) {
         console.error(err);
       } finally {
@@ -174,9 +293,26 @@ export default function RunDetailPage() {
           .then((arts) => setArtifacts(arts))
           .catch((err) => console.error("Failed to refresh artifacts", err));
       }
-      // Refresh run row on terminal events to pick up error_message / duration
-      if (["run_completed", "run_failed", "run_canceled"].includes(event.event_type)) {
-        getRun(runId).then(setRun).catch(console.error);
+      // Refresh run row on status-changing events to pick up latest status, error_message, etc.
+      if ([
+        "run_completed", "run_failed", "run_canceled", "run_cancelled",
+        "approval_requested", "approval_decided", "approval_decision_received",
+        "approval_decide_received", "execution_resumed",
+      ].includes(event.event_type)) {
+        getRun(runId).then((r) => {
+          setRun(r);
+          // Refresh pending approval when run transitions to/from waiting_approval
+          if (r.status === "waiting_approval") {
+            listApprovals()
+              .then((all) => {
+                const pa = all.find((a) => a.run_id === runId && a.status === "pending") ?? null;
+                setPendingApproval(pa);
+              })
+              .catch(() => null);
+          } else {
+            setPendingApproval(null);
+          }
+        }).catch(console.error);
       }
     });
     return cleanup;
@@ -288,6 +424,24 @@ export default function RunDetailPage() {
     }
   }
 
+  async function handleApprovalDecision(decision: "approved" | "rejected") {
+    if (!pendingApproval) return;
+    setApprovalDeciding(true);
+    try {
+      await submitApprovalDecision(
+        pendingApproval.approval_id,
+        decision,
+        approverName.trim() || "ui_user"
+      );
+      toast(`Approval ${decision}`, "success");
+      setPendingApproval(null);
+    } catch {
+      toast("Failed to submit decision", "error");
+    } finally {
+      setApprovalDeciding(false);
+    }
+  }
+
   if (loading) return <p className="text-gray-500">Loading run…</p>;
   if (!run) return <p className="text-red-500">Run not found</p>;
 
@@ -300,7 +454,8 @@ export default function RunDetailPage() {
     if (timelineFilter === "nodes") return e.event_type.startsWith("node_");
     return true;
   });
-  const nodeStateMap = buildNodeStateMap(events, run.last_node_id ?? null);
+  const nodeStateMap = buildNodeStateMap(events, run.last_node_id ?? null, run.status);
+  const edgeTraversalCounts = buildEdgeTraversalCounts(events);
 
   return (
     <div className="space-y-6">
@@ -328,7 +483,7 @@ export default function RunDetailPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {(run.status === "running" || run.status === "created") && (
+          {(["running", "created", "waiting_approval"].includes(run.status)) && (
             <button onClick={handleCancel} className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50">Cancel</button>
           )}
           {run.status === "failed" && (
@@ -336,6 +491,46 @@ export default function RunDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Approval action banner */}
+      {run.status === "waiting_approval" && pendingApproval && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl">✋</span>
+            <div className="flex-1">
+              <p className="font-semibold text-amber-800 dark:text-amber-300">Awaiting Approval</p>
+              <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">{pendingApproval.prompt}</p>
+              <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">Node: {pendingApproval.node_id}</p>
+            </div>
+            <Link href="/approvals" className="text-xs text-amber-600 hover:underline whitespace-nowrap">View all approvals →</Link>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <input
+              value={approverName}
+              onChange={(e) => {
+                setApproverName(e.target.value);
+                localStorage.setItem("approver_name", e.target.value);
+              }}
+              placeholder="Your name (optional)"
+              className="rounded-lg border border-amber-300 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm w-44"
+            />
+            <button
+              disabled={approvalDeciding}
+              onClick={() => void handleApprovalDecision("approved")}
+              className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              ✓ Approve
+            </button>
+            <button
+              disabled={approvalDeciding}
+              onClick={() => void handleApprovalDecision("rejected")}
+              className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
+            >
+              ✕ Reject
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Error banner */}
       {run.status === "failed" && run.error_message && (
@@ -372,8 +567,8 @@ export default function RunDetailPage() {
         </div>
       )}
 
-      {/* Input variables */}
-      {run.input_vars && Object.keys(run.input_vars).length > 0 && (
+      {/* Input variables — filter out __ system-internal keys before displaying */}
+      {run.input_vars && Object.keys(run.input_vars).filter(k => !k.startsWith('__')).length > 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
           <div className="mb-3 flex items-center gap-2">
             <h3 className="text-sm font-semibold text-gray-900">Input Variables</h3>
@@ -382,7 +577,7 @@ export default function RunDetailPage() {
           <pre className="rounded-lg bg-gray-50 p-3 font-mono text-xs">
             {JSON.stringify(
               redactInputVars(
-                run.input_vars,
+                Object.fromEntries(Object.entries(run.input_vars).filter(([k]) => !k.startsWith('__'))),
                 flattenVariablesSchema((procedureDetail?.ckp_json as any)?.variables_schema ?? {})
               ),
               null,
@@ -433,7 +628,7 @@ export default function RunDetailPage() {
                     const inlineErr = errStyle ? extractErrorMessage(event.payload) : null;
                     const isStepEvent = event.event_type.startsWith("step_") || event.event_type === "llm_usage";
                     const isNodeEvent = event.event_type.startsWith("node_");
-                    const isRunEvent = event.event_type.startsWith("run_") || event.event_type === "execution_started";
+                    const isRunEvent = event.event_type.startsWith("run_") || event.event_type === "execution_started" || event.event_type === "execution_resumed";
                     return (
                       <div
                         key={event.event_id}
@@ -453,11 +648,25 @@ export default function RunDetailPage() {
                           </span>
                           {/* raw type as a subtle hint */}
                           <span className="text-[9px] text-gray-300 font-mono hidden sm:inline">{event.event_type}</span>
-                          {event.node_id && (
-                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
-                              {event.node_id}
-                            </span>
-                          )}
+                          {event.node_id && (() => {
+                            const payloadNodeName = (event.payload as Record<string, unknown> | null)?.node_name;
+                            const nodeName = typeof payloadNodeName === "string" ? payloadNodeName : null;
+                            const nameIsDifferent = nodeName && nodeName !== event.node_id;
+                            return (
+                              <>
+                                {/* Always show node_id as a grey mono badge */}
+                                <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-500">
+                                  {event.node_id}
+                                </span>
+                                {/* Show node_name as a readable purple badge when it differs from node_id */}
+                                {nameIsDifferent && (
+                                  <span className="rounded bg-purple-50 border border-purple-100 px-1.5 py-0.5 text-[10px] text-purple-700" title="node name">
+                                    {nodeName}
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
                           {event.step_id && (
                             <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-500">
                               {event.step_id}
@@ -562,7 +771,7 @@ export default function RunDetailPage() {
                       <span key={s} className="flex items-center gap-1"><span className={`h-3 w-3 rounded-full ${bg}`} />{s.replace("_", " ")}</span>
                     ))}
                   </div>
-                  <WorkflowGraph graph={graphData as any} nodeStates={nodeStateMap} />
+                  <WorkflowGraph graph={graphData as any} nodeStates={nodeStateMap} edgeCounts={edgeTraversalCounts} />
                 </>
               )}
             </>
@@ -911,9 +1120,11 @@ function InfoCard({ label, value, onCopy }: { label: string; value: string; onCo
 
 function EventDot({ type }: { type: string }) {
   const colors: Record<string, string> = {
-    run_created: "bg-blue-400", execution_started: "bg-blue-300", node_started: "bg-yellow-400",
+    run_created: "bg-blue-400", execution_started: "bg-blue-300", execution_resumed: "bg-blue-400",
+    node_started: "bg-yellow-400", node_paused: "bg-orange-300",
     node_completed: "bg-green-400", step_started: "bg-gray-300", step_completed: "bg-green-300",
     error: "bg-red-400", approval_requested: "bg-orange-400", approval_decided: "bg-purple-400",
+    approval_decide_received: "bg-purple-300", approval_decision_received: "bg-purple-300",
     run_completed: "bg-green-600", run_failed: "bg-red-600", step_timeout: "bg-orange-500",
     sla_breached: "bg-red-300", node_error: "bg-red-500", approval_expired: "bg-gray-500",
     run_retry_requested: "bg-indigo-400", dry_run_step_skipped: "bg-gray-400", checkpoint_saved: "bg-teal-400",
