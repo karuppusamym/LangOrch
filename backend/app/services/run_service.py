@@ -140,7 +140,21 @@ async def emit_event(
     # Merge default patterns with any extra fields from CKP audit_config
     patterns = build_patterns(extra_redacted_fields) if extra_redacted_fields else None
     sanitized_payload = redact_sensitive_data(payload, extra_patterns=patterns) if payload else None
-    
+
+    # Inject active OTEL trace/span IDs so run events can be correlated with
+    # distributed traces in Jaeger/Grafana Tempo post-hoc.
+    # Only added when there is a real active span (is_valid = False in tests).
+    try:
+        from opentelemetry import trace as _otel_trace
+        _span_ctx = _otel_trace.get_current_span().get_span_context()
+        if _span_ctx.is_valid:
+            if sanitized_payload is None:
+                sanitized_payload = {}
+            sanitized_payload["_trace_id"] = _otel_trace.format_trace_id(_span_ctx.trace_id)
+            sanitized_payload["_span_id"] = _otel_trace.format_span_id(_span_ctx.span_id)
+    except Exception:  # pragma: no cover — OTEL not installed
+        pass
+
     event = RunEvent(
         run_id=run_id,
         event_type=event_type,

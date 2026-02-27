@@ -47,8 +47,18 @@ class Settings(BaseSettings):
     # Log format: "text" (default) or "json" (for structured remote logging)
     LOG_FORMAT: str = "text"
     
-    # OpenTelemetry OTLP Exporter Endpoint (e.g. http://localhost:4318/v1/traces)
+    # OpenTelemetry OTLP Exporter base endpoint (e.g. http://localhost:4318).
+    # The /v1/traces, /v1/metrics, /v1/logs paths are appended automatically.
+    # Full signal URLs ending in /v1/traces are also accepted for backward compat.
     OTLP_ENDPOINT: str | None = None
+
+    # Per-signal endpoint overrides — fall back to OTLP_ENDPOINT derivation when
+    # not set.  Useful when traces/metrics/logs go to different collectors.
+    OTLP_METRICS_ENDPOINT: str | None = None
+    OTLP_LOGS_ENDPOINT: str | None = None
+
+    # OTEL metrics export interval in milliseconds (PeriodicExportingMetricReader).
+    OTLP_EXPORT_INTERVAL_MS: int = 30_000
 
     # ── CORS (frontend) ────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]

@@ -17,7 +17,7 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 
 | Gap | Current state | Priority |
 |-----|---------------|----------|
-| External observability backend | Prometheus endpoint + Pushgateway push are implemented; Prometheus text format with proper label syntax now correct; full OpenTelemetry traces/log shipping/correlation backend is pending | P0 |
+| External observability backend | ✅ Complete — OTEL traces (OTLPSpanExporter), metrics (OTLPMetricExporter + PeriodicExportingMetricReader), and logs (OTLPLogExporter + LoggingHandler) all wired; trace_id/span_id injected into JSON log records and run event payloads; Prometheus Pushgateway push still available alongside | ~~P0~~ ✅ |
 | Event-bus trigger adapters | Cron/webhook/file-watch/manual are implemented; Kafka/SQS-style consumer adapters are pending | P1 |
 | Multi-tenant isolation | Single-tenant model; no tenant-scoped data partitioning and policy enforcement | P1 |
 | Procedure promotion/canary/rollback | Versioning + status lifecycle (PATCH `/status` endpoint) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |
@@ -52,7 +52,7 @@ LangOrch is considered **production-ready** when all items below are true:
 - [x] **Reliability/HA**: scheduler/trigger firing is HA-safe under multiple replicas (no double-fire); run execution is idempotent under concurrency
 - [x] **Scalability**: durable worker model exists (API separate from workers); horizontal scaling does not duplicate work
 - [x] **Data**: production database + migrations + backups are in place; hot-path indexes exist
-- [ ] **Observability**: metrics/traces/logs exported to an external backend; on-call can debug a run end-to-end (pending full OpenTelemetry backend)
+- [x] **Observability**: metrics/traces/logs exported to an external backend via OTEL (OTLP); trace_id/span_id injected into log records and run events for end-to-end run debugging
 - [x] **Quality gates**: CI blocks regressions (lint, type-check, tests, build) and core UI flows have e2e coverage
 
 See **Production readiness checklist (P0/P1)** below for concrete deliverables.
@@ -424,7 +424,7 @@ For sequence step failures, effective order is:
 - Agent pool model is implemented with `pool_id` and deterministic per-pool round-robin; remaining work is capacity/saturation signaling and advanced routing policies
 
 ### Not yet implemented (high impact gaps)
-- **External observability stack** — Prometheus endpoint and Pushgateway push are implemented, but full OpenTelemetry traces/log shipping/correlation backend is still pending
+- ~~**External observability stack**~~ → ✅ OTEL traces + metrics + logs all shipping via OTLP; trace_id/span_id in log records and run events; Prometheus Pushgateway push still available (2026-02-27)
 - **Event-bus trigger adapters** — cron/webhook/file-watch are implemented; Kafka/SQS-style consumer adapters are still pending
 - **Multi-tenant governance** — project-level operations are implemented, but tenant-scoped isolation and policy enforcement are not yet implemented
 
@@ -500,14 +500,13 @@ For sequence step failures, effective order is:
 - ✅ `GET /api/leases` + `DELETE /api/leases/{id}` — stale lease force-release implemented with UI on /leases page
 
 ### Remaining gaps
-- Metrics are process-local in-memory — not persistent, not exported to external Prometheus/OpenTelemetry
+- ~~Metrics are process-local in-memory — not persistent, not exported to external Prometheus/OpenTelemetry~~ → ✅ OTEL Metrics export implemented
 - ~~`sla.max_duration_ms` not tracked~~ → ✅ Node-level SLA tracked, `sla_breached` events emitted (Batch 13)
 - ~~No alert hooks for failed/stuck runs~~ → ✅ `_fire_alert_webhook` on `run_failed` (Batch 13)
 - ~~`telemetry` fields parsed but not acted on~~ → ✅ `track_duration` + `track_retries` emitted in step events; `custom_metrics` recorded (Batches 10 + 11)
 
 ### Next implementation items
-- Export metrics to external Prometheus/OpenTelemetry backend (in-memory only; endpoint exists)
-- Add artifact retention/cleanup policy: configurable TTL + background sweep of `artifacts/{run_id}/` folders older than N days
+- ~~Export metrics to external Prometheus/OpenTelemetry backend (in-memory only; endpoint exists)~~ → ✅ Done — OTEL Metrics + Logs + Traces all wired via OTLP; trace_id/span_id in log records and run events
 
 ## 5) Frontend operations UX
 ### Current — UPDATED 2026-02-17

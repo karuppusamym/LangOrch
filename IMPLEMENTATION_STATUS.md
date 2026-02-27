@@ -21,7 +21,7 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 
 | Gap | Current state | Priority |
 |-----|---------------|----------|
-| External observability backend | Prometheus endpoint + Pushgateway push are implemented; Prometheus text label format now correct; full OpenTelemetry traces/log shipping/correlation backend is pending | P0 |
+| External observability backend | ✅ Complete — OTEL traces (OTLPSpanExporter), metrics (OTLPMetricExporter + PeriodicExportingMetricReader), and logs (OTLPLogExporter + LoggingHandler) all wired; trace_id/span_id injected into JSON log records and run event payloads; `_resolve_endpoint()` normalises base vs full-path URLs; 17 new tests | ~~P0~~ ✅ |
 | Event-bus trigger adapters | Cron/webhook/file-watch/manual are implemented; Kafka/SQS-style consumer adapters are pending | P1 |
 | Multi-tenant isolation | Single-tenant model; no tenant-scoped data partitioning and policy enforcement | P1 |
 | Procedure promotion/canary/rollback | Versioning + status lifecycle (`PATCH /status`) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |

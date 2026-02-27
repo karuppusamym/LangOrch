@@ -12,23 +12,34 @@ ctx_tenant_id = contextvars.ContextVar("tenant_id", default=None)
 class CorrelationJsonFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         super().add_fields(log_record, record, message_dict)
-        
+
         # Inject context variables if present
         run_id = ctx_run_id.get()
         if run_id:
             log_record["run_id"] = run_id
-            
+
         node_id = ctx_node_id.get()
         if node_id:
             log_record["node_id"] = node_id
-            
+
         step_id = ctx_step_id.get()
         if step_id:
             log_record["step_id"] = step_id
-            
+
         tenant_id = ctx_tenant_id.get()
         if tenant_id:
             log_record["tenant_id"] = tenant_id
+
+        # Inject active OTEL span context so Grafana/Loki can join logs→traces.
+        # trace_id is a 32-char lowercase hex string; span_id is 16 chars.
+        try:
+            from opentelemetry import trace
+            span_ctx = trace.get_current_span().get_span_context()
+            if span_ctx.is_valid:
+                log_record["trace_id"] = trace.format_trace_id(span_ctx.trace_id)
+                log_record["span_id"] = trace.format_span_id(span_ctx.span_id)
+        except Exception:  # pragma: no cover — OTEL not installed / no active span
+            pass
 
 def setup_logger(log_format: str = "text", log_level: str = "INFO"):
     """Configure the root logger."""
