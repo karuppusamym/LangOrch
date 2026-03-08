@@ -13,15 +13,18 @@ Secret fields (secrets keys, raw DB passwords) are never returned.
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, Principal
 from app.auth.roles import require_role
 from app.config import settings
+from app.db.models import SecretEntry
 from app.db.engine import get_db
 
 logger = logging.getLogger("langorch.api.config")
@@ -178,6 +181,57 @@ def _build_config_out() -> ConfigOut:
     )
 
 
+async def _persist_config_changes(
+    db: AsyncSession,
+    changed_env_keys: list[tuple[str, Any]],
+    actor_identity: str,
+) -> None:
+    from app.api.secrets import _encrypt
+
+    for attr, value in changed_env_keys:
+        if attr == "LLM_API_KEY":
+            existing = await db.execute(select(SecretEntry).where(SecretEntry.name == attr))
+            entry = existing.scalar_one_or_none()
+            if value:
+                enc_val = _encrypt(str(value))
+                if entry:
+                    entry.encrypted_value = enc_val
+                    entry.updated_by = actor_identity
+                else:
+                    db.add(
+                        SecretEntry(
+                            name=attr,
+                            encrypted_value=enc_val,
+                            description="LLM Provider API Key",
+                            provider_hint="",
+                            tags_json="[]",
+                            created_by=actor_identity,
+                            updated_by=actor_identity,
+                        )
+                    )
+            elif entry:
+                await db.delete(entry)
+            continue
+
+        if value is None:
+            await db.execute(text("DELETE FROM system_settings WHERE key = :k"), {"k": attr})
+            continue
+
+        v_json = json.dumps(value)
+        stmt = text(
+            "INSERT INTO system_settings (key, value_json, updated_at) "
+            "VALUES (:k, :v, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=:v, updated_at=CURRENT_TIMESTAMP"
+        )
+        if not settings.is_sqlite:
+            stmt = text(
+                "INSERT INTO system_settings (key, value_json) "
+                "VALUES (:k, :v) "
+                "ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = CURRENT_TIMESTAMP"
+            )
+        await db.execute(stmt, {"k": attr, "v": v_json})
+
+
 # ── Routes ──────────────────────────────────────────────────────────────
 
 @router.get("/api/config", response_model=ConfigOut)
@@ -196,9 +250,8 @@ async def patch_config(
 ) -> ConfigOut:
     """Hot-patch runtime-mutable configuration fields.
 
-    Changes take effect immediately in-process.  They are NOT persisted to
-    disk — set the corresponding environment variable or .env entry for
-    permanent changes.
+    Changes take effect immediately in-process and are persisted to the
+    database-backed HA config store.
     """
     # Use exclude_unset=True so explicitly-null values (i.e. clearing a field)
     # are included, while fields never mentioned in the request body are skipped.
@@ -239,85 +292,38 @@ async def patch_config(
         "secrets_rotation_check": "SECRETS_ROTATION_CHECK",
     }
 
-    # Track which settings were effectively changed
-    changed_env_keys = []
+    previous_values: dict[str, Any] = {}
+    changed_env_keys: list[tuple[str, Any]] = []
     
     for patch_field, value in updates.items():
         attr = field_map.get(patch_field)
         if attr:
+            previous_values[attr] = getattr(settings, attr, None)
             object.__setattr__(settings, attr, value)
             changed_env_keys.append((attr, value))
             logger.info("Config patched: %s = %r", attr, value)
+    try:
+        if changed_env_keys:
+            await _persist_config_changes(db, changed_env_keys, principal.identity)
 
-    # Persist changes to DB
-    if changed_env_keys:
-        import json
-        from sqlalchemy import text, select
-        from app.api.secrets import _encrypt
-        from app.db.models import SecretEntry
-        
-        # We use a raw SQL UPSERT since we already support sqlite/postgres
-        # Using SQLAlchemy ORM for UPSERT is strictly dialect-specific
-        try:
-            for attr, value in changed_env_keys:
-                if attr == "LLM_API_KEY":
-                    existing = await db.execute(select(SecretEntry).where(SecretEntry.name == attr))
-                    entry = existing.scalar_one_or_none()
-                    if value:
-                        enc_val = _encrypt(str(value))
-                        if entry:
-                            entry.encrypted_value = enc_val
-                            entry.updated_by = principal.identity
-                        else:
-                            new_entry = SecretEntry(
-                                name=attr,
-                                encrypted_value=enc_val,
-                                description="LLM Provider API Key",
-                                provider_hint="",
-                                tags_json="[]",
-                                created_by=principal.identity,
-                                updated_by=principal.identity,
-                            )
-                            db.add(new_entry)
-                    else:
-                        if entry:
-                            await db.delete(entry)
-                    continue
+        from app.api.audit import emit_audit
 
-                if value is None:
-                    # Clearing a field — delete the row so it resets to the env/default
-                    del_stmt = text("DELETE FROM system_settings WHERE key = :k")
-                    await db.execute(del_stmt, {"k": attr})
-                    continue
+        await emit_audit(
+            db,
+            category="config",
+            action="patch",
+            actor=principal.identity,
+            description=f"Platform config patched: {list(updates.keys())}",
+            meta={k: str(v) for k, v in updates.items()},
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        for attr, previous_value in previous_values.items():
+            object.__setattr__(settings, attr, previous_value)
+        logger.warning("Failed to persist config patch; reverted in-memory updates: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to persist configuration changes") from exc
 
-                v_json = json.dumps(value)
-                # SQLite-compatible UPSERT
-                stmt = text(
-                    "INSERT INTO system_settings (key, value_json, updated_at) "
-                    "VALUES (:k, :v, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT(key) DO UPDATE SET value_json=:v, updated_at=CURRENT_TIMESTAMP"
-                )
-                if not settings.is_sqlite:
-                    # PostgreSQL-compatible UPSERT
-                    stmt = text(
-                        "INSERT INTO system_settings (key, value_json) "
-                        "VALUES (:k, :v) "
-                        "ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = CURRENT_TIMESTAMP"
-                    )
-                await db.execute(stmt, {"k": attr, "v": v_json})
-        except Exception as _e:
-            logger.warning("Failed to persist config to DB: %s", _e)
-
-    from app.api.audit import emit_audit
-    await emit_audit(
-        db,
-        category="config",
-        action="patch",
-        actor=principal.identity,
-        description=f"Platform config patched: {list(updates.keys())}",
-        meta={k: str(v) for k, v in updates.items()},
-    )
-    await db.commit()
     return _build_config_out()
 
 

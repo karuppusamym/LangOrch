@@ -204,6 +204,244 @@ function buildEdgeTraversalCounts(events: RunEvent[]): Record<string, number> {
   return counts;
 }
 
+interface StepExecutionSummary {
+  stepId: string;
+  action: string | null;
+  status: "running" | "completed" | "failed" | "timeout" | "cached";
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  retryCount: number;
+  error: string | null;
+}
+
+interface NodeExecutionSummary {
+  nodeId: string;
+  nodeName: string | null;
+  status: NodeStatus["state"];
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastUpdatedAt: string | null;
+  approvalId: string | null;
+  pauseReason: string | null;
+  error: string | null;
+  steps: StepExecutionSummary[];
+}
+
+function buildNodeExecutionSummaries(
+  events: RunEvent[],
+  nodeStateMap: Record<string, NodeStatus>
+): NodeExecutionSummary[] {
+  const nodes = new Map<string, NodeExecutionSummary>();
+  const stepsByNode = new Map<string, Map<string, StepExecutionSummary>>();
+  const sortedEvents = [...events].sort((left, right) => {
+    const leftTime = new Date(left.created_at).getTime();
+    const rightTime = new Date(right.created_at).getTime();
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return Number(left.event_id) - Number(right.event_id);
+  });
+
+  for (const event of sortedEvents) {
+    if (!event.node_id) continue;
+    const payload = event.payload ?? {};
+    const nodeId = event.node_id;
+    const existing = nodes.get(nodeId) ?? {
+      nodeId,
+      nodeName: null,
+      status: "pending" as NodeStatus["state"],
+      startedAt: null,
+      finishedAt: null,
+      lastUpdatedAt: null,
+      approvalId: null,
+      pauseReason: null,
+      error: null,
+      steps: [],
+    };
+    existing.lastUpdatedAt = event.created_at;
+    if (typeof payload.node_name === "string" && payload.node_name.trim()) {
+      existing.nodeName = payload.node_name;
+    }
+
+    const stepCollection = stepsByNode.get(nodeId) ?? new Map<string, StepExecutionSummary>();
+    stepsByNode.set(nodeId, stepCollection);
+
+    const getStep = (stepId: string): StepExecutionSummary => {
+      const cached = stepCollection.get(stepId) ?? {
+        stepId,
+        action: null,
+        status: "running",
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
+        retryCount: 0,
+        error: null,
+      };
+      stepCollection.set(stepId, cached);
+      return cached;
+    };
+
+    switch (event.event_type) {
+      case "node_started":
+        existing.startedAt ??= event.created_at;
+        existing.status = "running";
+        break;
+      case "node_completed":
+        existing.finishedAt = event.created_at;
+        existing.status = "completed";
+        break;
+      case "node_paused":
+        existing.finishedAt = event.created_at;
+        existing.status = "paused";
+        existing.pauseReason = typeof payload.reason === "string" ? payload.reason : existing.pauseReason;
+        break;
+      case "approval_requested":
+        existing.status = "paused";
+        existing.approvalId = typeof payload.approval_id === "string" ? payload.approval_id : existing.approvalId;
+        break;
+      case "node_error":
+        existing.finishedAt = event.created_at;
+        existing.status = "failed";
+        existing.error = extractErrorMessage(payload) ?? existing.error;
+        break;
+      case "sla_breached":
+        if (existing.status !== "failed") {
+          existing.status = "sla_breached";
+        }
+        break;
+      case "step_started": {
+        if (!event.step_id) break;
+        const step = getStep(event.step_id);
+        step.startedAt ??= event.created_at;
+        step.status = "running";
+        step.action = typeof payload.action === "string" ? payload.action : step.action;
+        break;
+      }
+      case "step_completed": {
+        if (!event.step_id) break;
+        const step = getStep(event.step_id);
+        step.completedAt = event.created_at;
+        step.action = typeof payload.action === "string" ? payload.action : step.action;
+        step.status = payload.cached ? "cached" : "completed";
+        step.durationMs = typeof payload.duration_ms === "number" ? Number(payload.duration_ms) : step.durationMs;
+        step.retryCount = typeof payload.retry_count === "number" ? Number(payload.retry_count) : step.retryCount;
+        break;
+      }
+      case "step_timeout": {
+        if (!event.step_id) break;
+        const step = getStep(event.step_id);
+        step.completedAt = event.created_at;
+        step.status = "timeout";
+        step.error = extractErrorMessage(payload) ?? "Step timed out";
+        break;
+      }
+      case "step_error_notification": {
+        if (!event.step_id) break;
+        const step = getStep(event.step_id);
+        step.completedAt = event.created_at;
+        step.status = "failed";
+        step.error = extractErrorMessage(payload) ?? "Step failed";
+        step.action = typeof payload.action === "string" ? payload.action : step.action;
+        existing.error = step.error;
+        break;
+      }
+      default:
+        break;
+    }
+
+    existing.steps = Array.from(stepCollection.values());
+    const override = nodeStateMap[nodeId]?.state;
+    if (override) {
+      existing.status = override;
+    }
+    nodes.set(nodeId, existing);
+  }
+
+  return Array.from(nodes.values()).sort((left, right) => {
+    const leftTime = new Date(left.startedAt ?? left.lastUpdatedAt ?? 0).getTime();
+    const rightTime = new Date(right.startedAt ?? right.lastUpdatedAt ?? 0).getTime();
+    return leftTime - rightTime;
+  });
+}
+
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function formatMilliseconds(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "-";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(1)}s`;
+}
+
+function getEventHighlights(event: RunEvent): string[] {
+  const payload = event.payload ?? {};
+  const highlights: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) highlights.push(value.trim());
+  };
+
+  switch (event.event_type) {
+    case "step_started":
+      if (typeof payload.action === "string") highlights.push(`action ${payload.action}`);
+      break;
+    case "step_completed":
+      if (typeof payload.action === "string") highlights.push(`action ${payload.action}`);
+      if (payload.cached) highlights.push("cached result reused");
+      if (typeof payload.duration_ms === "number") highlights.push(`duration ${formatMilliseconds(Number(payload.duration_ms))}`);
+      if (typeof payload.retry_count === "number" && Number(payload.retry_count) > 0) highlights.push(`retries ${Number(payload.retry_count)}`);
+      if (typeof payload.output_variable === "string" && payload.output_variable) highlights.push(`stored in ${payload.output_variable}`);
+      break;
+    case "step_timeout":
+      if (typeof payload.timeout_ms === "number") highlights.push(`timeout ${formatMilliseconds(Number(payload.timeout_ms))}`);
+      push(extractErrorMessage(payload));
+      break;
+    case "step_error_notification":
+      if (typeof payload.handler_action === "string") highlights.push(`handler ${payload.handler_action}`);
+      push(extractErrorMessage(payload));
+      break;
+    case "node_paused":
+      if (typeof payload.reason === "string") highlights.push(`reason ${payload.reason}`);
+      break;
+    case "approval_requested":
+      if (typeof payload.approval_id === "string") highlights.push(`approval ${payload.approval_id.slice(0, 12)}...`);
+      break;
+    case "approval_decision_received":
+    case "approval_decide_received":
+      if (typeof payload.decision === "string") highlights.push(`decision ${payload.decision}`);
+      if (typeof payload.decided_by === "string") highlights.push(`by ${payload.decided_by}`);
+      if (typeof payload.comment === "string" && payload.comment.trim()) highlights.push(payload.comment.trim());
+      break;
+    case "loop_iteration":
+      if (typeof payload.iteration === "number" && typeof payload.total === "number") {
+        highlights.push(`iteration ${Number(payload.iteration) + 1}/${Number(payload.total)}`);
+      }
+      break;
+    case "artifact_created":
+      if (typeof payload.kind === "string") highlights.push(`artifact ${payload.kind}`);
+      if (typeof payload.uri === "string") highlights.push(payload.uri);
+      break;
+    case "node_error":
+    case "run_failed":
+      push(extractErrorMessage(payload));
+      break;
+    case "sla_breached":
+      if (typeof payload.actual_duration_ms === "number") highlights.push(`actual ${formatMilliseconds(Number(payload.actual_duration_ms))}`);
+      if (typeof payload.max_duration_ms === "number") highlights.push(`limit ${formatMilliseconds(Number(payload.max_duration_ms))}`);
+      if (typeof payload.elapsed_ms === "number") highlights.push(`elapsed ${formatMilliseconds(Number(payload.elapsed_ms))}`);
+      if (typeof payload.limit_ms === "number") highlights.push(`limit ${formatMilliseconds(Number(payload.limit_ms))}`);
+      break;
+    case "llm_usage":
+      if (typeof payload.model === "string") highlights.push(`model ${payload.model}`);
+      if (typeof payload.total_tokens === "number") highlights.push(`tokens ${payload.total_tokens}`);
+      break;
+    default:
+      break;
+  }
+
+  return highlights;
+}
+
 type TimelineFilter = "all" | "errors" | "steps" | "nodes";
 
 /* ── component ───────────────────────────────────────────────── */
@@ -496,6 +734,10 @@ export default function RunDetailPage() {
   });
   const nodeStateMap = buildNodeStateMap(events, run.last_node_id ?? null, run.status);
   const edgeTraversalCounts = buildEdgeTraversalCounts(events);
+  const nodeSummaries = buildNodeExecutionSummaries(events, nodeStateMap);
+  const completedSteps = nodeSummaries.reduce((sum, node) => sum + node.steps.filter((step) => step.status === "completed" || step.status === "cached").length, 0);
+  const failedSteps = nodeSummaries.reduce((sum, node) => sum + node.steps.filter((step) => step.status === "failed" || step.status === "timeout").length, 0);
+  const pausedNodes = nodeSummaries.filter((node) => node.status === "paused").length;
 
   return (
     <div className="space-y-6">
@@ -541,6 +783,11 @@ export default function RunDetailPage() {
               <p className="font-semibold text-amber-800 dark:text-amber-300">Awaiting Approval</p>
               <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">{pendingApproval.prompt}</p>
               <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">Node: {pendingApproval.node_id}</p>
+              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-amber-700 dark:text-amber-300">
+                {pendingApproval.expires_at && <span className="rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-900/40">Due {formatTimestamp(pendingApproval.expires_at)}</span>}
+                {pendingApproval.options?.length ? <span className="rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-900/40">Options: {pendingApproval.options.join(", ")}</span> : null}
+                {pendingApproval.context_data ? <span className="rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-900/40">Context fields: {Object.keys(pendingApproval.context_data).length}</span> : null}
+              </div>
             </div>
             <Link href="/approvals" className="text-xs text-amber-600 hover:underline whitespace-nowrap">View all approvals →</Link>
           </div>
@@ -666,6 +913,25 @@ export default function RunDetailPage() {
                   Live
                 </label>
               </div>
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <DiagCard label="Nodes Touched" value={nodeSummaries.length} />
+                <DiagCard label="Completed Steps" value={completedSteps} />
+                <DiagCard label="Failed Steps" value={failedSteps} />
+                <DiagCard label="Paused Nodes" value={pausedNodes} />
+              </div>
+              {nodeSummaries.length > 0 && (
+                <div className="mb-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-gray-900">Node Execution Report</h4>
+                    <p className="text-xs text-gray-500">Per-node summary of starts, completions, pauses, and failures.</p>
+                  </div>
+                  <div className="space-y-3">
+                    {nodeSummaries.map((summary) => (
+                      <NodeExecutionCard key={summary.nodeId} summary={summary} />
+                    ))}
+                  </div>
+                </div>
+              )}
               <div ref={timelineRef} className="max-h-[500px] space-y-1.5 overflow-y-auto">
                 {filteredEvents.length === 0 ? (
                   <p className="text-sm text-gray-400">No events match this filter</p>
@@ -676,6 +942,7 @@ export default function RunDetailPage() {
                     // Error events auto-expand; others expand on demand
                     const expanded = errStyle || expandedEvents.has(String(event.event_id));
                     const inlineErr = errStyle ? extractErrorMessage(event.payload) : null;
+                    const highlights = getEventHighlights(event);
                     const isStepEvent = event.event_type.startsWith("step_") || event.event_type === "llm_usage";
                     const isNodeEvent = event.event_type.startsWith("node_");
                     const isRunEvent = event.event_type.startsWith("run_") || event.event_type === "execution_started" || event.event_type === "execution_resumed";
@@ -779,6 +1046,15 @@ export default function RunDetailPage() {
                         {/* Inline error message — always shown for error events */}
                         {inlineErr && (
                           <p className="mt-1.5 text-xs text-red-600 font-medium break-words">{inlineErr}</p>
+                        )}
+                        {!inlineErr && highlights.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {highlights.map((highlight, index) => (
+                              <span key={`${event.event_id}-${index}`} className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">
+                                {highlight}
+                              </span>
+                            ))}
+                          </div>
                         )}
                         {/* Payload detail */}
                         {hasPayload && expanded && !inlineErr && (
@@ -1188,6 +1464,77 @@ function DiagCard({ label, value }: { label: string; value: string | number }) {
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
       <p className="text-[10px] text-gray-500">{label}</p>
       <p className="mt-0.5 text-sm font-semibold text-gray-800">{value}</p>
+    </div>
+  );
+}
+
+function NodeExecutionCard({ summary }: { summary: NodeExecutionSummary }) {
+  const completedSteps = summary.steps.filter((step) => step.status === "completed" || step.status === "cached").length;
+  const failedSteps = summary.steps.filter((step) => step.status === "failed" || step.status === "timeout").length;
+  const stateTone: Record<NodeExecutionSummary["status"], string> = {
+    running: "bg-blue-50 text-blue-700 border-blue-200",
+    completed: "bg-green-50 text-green-700 border-green-200",
+    failed: "bg-red-50 text-red-700 border-red-200",
+    sla_breached: "bg-orange-50 text-orange-700 border-orange-200",
+    current: "bg-blue-50 text-blue-700 border-blue-200",
+    pending: "bg-gray-50 text-gray-600 border-gray-200",
+    paused: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-gray-900">{summary.nodeName ?? summary.nodeId}</p>
+            <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-[11px] text-gray-600">{summary.nodeId}</span>
+            <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${stateTone[summary.status]}`}>{summary.status.replace(/_/g, " ")}</span>
+            {summary.approvalId && <span className="rounded-full bg-purple-50 px-2 py-0.5 text-[11px] text-purple-700">approval {summary.approvalId.slice(0, 12)}...</span>}
+          </div>
+          {summary.error && <p className="text-xs text-red-600">{summary.error}</p>}
+          {summary.pauseReason && <p className="text-xs text-amber-700">Pause reason: {summary.pauseReason}</p>}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <DiagCard label="Started" value={formatTimestamp(summary.startedAt)} />
+          <DiagCard label={summary.finishedAt ? "Finished" : "Last Update"} value={formatTimestamp(summary.finishedAt ?? summary.lastUpdatedAt)} />
+          <DiagCard label="Completed Steps" value={completedSteps} />
+          <DiagCard label="Failed Steps" value={failedSteps} />
+        </div>
+      </div>
+      {summary.steps.length > 0 && (
+        <div className="mt-4 overflow-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b text-gray-500">
+                <th className="pb-2 pr-3">Step</th>
+                <th className="pb-2 pr-3">Action</th>
+                <th className="pb-2 pr-3">Status</th>
+                <th className="pb-2 pr-3">Started</th>
+                <th className="pb-2 pr-3">Finished</th>
+                <th className="pb-2 pr-3">Duration</th>
+                <th className="pb-2">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.steps.map((step) => (
+                <tr key={`${summary.nodeId}-${step.stepId}`} className="border-b last:border-0 align-top">
+                  <td className="py-2 pr-3 font-mono text-gray-700">{step.stepId}</td>
+                  <td className="py-2 pr-3 text-gray-600">{step.action ?? "-"}</td>
+                  <td className="py-2 pr-3">
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-700">{step.status}</span>
+                  </td>
+                  <td className="py-2 pr-3 text-gray-500">{formatTimestamp(step.startedAt)}</td>
+                  <td className="py-2 pr-3 text-gray-500">{formatTimestamp(step.completedAt)}</td>
+                  <td className="py-2 pr-3 text-gray-500">{formatMilliseconds(step.durationMs)}</td>
+                  <td className="py-2 text-gray-500">
+                    {step.retryCount > 0 ? `retries ${step.retryCount}` : step.error ?? "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

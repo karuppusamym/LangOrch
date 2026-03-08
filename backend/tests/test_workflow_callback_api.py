@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.api.runs import workflow_callback
 from app.config import settings
@@ -151,6 +152,34 @@ class TestWorkflowCallbackHardening:
             assert late["status"] == "failed"
 
     @pytest.mark.asyncio
+    async def test_late_callback_for_canceled_run_is_acknowledged(self):
+        async with async_session() as db:
+            run = await run_service.create_run(
+                db,
+                procedure_id=f"cb_proc_{_uid()}",
+                procedure_version="1.0.0",
+                input_vars={},
+            )
+            await run_service.update_run_status(db, run.run_id, "canceled")
+            await db.commit()
+            run_id = run.run_id
+
+        async with async_session() as db:
+            late = await workflow_callback(
+                run_id=run_id,
+                body={
+                    "status": "success",
+                    "node_id": "node-1",
+                    "step_id": "step-1",
+                },
+                background_tasks=BackgroundTasks(),
+                token=_token(run_id),
+                db=db,
+            )
+            assert late["resumed"] is False
+            assert late["status"] == "canceled"
+
+    @pytest.mark.asyncio
     async def test_timeout_sweeper_skips_run_with_callback_event(self):
         run_id = await _make_paused_run()
 
@@ -180,3 +209,56 @@ class TestWorkflowCallbackHardening:
             assert run is not None
             assert run.status == "paused"
             assert run_id not in failed_runs
+
+    @pytest.mark.asyncio
+    async def test_duplicate_callback_losing_atomic_race_is_ignored(self):
+        run_id = f"run-{_uid()}"
+
+        paused_run = MagicMock()
+        paused_run.run_id = run_id
+        paused_run.status = "paused"
+
+        queued_run = MagicMock()
+        queued_run.run_id = run_id
+        queued_run.status = "queued"
+
+        empty_result = MagicMock()
+        empty_result.scalar_one_or_none.return_value = None
+
+        transition_result = MagicMock()
+        transition_result.rowcount = 0
+
+        current_run_result = MagicMock()
+        current_run_result.scalar_one_or_none.return_value = queued_run
+
+        callback_marker_result = MagicMock()
+        callback_marker_result.scalar_one_or_none.return_value = 123
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                empty_result,
+                empty_result,
+                transition_result,
+                current_run_result,
+                callback_marker_result,
+            ]
+        )
+
+        with patch("app.services.run_service.get_run", new=AsyncMock(return_value=paused_run)):
+            result = await workflow_callback(
+                run_id=run_id,
+                body={
+                    "status": "success",
+                    "node_id": "node-1",
+                    "step_id": "step-1",
+                    "output": {"a": 1},
+                },
+                background_tasks=BackgroundTasks(),
+                token=_token(run_id),
+                db=db,
+            )
+
+        assert result["resumed"] is False
+        assert result["status"] == "duplicate"
+        db.commit.assert_not_awaited()

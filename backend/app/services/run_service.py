@@ -120,6 +120,28 @@ async def update_run_status(db: AsyncSession, run_id: str, status: str, **kwargs
     return run
 
 
+async def cancel_pending_run_job(db: AsyncSession, run_id: str) -> int:
+    """Mark queued or retrying jobs for *run_id* as cancelled.
+
+    Running jobs are left to the worker cancellation path so the execution
+    lifecycle stays truthful while the worker unwinds.
+    """
+    result = await db.execute(
+        update(RunJob)
+        .where(
+            RunJob.run_id == run_id,
+            RunJob.status.in_(["queued", "retrying"]),
+        )
+        .values(
+            status="cancelled",
+            locked_by=None,
+            locked_until=None,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    return result.rowcount or 0
+
+
 async def prepare_retry(db: AsyncSession, run_id: str) -> Run | None:
     """Prepare an existing run for checkpoint-aware retry execution."""
     run = await db.get(Run, run_id)
@@ -384,6 +406,7 @@ async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) ->
     """
     from datetime import timedelta
     from app.db.models import Run, RunEvent
+    from app.services import dlq_service
     import logging
 
     logger = logging.getLogger("langorch.services.run_service")
@@ -467,6 +490,38 @@ async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) ->
                 "run_failed", 
                 payload={"error": run.error_message, "timeout_minutes": timeout_minutes}
             )
+
+            delegation_payload: dict[str, Any] = {}
+            if ev.payload_json:
+                try:
+                    delegation_payload = json.loads(ev.payload_json)
+                except Exception:
+                    delegation_payload = {}
+
+            await dlq_service.add_to_dlq(
+                db,
+                event_type="callback_timeout",
+                payload={
+                    "run_id": r_id,
+                    "timeout_minutes": timeout_minutes,
+                    "delegated_at": ev.ts.isoformat() if ev.ts else None,
+                    "resume_node_id": delegation_payload.get("resume_node_id") or ev.node_id,
+                    "resume_step_id": delegation_payload.get("resume_step_id") or ev.step_id,
+                    "callback_url": delegation_payload.get("callback_url"),
+                    "action": delegation_payload.get("action"),
+                    "agent_url": delegation_payload.get("agent_url"),
+                },
+                error_message=run.error_message,
+                error_type="Timeout",
+                entity_type="run",
+                entity_id=r_id,
+                original_timestamp=ev.ts,
+                metadata={
+                    "resume_node_id": delegation_payload.get("resume_node_id") or ev.node_id,
+                    "resume_step_id": delegation_payload.get("resume_step_id") or ev.step_id,
+                },
+                created_by="workflow_timeout_sweeper",
+            )
             failed_runs.append(r_id)
             
             # Record callback timeout metric for SLO monitoring
@@ -476,5 +531,4 @@ async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) ->
             except Exception:
                 pass
             
-    await db.flush()
     return failed_runs

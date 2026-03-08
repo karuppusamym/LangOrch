@@ -150,12 +150,10 @@ function LoginContent() {
             </button>
           </form>
 
-          {/* Default credentials hint */}
-          <div className="rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900 px-4 py-3">
-            <p className="text-xs text-blue-700 dark:text-blue-400 font-medium">Default credentials</p>
-            <p className="text-xs text-blue-600 dark:text-blue-500 mt-0.5">
-              Username: <span className="font-mono font-semibold">admin</span> &nbsp;/&nbsp;
-              Password: <span className="font-mono font-semibold">admin123</span>
+          <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 dark:border-blue-900 dark:bg-blue-950/30">
+            <p className="text-xs font-medium text-blue-700 dark:text-blue-400">Bootstrap access</p>
+            <p className="mt-0.5 text-xs text-blue-600 dark:text-blue-500">
+              Local admin credentials are only available when a bootstrap password has been configured for this environment.
             </p>
           </div>
 

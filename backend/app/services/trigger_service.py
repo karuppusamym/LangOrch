@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compiler.ir import IRTrigger
@@ -108,6 +108,29 @@ async def get_trigger(db: AsyncSession, procedure_id: str, version: str) -> Trig
     return result.scalar_one_or_none()
 
 
+async def acquire_trigger_fire_lock(
+    db: AsyncSession,
+    procedure_id: str,
+    version: str,
+) -> TriggerRegistration | None:
+    """Serialize trigger firing for a registration within the current transaction.
+
+    A no-op UPDATE provides a row-level lock on PostgreSQL and a writer lock on
+    SQLite, which prevents concurrent dedupe/max-concurrency check races.
+    """
+    await db.execute(
+        update(TriggerRegistration)
+        .where(
+            and_(
+                TriggerRegistration.procedure_id == procedure_id,
+                TriggerRegistration.version == version,
+            )
+        )
+        .values(updated_at=TriggerRegistration.updated_at)
+    )
+    return await get_trigger(db, procedure_id, version)
+
+
 async def list_trigger_registrations(
     db: AsyncSession,
     enabled_only: bool = False,
@@ -180,12 +203,24 @@ async def record_dedupe(
     run_id: str,
     payload_hash: str,
 ) -> None:
-    record = TriggerDedupeRecord(
-        procedure_id=procedure_id,
-        payload_hash=payload_hash,
-        run_id=run_id,
-    )
-    db.add(record)
+    stmt = select(TriggerDedupeRecord).where(
+        and_(
+            TriggerDedupeRecord.procedure_id == procedure_id,
+            TriggerDedupeRecord.payload_hash == payload_hash,
+        )
+    ).limit(1)
+    result = await db.execute(stmt)
+    record = result.scalar_one_or_none()
+    if record is None:
+        record = TriggerDedupeRecord(
+            procedure_id=procedure_id,
+            payload_hash=payload_hash,
+            run_id=run_id,
+        )
+        db.add(record)
+    else:
+        record.run_id = run_id
+        record.created_at = datetime.now(timezone.utc)
     await db.flush()
 
 
@@ -200,10 +235,14 @@ async def fire_trigger(
     triggered_by: str,
     input_vars: dict[str, Any] | None = None,
     project_id: str | None = None,
+    lock_acquired: bool = False,
 ) -> Run:
     """Create and enqueue a run tagged with trigger metadata."""
-    # Enforce max_concurrent_runs if configured
     reg = await get_trigger(db, procedure_id, version)
+    if reg and not lock_acquired:
+        reg = await acquire_trigger_fire_lock(db, procedure_id, version)
+
+    # Enforce max_concurrent_runs if configured
     if reg and reg.max_concurrent_runs:
         active_stmt = select(Run).where(
             and_(

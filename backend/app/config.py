@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings
 # will always read/write the same database file.
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _DEFAULT_DB_URL = f"sqlite+aiosqlite:///{_BACKEND_DIR / 'langorch.db'}"
+_DEFAULT_AUTH_SECRET_KEY = "change-me-in-production-please"
 
 logger = logging.getLogger("langorch.config")
 
@@ -163,6 +164,12 @@ class Settings(BaseSettings):
     CASE_WEBHOOK_DELIVERY_BATCH_SIZE: int = 100
     CASE_WEBHOOK_MAX_ATTEMPTS: int = 5
     CASE_WEBHOOK_RETRY_BASE_SECONDS: int = 15
+
+    # Optional webhook endpoint for autoscaler scale actions.
+    # When unset, autoscaler evaluations only log recommendations.
+    AUTOSCALER_SCALE_WEBHOOK_URL: str | None = None
+    AUTOSCALER_SCALE_WEBHOOK_TOKEN: str | None = None
+    AUTOSCALER_SCALE_WEBHOOK_TIMEOUT_SECONDS: float = 5.0
     # ── Worker (durable job queue) ─────────────────────────────
     # WORKER_EMBEDDED=true  → worker runs as an asyncio.Task inside the API
     #                         process (default for SQLite dev mode).
@@ -211,10 +218,19 @@ class Settings(BaseSettings):
 
     # Secret key used to sign / verify JWT tokens (HS256).
     # MUST be changed in production: AUTH_SECRET_KEY=<random-256-bit-hex>
-    AUTH_SECRET_KEY: str = "change-me-in-production-please"
+    AUTH_SECRET_KEY: str = _DEFAULT_AUTH_SECRET_KEY
 
     # JWT token lifetime in minutes.
     AUTH_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # Optional bootstrap admin account for first-time setup.
+    # When BOOTSTRAP_ADMIN_PASSWORD is unset, no local admin is auto-seeded in
+    # auth/SSO-enforced deployments. Unauthenticated local dev may still fall
+    # back to the legacy placeholder for convenience.
+    BOOTSTRAP_ADMIN_ENABLED: bool = True
+    BOOTSTRAP_ADMIN_USERNAME: str = "admin"
+    BOOTSTRAP_ADMIN_EMAIL: str = "admin@local"
+    BOOTSTRAP_ADMIN_PASSWORD: str | None = None
 
     # Comma-separated static API keys for machine-to-machine access.
     # Each key grants "operator" role.
@@ -305,6 +321,23 @@ class Settings(BaseSettings):
                 "WORKER_EMBEDDED",
                 self.ORCH_DB_DIALECT == "sqlite",
             )
+
+        if self.AUTH_ENABLED or self.SSO_ENABLED:
+            secret = (self.AUTH_SECRET_KEY or "").strip()
+            if secret == _DEFAULT_AUTH_SECRET_KEY:
+                raise ValueError(
+                    "AUTH_SECRET_KEY must be changed from the default placeholder when AUTH_ENABLED or SSO_ENABLED is true"
+                )
+            if len(secret.encode("utf-8")) < 32:
+                raise ValueError(
+                    "AUTH_SECRET_KEY must be at least 32 bytes when AUTH_ENABLED or SSO_ENABLED is true"
+                )
+
+            bootstrap_password = (self.BOOTSTRAP_ADMIN_PASSWORD or "").strip()
+            if bootstrap_password == "admin123":
+                raise ValueError(
+                    "BOOTSTRAP_ADMIN_PASSWORD must not use the insecure placeholder 'admin123' when AUTH_ENABLED or SSO_ENABLED is true"
+                )
 
         return self
 

@@ -47,6 +47,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _heartbeat_loop_stub(*_args, **_kwargs):
+    try:
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        raise
+
+
+async def _execute_run_ok(*_args, **_kwargs):
+    return None
+
+
+async def _cancel_check_true(*_args, **_kwargs):
+    return True
+
+
+async def _cancel_check_false(*_args, **_kwargs):
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1–2. enqueue_run()
 # ─────────────────────────────────────────────────────────────────────────────
@@ -465,6 +484,58 @@ class TestWorkerLoopConcurrency:
             except asyncio.CancelledError:
                 pass  # expected
 
+    @pytest.mark.asyncio
+    async def test_worker_loop_logs_completed_task_crashes(self):
+        """Completed execute_job task exceptions should be logged, not silently swallowed."""
+        from contextlib import asynccontextmanager
+
+        from app.worker.loop import worker_loop
+
+        job = MagicMock()
+        job.job_id = "job-crash"
+
+        poll_calls = 0
+
+        async def fake_poll_and_claim(_worker_id, _slots):
+            nonlocal poll_calls
+            poll_calls += 1
+            return [job] if poll_calls == 1 else []
+
+        async def fake_execute_job(_job, _worker_id):
+            raise RuntimeError("task boom")
+
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        @asynccontextmanager
+        async def fake_session():
+            yield mock_db
+
+        with (
+            patch("app.worker.loop.reclaim_stalled_jobs", AsyncMock(return_value=0)),
+            patch("app.worker.loop.poll_and_claim", side_effect=fake_poll_and_claim),
+            patch("app.worker.loop.execute_job", side_effect=fake_execute_job),
+            patch("app.worker.loop.async_session", fake_session),
+            patch("app.worker.loop.logger.exception") as mock_log_exception,
+        ):
+            task = asyncio.create_task(
+                worker_loop("test-worker", concurrency=1, poll_interval=0.01)
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert mock_log_exception.called
+        assert any(
+            call.args and "Worker task" in str(call.args[0])
+            for call in mock_log_exception.call_args_list
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 14–15. execute_job success / failure state transitions
@@ -483,18 +554,29 @@ def _make_running_job(*, attempts=1, max_attempts=3, run_id=None):
     return job
 
 
+class _SessionDouble:
+    def __init__(self, execute_result=None):
+        self.execute_result = execute_result
+        self.execute_calls = 0
+        self.commit_calls = 0
+
+    async def execute(self, *_args, **_kwargs):
+        self.execute_calls += 1
+        return self.execute_result
+
+    async def commit(self):
+        self.commit_calls += 1
+
+
 class TestExecuteJob:
     @pytest.mark.asyncio
-    async def test_marks_done_on_success(self):
+    async def test_marks_cancelled_before_execution_and_clears_lock(self):
         from app.worker.loop import execute_job
 
-        job = _make_running_job()
+        job = _make_running_job(attempts=1, max_attempts=3)
+        job.locked_until = object()
 
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
-        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-        mock_db.__aexit__ = AsyncMock(return_value=None)
+        mock_db = _SessionDouble()
 
         @asynccontextmanager
         async def fake_session():
@@ -502,9 +584,36 @@ class TestExecuteJob:
 
         with (
             patch("app.worker.loop.async_session", fake_session),
-            patch("app.services.execution_service.execute_run", AsyncMock(return_value=None)),
-            patch("app.worker.heartbeat.heartbeat_loop", AsyncMock()),
-            patch("app.utils.run_cancel.check_and_signal_cancellation", AsyncMock(return_value=False)),
+            patch("app.services.execution_service.execute_run", new=_execute_run_ok),
+            patch("app.worker.heartbeat.heartbeat_loop", new=_heartbeat_loop_stub),
+            patch("app.utils.run_cancel.check_and_signal_cancellation", new=_cancel_check_true),
+        ):
+            await execute_job(job, "worker-x")
+
+        assert job.status == "cancelled"
+        assert job.locked_by is None
+        assert job.locked_until is None
+        assert mock_db.commit_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_marks_done_on_success(self):
+        from app.worker.loop import execute_job
+
+        job = _make_running_job()
+
+        status_result = MagicMock()
+        status_result.scalar_one_or_none.return_value = "completed"
+        mock_db = _SessionDouble(execute_result=status_result)
+
+        @asynccontextmanager
+        async def fake_session():
+            yield mock_db
+
+        with (
+            patch("app.worker.loop.async_session", fake_session),
+            patch("app.services.execution_service.execute_run", new=_execute_run_ok),
+            patch("app.worker.heartbeat.heartbeat_loop", new=_heartbeat_loop_stub),
+            patch("app.utils.run_cancel.check_and_signal_cancellation", new=_cancel_check_false),
         ):
             await execute_job(job, "worker-x")
 
@@ -516,21 +625,20 @@ class TestExecuteJob:
 
         job = _make_running_job(attempts=1, max_attempts=3)
 
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
-        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-        mock_db.__aexit__ = AsyncMock(return_value=None)
+        mock_db = _SessionDouble()
 
         @asynccontextmanager
         async def fake_session():
             yield mock_db
 
+        async def _execute_run_boom(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
         with (
             patch("app.worker.loop.async_session", fake_session),
-            patch("app.services.execution_service.execute_run", AsyncMock(side_effect=RuntimeError("boom"))),
-            patch("app.worker.heartbeat.heartbeat_loop", AsyncMock()),
-            patch("app.utils.run_cancel.check_and_signal_cancellation", AsyncMock(return_value=False)),
+            patch("app.services.execution_service.execute_run", new=_execute_run_boom),
+            patch("app.worker.heartbeat.heartbeat_loop", new=_heartbeat_loop_stub),
+            patch("app.utils.run_cancel.check_and_signal_cancellation", new=_cancel_check_false),
         ):
             await execute_job(job, "worker-x")
 
@@ -543,25 +651,57 @@ class TestExecuteJob:
 
         job = _make_running_job(attempts=3, max_attempts=3)
 
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
-        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-        mock_db.__aexit__ = AsyncMock(return_value=None)
+        mock_db = _SessionDouble()
 
         @asynccontextmanager
         async def fake_session():
             yield mock_db
 
+        async def _execute_run_final(*_args, **_kwargs):
+            raise RuntimeError("final")
+
         with (
             patch("app.worker.loop.async_session", fake_session),
-            patch("app.services.execution_service.execute_run", AsyncMock(side_effect=RuntimeError("final"))),
-            patch("app.worker.heartbeat.heartbeat_loop", AsyncMock()),
-            patch("app.utils.run_cancel.check_and_signal_cancellation", AsyncMock(return_value=False)),
+            patch("app.services.execution_service.execute_run", new=_execute_run_final),
+            patch("app.worker.heartbeat.heartbeat_loop", new=_heartbeat_loop_stub),
+            patch("app.utils.run_cancel.check_and_signal_cancellation", new=_cancel_check_false),
         ):
             await execute_job(job, "worker-x")
 
         assert job.status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_marks_cancelled_when_run_cancels_during_execution(self):
+        from app.worker.loop import execute_job
+
+        job = _make_running_job(attempts=1, max_attempts=3)
+
+        precheck_db = _SessionDouble()
+
+        status_result = MagicMock()
+        status_result.scalar_one_or_none.return_value = "canceled"
+        status_db = _SessionDouble(execute_result=status_result)
+
+        finalize_db = _SessionDouble()
+
+        sessions = [precheck_db, status_db, finalize_db]
+
+        @asynccontextmanager
+        async def fake_session():
+            yield sessions.pop(0)
+
+        with (
+            patch("app.worker.loop.async_session", fake_session),
+            patch("app.services.execution_service.execute_run", new=_execute_run_ok),
+            patch("app.worker.heartbeat.heartbeat_loop", new=_heartbeat_loop_stub),
+            patch("app.utils.run_cancel.check_and_signal_cancellation", new=_cancel_check_false),
+        ):
+            await execute_job(job, "worker-x")
+
+        assert job.status == "cancelled"
+        assert job.locked_by is None
+        assert job.locked_until is None
+        assert finalize_db.commit_calls == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -637,9 +777,9 @@ class TestApiRunsEnqueuesJob:
 
     @pytest.mark.asyncio
     async def test_cancel_run_sets_db_flag(self, api_client):
-        """POST /api/runs/{id}/cancel should set cancellation_requested=True in DB."""
+        """POST /api/runs/{id}/cancel should cancel the run and its pending job."""
         from app.db.engine import async_session
-        from app.db.models import Run
+        from app.db.models import Run, RunJob
         from sqlalchemy import select
 
         pid = f"batch27_{_uid()}"
@@ -662,8 +802,13 @@ class TestApiRunsEnqueuesJob:
         async with async_session() as db:
             result = await db.execute(select(Run).where(Run.run_id == run_id))
             run = result.scalar_one_or_none()
+            job_result = await db.execute(select(RunJob).where(RunJob.run_id == run_id))
+            job = job_result.scalar_one_or_none()
         assert run is not None
         assert run.cancellation_requested is True
+        assert run.status == "canceled"
+        assert job is not None
+        assert job.status not in ("queued", "retrying")
 
 
 class TestApiApprovalsEnqueuesJob:

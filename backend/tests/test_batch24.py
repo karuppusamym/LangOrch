@@ -250,10 +250,16 @@ class TestApprovalDecisionFlow:
         a.expires_at = expires_at
         a.decided_by = None
         a.decided_at = None
+        a.decision_json = None
         a.options_json = None
         a.context_data_json = None
         a.created_at = datetime.now(timezone.utc)
         return a
+
+    def _mock_execute_result(self, approval_obj):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = approval_obj
+        return result
 
     def test_submit_decision_mutates_status(self):
         """submit_decision sets approval.status to the given decision."""
@@ -262,7 +268,7 @@ class TestApprovalDecisionFlow:
 
         approval_obj = self._mock_approval()
         db = AsyncMock()
-        db.get = AsyncMock(return_value=approval_obj)
+        db.execute = AsyncMock(return_value=self._mock_execute_result(approval_obj))
         db.flush = AsyncMock()
         db.refresh = AsyncMock()
 
@@ -280,7 +286,7 @@ class TestApprovalDecisionFlow:
 
         approval_obj = self._mock_approval()
         db = AsyncMock()
-        db.get = AsyncMock(return_value=approval_obj)
+        db.execute = AsyncMock(return_value=self._mock_execute_result(approval_obj))
         db.flush = AsyncMock()
         db.refresh = AsyncMock()
 
@@ -290,6 +296,29 @@ class TestApprovalDecisionFlow:
         assert approval_obj.status == "rejected"
         assert approval_obj.decided_by == "bob"
 
+    def test_submit_decision_persists_payload(self):
+        """submit_decision stores the decision payload for later reporting."""
+        import asyncio as _asyncio
+        from app.services import approval_service
+
+        approval_obj = self._mock_approval()
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=self._mock_execute_result(approval_obj))
+        db.flush = AsyncMock()
+        db.refresh = AsyncMock()
+
+        _asyncio.run(
+            approval_service.submit_decision(
+                db,
+                approval_obj.approval_id,
+                "approved",
+                decided_by="alice",
+                payload={"decision": "approved", "comment": "safe to continue"},
+            )
+        )
+        assert approval_obj.decision_json is not None
+        assert json.loads(approval_obj.decision_json)["comment"] == "safe to continue"
+
     def test_submit_decision_ignores_non_pending(self):
         """submit_decision returns None if approval is already decided."""
         import asyncio as _asyncio
@@ -297,7 +326,7 @@ class TestApprovalDecisionFlow:
 
         approval_obj = self._mock_approval(status="approved")
         db = AsyncMock()
-        db.get = AsyncMock(return_value=approval_obj)
+        db.execute = AsyncMock(return_value=self._mock_execute_result(approval_obj))
 
         result = _asyncio.run(
             approval_service.submit_decision(db, approval_obj.approval_id, "rejected")
@@ -310,7 +339,7 @@ class TestApprovalDecisionFlow:
         from app.services import approval_service
 
         db = AsyncMock()
-        db.get = AsyncMock(return_value=None)
+        db.execute = AsyncMock(return_value=self._mock_execute_result(None))
 
         result = _asyncio.run(
             approval_service.submit_decision(db, "nonexistent-id", "approved")

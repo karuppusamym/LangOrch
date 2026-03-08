@@ -1,7 +1,8 @@
 import logging
 import sys
-from pythonjsonlogger import jsonlogger
 import contextvars
+
+from pythonjsonlogger.json import JsonFormatter
 
 # Context variables for correlation
 ctx_run_id = contextvars.ContextVar("run_id", default=None)
@@ -9,7 +10,7 @@ ctx_node_id = contextvars.ContextVar("node_id", default=None)
 ctx_step_id = contextvars.ContextVar("step_id", default=None)
 ctx_tenant_id = contextvars.ContextVar("tenant_id", default=None)
 
-class CorrelationJsonFormatter(jsonlogger.JsonFormatter):
+class CorrelationJsonFormatter(JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         super().add_fields(log_record, record, message_dict)
 

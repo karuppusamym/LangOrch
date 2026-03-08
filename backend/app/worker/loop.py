@@ -250,9 +250,12 @@ async def execute_job(job: RunJob, worker_id: str) -> None:
             await db.execute(
                 update(RunJob)
                 .where(RunJob.job_id == job.job_id)
-                .values(status="cancelled", locked_by=None, updated_at=now)
+                .values(status="cancelled", locked_by=None, locked_until=None, updated_at=now)
             )
             await db.commit()
+            job.status = "cancelled"
+            job.locked_by = None
+            job.locked_until = None
             return
 
     # --- Start heartbeat task ---
@@ -272,6 +275,32 @@ async def execute_job(job: RunJob, worker_id: str) -> None:
             job.attempts, job.max_attempts or settings.WORKER_MAX_ATTEMPTS,
         )
         await execute_run(job.run_id, async_session)
+
+        async with async_session() as db:
+            run_result = await db.execute(
+                select(Run.status).where(Run.run_id == job.run_id)
+            )
+            run_status = run_result.scalar_one_or_none()
+
+        if run_status in {"canceled", "cancelled"}:
+            now = datetime.now(timezone.utc)
+            async with async_session() as db:
+                await db.execute(
+                    update(RunJob)
+                    .where(RunJob.job_id == job.job_id)
+                    .values(
+                        status="cancelled",
+                        locked_by=None,
+                        locked_until=None,
+                        updated_at=now,
+                    )
+                )
+                await db.commit()
+            job.status = "cancelled"
+            job.locked_by = None
+            job.locked_until = None
+            logger.info("Job %s (run %s) marked cancelled after run cancellation", job.job_id, job.run_id)
+            return
 
         # Mark done
         now = datetime.now(timezone.utc)
@@ -376,8 +405,13 @@ async def worker_loop(
             # Remove completed tasks
             done = {t for t in active_tasks if t.done()}
             for task in done:
-                with suppress(Exception):
-                    await task  # surface exceptions to log
+                try:
+                    await task
+                except Exception:
+                    logger.exception(
+                        "Worker task %s crashed while processing a claimed job",
+                        task.get_name(),
+                    )
             active_tasks -= done
 
             # Recover stalled jobs from any previous worker crash

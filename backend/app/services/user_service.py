@@ -3,8 +3,9 @@
 Roles (ascending privilege):
     viewer < approver < operator < manager < admin
 
-A default ``admin`` user is seeded at startup when the users table is empty.
-Default credentials:  username=admin  password=admin123  (change in production!)
+An optional bootstrap admin user can be seeded at startup when the users table
+is empty. In auth/SSO-enforced deployments the bootstrap password must be set
+explicitly via configuration.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import User
 
 logger = logging.getLogger("langorch.users")
@@ -142,23 +144,41 @@ async def authenticate(db: AsyncSession, username: str, password: str) -> User |
 
 
 async def ensure_default_admin(db: AsyncSession) -> None:
-    """Seed a default admin user if no admin user exists yet.
+    """Seed a bootstrap admin user when explicitly configured.
 
-    Checks for an existing 'admin' username specifically, so leftover test
-    users don't suppress seeding.
+    In secured deployments this requires ``BOOTSTRAP_ADMIN_PASSWORD``.
+    Legacy ``admin/admin123`` fallback is retained only for unauthenticated
+    local development where ``DEBUG=true`` and auth/SSO are disabled.
     """
-    result = await db.execute(select(User).where(User.username == "admin").limit(1))
+    if not settings.BOOTSTRAP_ADMIN_ENABLED:
+        logger.info("Bootstrap admin seeding disabled by configuration")
+        return
+
+    username = settings.BOOTSTRAP_ADMIN_USERNAME
+    result = await db.execute(select(User).where(User.username == username).limit(1))
     if result.scalar_one_or_none() is None:
+        bootstrap_password = (settings.BOOTSTRAP_ADMIN_PASSWORD or "").strip() or None
+        if not bootstrap_password:
+            if settings.DEBUG and not settings.AUTH_ENABLED and not settings.SSO_ENABLED:
+                bootstrap_password = "admin123"
+                logger.warning(
+                    "Seeding legacy development bootstrap admin '%s' because DEBUG=true and auth/SSO are disabled",
+                    username,
+                )
+            else:
+                logger.warning(
+                    "Skipping bootstrap admin seed for '%s' because BOOTSTRAP_ADMIN_PASSWORD is not configured",
+                    username,
+                )
+                return
+
         await create_user(
             db,
-            username="admin",
-            email="admin@local",
-            password="admin123",
+            username=username,
+            email=settings.BOOTSTRAP_ADMIN_EMAIL,
+            password=bootstrap_password,
             role="admin",
             full_name="Platform Administrator",
         )
         await db.commit()
-        logger.info(
-            "Seeded default admin user (username=admin, password=admin123). "
-            "Change this immediately in production!"
-        )
+        logger.info("Seeded bootstrap admin user '%s'", username)

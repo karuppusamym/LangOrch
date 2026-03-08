@@ -77,6 +77,7 @@ async def list_approvals_enriched(db: AsyncSession, status: str | None = None) -
             "decision_json": approval.decision_json,
             "created_at": approval.created_at,
             "decided_at": approval.decided_at,
+            "expires_at": approval.expires_at,
             "run_status": run_status,
         })
     return enriched

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { getApproval, submitApprovalDecision } from "@/lib/api";
 import { ApprovalStatusBadge } from "@/components/shared/ApprovalStatusBadge";
 import { useToast } from "@/components/Toast";
+import { getUser } from "@/lib/auth";
 import type { Approval } from "@/lib/types";
 
 export default function ApprovalDetailPage() {
@@ -16,9 +17,12 @@ export default function ApprovalDetailPage() {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [loading, setLoading] = useState(true);
   const [comment, setComment] = useState("");
-  const [approverName, setApproverName] = useState(() =>
-    typeof window !== "undefined" ? (localStorage.getItem("approver_name") ?? "") : ""
-  );
+  const [approverName, setApproverName] = useState(() => {
+    const user = getUser();
+    if (user?.identity) return user.identity;
+    if (typeof window !== "undefined") return localStorage.getItem("approver_name") ?? "";
+    return "";
+  });
 
   function saveApproverName(name: string) {
     setApproverName(name);
@@ -58,105 +62,118 @@ export default function ApprovalDetailPage() {
   if (loading) return <p className="text-gray-500">Loading approval...</p>;
   if (!approval) return <p className="text-red-500">Approval not found</p>;
 
-  const overdue =
-    approval.status === "pending" &&
-    !!approval.expires_at &&
-    new Date(approval.expires_at) < new Date();
+  const overdue = isOverdueApproval(approval);
+  const commentText = getApprovalComment(approval);
+  const contextEntries = Object.entries(approval.context_data ?? {});
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="mx-auto max-w-5xl space-y-6 px-2 pb-8">
       <Link href="/approvals" className="text-sm text-primary-600 hover:underline">
-        ← Approvals
+        ← Approval reports
       </Link>
 
-      <div className={`rounded-xl border p-8 shadow-sm ${
-        overdue ? "border-red-300 bg-red-50" : "border-gray-200 bg-white"
-      }`}>
-        <div className="mb-6 flex items-center gap-3">
-          <ApprovalStatusBadge status={approval.status} />
-          <span className="text-xs text-gray-400">ID: {approval.approval_id.slice(0, 12)}…</span>
-          {approval.expires_at && approval.status === "pending" && (
-            <CountdownBadge expiresAt={approval.expires_at} />
-          )}
-          {overdue && (
-            <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-600 animate-pulse">
-              ⚠ OVERDUE
-            </span>
-          )}
-        </div>
-
-        <h2 className="text-lg font-semibold text-gray-900">{approval.prompt}</h2>
-
-        <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <span className="text-gray-500">Run: </span>
-            <Link href={`/runs/${approval.run_id}`} className="text-primary-600 hover:underline">
-              {approval.run_id.slice(0, 12)}…
-            </Link>
-          </div>
-          <div>
-            <span className="text-gray-500">Node: </span>
-            <span className="font-mono">{approval.node_id}</span>
-          </div>
-          <div>
-            <span className="text-gray-500">Created: </span>
-            {new Date(approval.created_at).toLocaleString()}
-          </div>
-          {approval.decided_by && (
-            <div>
-              <span className="text-gray-500">Decided by: </span>
-              {approval.decided_by}
+      <div className={`rounded-2xl border p-8 shadow-sm ${overdue ? "border-red-200 bg-red-50/70" : "border-neutral-200 bg-white"}`}>
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0 flex-1 space-y-5">
+            <div className="flex flex-wrap items-center gap-3">
+              <ApprovalStatusBadge status={approval.status} />
+              <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-600">{approval.decision_type.replace(/_/g, " ")}</span>
+              <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-600">ID {approval.approval_id.slice(0, 12)}...</span>
+              {approval.expires_at && approval.status === "pending" && <CountdownBadge expiresAt={approval.expires_at} />}
+              {overdue && <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">Overdue</span>}
             </div>
-          )}
+
+            <div>
+              <h1 className="text-2xl font-semibold text-neutral-900">{approval.prompt}</h1>
+              <p className="mt-2 text-sm text-neutral-500">
+                Approval requested at node <span className="font-mono text-neutral-700">{approval.node_id}</span> for run{" "}
+                <Link href={`/runs/${approval.run_id}`} className="text-primary-600 hover:underline">
+                  {approval.run_id.slice(0, 12)}...
+                </Link>
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-4">
+              <MetricTile label="Requested" value={formatTimestamp(approval.created_at)} subvalue={formatDistance(approval.created_at)} />
+              <MetricTile label={approval.status === "pending" ? "Waiting" : "Resolved"} value={approval.status === "pending" ? (approval.expires_at ? formatTimestamp(approval.expires_at) : "No expiry") : formatTimestamp(approval.decided_at)} subvalue={approval.status === "pending" ? "Awaiting a human decision" : getDecisionLatency(approval)} />
+              <MetricTile label="Decided By" value={approval.decided_by ?? "-"} subvalue={approval.decided_at ? formatTimestamp(approval.decided_at) : "No decision yet"} />
+              <MetricTile label="Options" value={approval.options?.length ? String(approval.options.length) : "-"} subvalue={approval.options?.join(", ") ?? "Default approve/reject path"} />
+            </div>
+
+            <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Approval Flow</p>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <FlowStep title="1. Requested" detail={formatTimestamp(approval.created_at)} supporting={`Node ${approval.node_id}`} tone="blue" />
+                <FlowStep title="2. Waiting" detail={approval.status === "pending" ? (approval.expires_at ? `Until ${formatTimestamp(approval.expires_at)}` : "Open ended") : getDecisionLatency(approval)} supporting={approval.status === "pending" ? "Decision still required" : "Decision stored"} tone={overdue ? "red" : "amber"} />
+                <FlowStep title="3. Outcome" detail={approval.status.replace(/_/g, " ")} supporting={approval.decided_at ? formatTimestamp(approval.decided_at) : "No outcome yet"} tone={approval.status === "approved" ? "emerald" : approval.status === "rejected" ? "red" : "neutral"} />
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full shrink-0 xl:w-72">
+            <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Links</p>
+              <div className="mt-3 space-y-3">
+                <Link href={`/runs/${approval.run_id}`} className="block rounded-lg border border-neutral-200 bg-white px-3 py-2 text-center text-sm font-medium text-primary-600 hover:bg-primary-50">
+                  Open run history
+                </Link>
+                <Link href="/approvals" className="block rounded-lg border border-neutral-200 bg-white px-3 py-2 text-center text-sm font-medium text-neutral-700 hover:bg-neutral-100">
+                  Back to approval list
+                </Link>
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* Context data */}
-        {approval.context_data && Object.keys(approval.context_data).length > 0 && (
-          <div className="mt-6 rounded-lg border border-blue-100 bg-blue-50 p-4">
-            <h3 className="mb-2 text-xs font-semibold text-blue-700">Context Data</h3>
-            <div className="space-y-1.5">
-              {Object.entries(approval.context_data).map(([k, v]) => (
-                <div key={k} className="flex gap-2 text-xs">
-                  <span className="font-medium text-blue-600 min-w-[100px]">{k}:</span>
-                  <span className="text-blue-800 break-all">
-                    {typeof v === "object" ? JSON.stringify(v, null, 2) : String(v)}
-                  </span>
+        {contextEntries.length > 0 && (
+          <div className="mt-6 rounded-xl border border-sky-100 bg-sky-50/70 p-5">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-sky-700">Context Data</h3>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              {contextEntries.map(([key, value]) => (
+                <div key={key} className="rounded-lg bg-white/80 p-3">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-sky-600">{key}</p>
+                  <p className="mt-1 break-words text-sm text-neutral-700">{compactValue(value)}</p>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Decision options */}
-        {approval.options && approval.options.length > 0 && (
-          <div className="mt-4 rounded-lg border border-gray-100 bg-gray-50 p-4">
-            <h3 className="mb-2 text-xs font-semibold text-gray-700">Available Options</h3>
-            <div className="flex flex-wrap gap-2">
-              {approval.options.map((opt) => (
-                <span key={opt} className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-700 border border-gray-200">{opt}</span>
-              ))}
-            </div>
+        {(commentText || approval.decision_payload) && (
+          <div className="mt-6 rounded-xl border border-neutral-200 bg-white p-5">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Decision Report</h3>
+            {commentText && <p className="mt-3 text-sm text-neutral-700">{commentText}</p>}
+            {approval.decision_payload && (
+              <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-neutral-50 p-3 font-mono text-xs text-neutral-600">
+                {JSON.stringify(approval.decision_payload, null, 2)}
+              </pre>
+            )}
           </div>
         )}
 
         {approval.status === "pending" && (
           <div className="mt-8 space-y-4 border-t border-gray-200 pt-6">
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-gray-500 shrink-0">Your name:</label>
-              <input
-                value={approverName}
-                onChange={(e) => saveApproverName(e.target.value)}
-                placeholder="approver name (persisted)"
-                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-primary-400 focus:outline-none w-56"
-              />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Approver name</label>
+                <input
+                  value={approverName}
+                  onChange={(e) => saveApproverName(e.target.value)}
+                  placeholder="approver name"
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-primary-400 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Decision note</label>
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="This note will be stored in the approval report"
+                  className="w-full rounded-lg border border-gray-300 p-3 text-sm focus:border-primary-500 focus:outline-none"
+                  rows={3}
+                />
+              </div>
             </div>
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Optional comment..."
-              className="w-full rounded-lg border border-gray-300 p-3 text-sm focus:border-primary-500 focus:outline-none"
-              rows={3}
-            />
             <div className="flex gap-3">
               <button
                 onClick={() => handleDecision("approved")}
@@ -174,6 +191,90 @@ export default function ApprovalDetailPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function isOverdueApproval(approval: Approval): boolean {
+  return approval.status === "pending" && !!approval.expires_at && new Date(approval.expires_at).getTime() < Date.now();
+}
+
+function getApprovalComment(approval: Approval): string | null {
+  if (approval.comment && approval.comment.trim()) return approval.comment.trim();
+  const raw = approval.decision_payload?.comment;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function getDecisionLatency(approval: Approval): string {
+  if (!approval.decided_at) return "No decision time recorded";
+  const created = new Date(approval.created_at).getTime();
+  const decided = new Date(approval.decided_at).getTime();
+  const diffMinutes = Math.max(0, decided - created) / 60000;
+  if (diffMinutes < 1) return `${Math.round(diffMinutes * 60)} sec response`;
+  if (diffMinutes < 60) return `${diffMinutes.toFixed(1)} min response`;
+  return `${(diffMinutes / 60).toFixed(1)} hr response`;
+}
+
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function formatDistance(from: string | null | undefined, to?: string | null | undefined): string {
+  if (!from) return "-";
+  const start = new Date(from).getTime();
+  const end = to ? new Date(to).getTime() : Date.now();
+  const diffMinutes = Math.max(0, end - start) / 60000;
+  if (diffMinutes < 1) return `${Math.round(diffMinutes * 60)} sec`;
+  if (diffMinutes < 60) return `${diffMinutes.toFixed(1)} min`;
+  if (diffMinutes < 1440) return `${(diffMinutes / 60).toFixed(1)} hr`;
+  return `${(diffMinutes / 1440).toFixed(1)} d`;
+}
+
+function compactValue(value: unknown): string {
+  if (value == null) return "-";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function MetricTile({ label, value, subvalue }: { label: string; value: string; subvalue: string }) {
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-white p-4">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">{label}</p>
+      <p className="mt-2 text-sm font-medium text-neutral-900">{value}</p>
+      <p className="mt-1 text-xs text-neutral-500">{subvalue}</p>
+    </div>
+  );
+}
+
+function FlowStep({
+  title,
+  detail,
+  supporting,
+  tone,
+}: {
+  title: string;
+  detail: string;
+  supporting: string;
+  tone: "blue" | "amber" | "red" | "emerald" | "neutral";
+}) {
+  const tones: Record<string, string> = {
+    blue: "border-blue-200 bg-blue-50",
+    amber: "border-amber-200 bg-amber-50",
+    red: "border-red-200 bg-red-50",
+    emerald: "border-emerald-200 bg-emerald-50",
+    neutral: "border-neutral-200 bg-neutral-50",
+  };
+  return (
+    <div className={`rounded-xl border p-4 ${tones[tone]}`}>
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">{title}</p>
+      <p className="mt-2 text-sm font-medium text-neutral-900">{detail}</p>
+      <p className="mt-1 text-xs text-neutral-500">{supporting}</p>
     </div>
   );
 }

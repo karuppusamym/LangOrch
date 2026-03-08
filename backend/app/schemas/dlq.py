@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 class DLQMessageOut(BaseModel):
     """DLQ message response schema."""
+
+    model_config = {"from_attributes": True}
     
     dlq_id: str
     event_type: str
@@ -27,9 +29,6 @@ class DLQMessageOut(BaseModel):
     metadata_json: str | None = None
     created_by: str | None = None
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class DLQMessageListOut(BaseModel):

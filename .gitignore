@@ -68,3 +68,4 @@ frontend/test-results/
 # ---- Misc ----
 *.tmp
 *.bak
+backend/langorch.db-wal

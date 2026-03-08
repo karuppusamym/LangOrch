@@ -487,7 +487,12 @@ async def _deliver_once(
     subscription: CaseWebhookSubscription,
     client: httpx.AsyncClient,
 ) -> tuple[int | None, str | None]:
-    payload = json.loads(delivery.payload_json)
+    try:
+        payload = json.loads(delivery.payload_json)
+    except (TypeError, ValueError) as exc:
+        return None, f"Invalid payload JSON: {exc}"
+    if not isinstance(payload, dict):
+        return None, "Invalid payload JSON: payload must decode to an object"
     payload_bytes = json.dumps(payload, default=str, sort_keys=True).encode("utf-8")
 
     headers = {
@@ -509,6 +514,23 @@ async def _deliver_once(
         return resp.status_code, None
     except Exception as exc:
         return None, str(exc)
+
+
+def _build_failed_delivery_dlq_payload(delivery: CaseWebhookDelivery) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "subscription_id": delivery.subscription_id,
+        "delivery_id": delivery.delivery_id,
+    }
+    try:
+        decoded = json.loads(delivery.payload_json)
+    except (TypeError, ValueError):
+        decoded = None
+
+    if isinstance(decoded, dict):
+        payload["event_data"] = decoded
+    else:
+        payload["raw_payload_json"] = delivery.payload_json
+    return payload
 
 
 def _retry_delay_seconds(attempts: int) -> int:
@@ -685,15 +707,10 @@ async def process_pending_deliveries(limit: int | None = None) -> dict[str, int]
                     # Add to DLQ for later retry/inspection
                     try:
                         from app.services import dlq_service
-                        payload_dict = json.loads(row.payload_json)
                         await dlq_service.add_to_dlq(
                             db=db,
                             event_type="webhook_subscription_delivery",
-                            payload={
-                                "subscription_id": row.subscription_id,
-                                "event_data": payload_dict,
-                                "delivery_id": row.delivery_id,
-                            },
+                            payload=_build_failed_delivery_dlq_payload(row),
                             error_message=err,
                             error_type="HTTPError" if status_code else "ConnectionError",
                             http_status_code=status_code,

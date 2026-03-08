@@ -4,7 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
+import tempfile
 import pytest
+
+
+_TEST_RUNTIME_DIR = Path(tempfile.gettempdir()) / "langorch-pytest"
+_TEST_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+_TEST_DB_PATH = (_TEST_RUNTIME_DIR / f"langorch-test-{os.getpid()}.db").resolve()
+_TEST_DB_URL = f"sqlite+aiosqlite:///{_TEST_DB_PATH.as_posix()}"
+_TEST_CHECKPOINTER_PATH = (
+    _TEST_RUNTIME_DIR / f"langgraph-checkpoints-{os.getpid()}.sqlite"
+).resolve()
+
+# Route pytest onto an isolated SQLite file unless the caller explicitly set a DB.
+# This prevents test bootstrap from contending with a running local API instance
+# or another pytest process using backend/langorch.db.
+os.environ.setdefault("ORCH_DB_URL", _TEST_DB_URL)
 
 
 # ── DB bootstrap ────────────────────────────────────────────────
@@ -23,7 +40,11 @@ def _create_test_tables():
     """
     from sqlalchemy.ext.asyncio import create_async_engine
     from app.config import settings
+    from app.db.engine import engine as app_engine
     from app.db.models import Base
+
+    if "CHECKPOINTER_URL" not in os.environ and settings.CHECKPOINTER_URL == "langgraph_checkpoints.sqlite":
+        object.__setattr__(settings, "CHECKPOINTER_URL", str(_TEST_CHECKPOINTER_PATH))
 
     async def _setup() -> None:
         eng = create_async_engine(settings.ORCH_DB_URL)
@@ -32,7 +53,20 @@ def _create_test_tables():
             await conn.run_sync(Base.metadata.create_all)
         await eng.dispose()
 
+    async def _teardown() -> None:
+        await app_engine.dispose()
+
     asyncio.run(_setup())
+    yield
+    asyncio.run(_teardown())
+
+    for path in (_TEST_DB_PATH, _TEST_CHECKPOINTER_PATH):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            pass
 
 
 # ── Minimal CKP fixtures ────────────────────────────────────────

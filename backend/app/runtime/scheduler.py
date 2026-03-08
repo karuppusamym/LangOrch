@@ -77,6 +77,16 @@ class TriggerScheduler:
         scheduled = [r for r in registrations if r.trigger_type == "scheduled" and r.schedule]
         active_keys = {f"{r.procedure_id}|{r.version}" for r in scheduled}
 
+        # Heal internal tracking when APScheduler no longer has a tracked job.
+        for job_id, key in list(self._running_jobs.items()):
+            if self._scheduler.get_job(job_id) is None:
+                logger.warning(
+                    "Dropping stale scheduler tracking for missing cron job %s (%s)",
+                    job_id,
+                    key,
+                )
+                del self._running_jobs[job_id]
+
         # Remove stale jobs
         for job_id, key in list(self._running_jobs.items()):
             if key not in active_keys:
@@ -84,7 +94,8 @@ class TriggerScheduler:
                     self._scheduler.remove_job(job_id)
                     logger.info("Removed stale cron job %s (%s)", job_id, key)
                 except Exception:
-                    pass
+                    logger.exception("Failed to remove stale cron job %s (%s)", job_id, key)
+                    continue
                 del self._running_jobs[job_id]
 
         # Add new jobs

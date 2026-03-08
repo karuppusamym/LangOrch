@@ -144,6 +144,35 @@ class TestNotifyOnError:
         assert notif["step_id"] == "s1"
 
     @pytest.mark.asyncio
+    async def test_ignore_handler_does_not_mark_step_failed(self):
+        """Ignore handlers should not persist failed idempotency state."""
+        from app.runtime.node_executors import execute_sequence
+
+        captured = []
+        db_factory, _, fake_emit = _make_db_factory(captured)
+
+        step = _make_step(output_variable="res")
+        eh = _make_eh(action="ignore", notify_on_error=False)
+        node = _make_node(step)
+        node.payload.error_handlers = [eh]
+
+        state = _base_state()
+
+        async def failing_step(action, params, vs):
+            raise RuntimeError("step boom")
+
+        with (
+            patch("app.runtime.node_executors._execute_step_action", side_effect=failing_step),
+            patch("app.services.run_service.emit_event", side_effect=fake_emit),
+            patch("app.runtime.node_executors._mark_step_failed", new=AsyncMock()) as mock_mark_failed,
+        ):
+            result = await execute_sequence(node, state, db_factory=db_factory)
+
+        assert result.get("error") is None
+        assert result["vars"]["res"] is None
+        mock_mark_failed.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_notify_on_error_false_no_event(self):
         """When notify_on_error=False (default), no notification event is emitted."""
         from app.runtime.node_executors import execute_sequence

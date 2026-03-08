@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ from app.auth import require_role
 from app.auth.deps import Principal
 
 router = APIRouter()
+logger = logging.getLogger("langorch.api.approvals")
 
 
 @router.get("", response_model=list[ApprovalOut])
@@ -81,61 +83,85 @@ async def submit_decision(
 ):
     # Use authenticated principal as fallback decided_by
     decided_by = body.decided_by or principal.identity
+    decision_payload = {"decision": body.resolved_decision}
+    if body.payload:
+        decision_payload.update(body.payload)
+    if body.comment:
+        decision_payload["comment"] = body.comment
     approval = await approval_service.submit_decision(
-        db, approval_id, body.resolved_decision, decided_by, body.payload
+        db, approval_id, body.resolved_decision, decided_by, decision_payload
     )
     if not approval:
         raise HTTPException(status_code=404, detail="Approval not found or already decided")
 
     run = await run_service.get_run(db, approval.run_id)
     if run:
-        current_input = json.loads(run.input_vars_json) if run.input_vars_json else {}
-        decisions = current_input.get("__approval_decisions", {})
-        if not isinstance(decisions, dict):
-            decisions = {}
-        decisions[approval.node_id] = approval.status
-        current_input["__approval_decisions"] = decisions
-        run.input_vars_json = json.dumps(current_input)
+        try:
+            current_input = json.loads(run.input_vars_json) if run.input_vars_json else {}
+            decisions = current_input.get("__approval_decisions", {})
+            if not isinstance(decisions, dict):
+                decisions = {}
+            decisions[approval.node_id] = approval.status
+            current_input["__approval_decisions"] = decisions
+            run.input_vars_json = json.dumps(current_input)
 
-        # Look up node_name from the prior approval_requested event for this node
-        _node_name_row = await db.execute(
-            select(RunEvent.payload_json)
-            .where(
-                RunEvent.run_id == run.run_id,
-                RunEvent.event_type == "approval_requested",
-                RunEvent.node_id == approval.node_id,
+            # Look up node_name from the prior approval_requested event for this node.
+            _node_name_row = await db.execute(
+                select(RunEvent.payload_json)
+                .where(
+                    RunEvent.run_id == run.run_id,
+                    RunEvent.event_type == "approval_requested",
+                    RunEvent.node_id == approval.node_id,
+                )
+                .order_by(desc(RunEvent.ts))
+                .limit(1)
             )
-            .order_by(desc(RunEvent.ts))
-            .limit(1)
-        )
-        _node_name_json = _node_name_row.scalar()
-        _node_name: str = approval.node_id
-        if _node_name_json:
-            try:
-                _pl = json.loads(_node_name_json) if isinstance(_node_name_json, str) else _node_name_json
-                _node_name = _pl.get("node_name") or approval.node_id
-            except Exception:
-                pass
+            _node_name_json = _node_name_row.scalar()
+            _node_name: str = approval.node_id
+            if _node_name_json:
+                try:
+                    _payload = json.loads(_node_name_json) if isinstance(_node_name_json, str) else _node_name_json
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to parse approval_requested payload for run %s node %s: %s",
+                        run.run_id,
+                        approval.node_id,
+                        exc,
+                    )
+                    _payload = None
+                if isinstance(_payload, dict):
+                    _node_name = _payload.get("node_name") or approval.node_id
 
-        await run_service.update_run_status(db, run.run_id, "created")
-        await run_service.emit_event(
-            db,
-            run.run_id,
-            "approval_decision_received",
-            node_id=approval.node_id,
-            payload={
-                "approval_id": approval.approval_id,
-                "decision": approval.status,
-                "decided_by": decided_by,
-                "node_name": _node_name,
-            },
-        )
+            await run_service.update_run_status(db, run.run_id, "created")
+            await run_service.emit_event(
+                db,
+                run.run_id,
+                "approval_decision_received",
+                node_id=approval.node_id,
+                payload={
+                    "approval_id": approval.approval_id,
+                    "decision": approval.status,
+                    "decided_by": decided_by,
+                    "comment": body.comment,
+                    "node_name": _node_name,
+                },
+            )
 
-        # Requeue the run so the worker resumes it promptly (priority=10).
-        # Uses UPDATE on the existing RunJob row to avoid the unique-constraint
-        # violation that would occur if we tried to INSERT a second row for
-        # the same run_id.  get_db commits on exit — atomic with the decision.
-        await requeue_run(db, run.run_id, priority=10)
+            # Requeue the run so the worker resumes it promptly (priority=10).
+            # Uses UPDATE on the existing RunJob row to avoid the unique-constraint
+            # violation that would occur if we tried to INSERT a second row for
+            # the same run_id.  get_db commits on exit — atomic with the decision.
+            await requeue_run(db, run.run_id, priority=10)
+        except Exception as exc:
+            logger.exception(
+                "Failed to resume run %s after approval decision %s",
+                run.run_id,
+                approval.approval_id,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to resume run after approval decision",
+            ) from exc
 
     return approval
 

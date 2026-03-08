@@ -127,6 +127,8 @@ export interface Approval {
   decided_at: string | null;
   expires_at: string | null;
   context_data: Record<string, unknown> | null;
+  decision_payload: Record<string, unknown> | null;
+  comment?: string | null;
   created_at: string;
   run_status?: string | null;
 }

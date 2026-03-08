@@ -29,13 +29,12 @@ async def list_checkpoints(thread_id: str) -> list[dict[str, Any]]:
             # LangGraph checkpointer API: list checkpoints for a thread
             checkpoints = []
             config = {"configurable": {"thread_id": thread_id}}
-            
-            # Get checkpoint history using the checkpointer's list method
-            async for checkpoint_tuple in checkpointer.list(config):
+
+            async for checkpoint_tuple in checkpointer.alist(config):
                 checkpoint_config = checkpoint_tuple.config
                 checkpoint_metadata = checkpoint_tuple.metadata
                 checkpoint_id = checkpoint_config.get("configurable", {}).get("checkpoint_id")
-                
+
                 checkpoints.append({
                     "checkpoint_id": checkpoint_id,
                     "thread_id": thread_id,
@@ -44,7 +43,7 @@ async def list_checkpoints(thread_id: str) -> list[dict[str, Any]]:
                     "writes": checkpoint_metadata.get("writes"),
                     "created_at": checkpoint_metadata.get("source", "unknown"),
                 })
-            
+
             return checkpoints
             
     except Exception as e:

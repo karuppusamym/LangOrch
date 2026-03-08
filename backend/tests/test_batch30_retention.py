@@ -124,6 +124,30 @@ async def test_cleanup_deletes_old_terminal_run(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cleanup_deletes_old_cancelled_run(tmp_path):
+    """cleanup endpoint deletes folder for legacy terminal status 'cancelled'."""
+    run_id = "run-old-cancelled"
+    _make_dir_with_file(tmp_path, run_id, size=50)
+
+    mock_run = _make_run(run_id, "cancelled", days_old=40)
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_run
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    from app.api.artifacts import cleanup_artifacts
+
+    with patch("app.api.artifacts.settings") as mock_settings:
+        mock_settings.ARTIFACTS_DIR = str(tmp_path)
+        mock_settings.ARTIFACT_RETENTION_DAYS = 30
+        result = await cleanup_artifacts(before=None, db=mock_db)
+
+    assert run_id in result.deleted_runs
+    assert not (tmp_path / run_id).exists()
+
+
+@pytest.mark.asyncio
 async def test_cleanup_skips_active_run(tmp_path):
     """cleanup endpoint does NOT delete folder for an active run."""
     run_id = "run-active"
@@ -330,6 +354,54 @@ async def test_artifact_retention_loop_deletes_old_folder():
         _make_dir_with_file(Path(tmpdir), run_id, size=20)
 
         mock_run = _make_run(run_id, "completed", days_old=35)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_run
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=AsyncMock(
+            execute=AsyncMock(return_value=mock_result)
+        ))
+        mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        def _mock_session():
+            return mock_session_cm
+
+        with patch.object(leader_mod, "leader_election", mock_leader), \
+             patch("asyncio.sleep", side_effect=_fast_sleep), \
+             patch("app.main.settings") as mock_settings, \
+             patch("app.main.async_session", _mock_session):
+            mock_settings.ARTIFACT_RETENTION_DAYS = 30
+            mock_settings.ARTIFACTS_DIR = tmpdir
+            try:
+                await main_mod._artifact_retention_loop()
+            except asyncio.CancelledError:
+                pass
+
+        assert not (Path(tmpdir) / run_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_artifact_retention_loop_deletes_old_cancelled_folder():
+    """Background loop deletes old folder for legacy terminal status 'cancelled'."""
+    import asyncio
+    import app.main as main_mod
+    import app.runtime.leader as leader_mod
+
+    mock_leader = MagicMock()
+    mock_leader.is_leader = True
+
+    sleep_counter = [0]
+
+    async def _fast_sleep(n: float):
+        sleep_counter[0] += 1
+        if sleep_counter[0] >= 2:
+            raise asyncio.CancelledError
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_id = "run-loop-test-cancelled"
+        _make_dir_with_file(Path(tmpdir), run_id, size=20)
+
+        mock_run = _make_run(run_id, "cancelled", days_old=35)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_run
 

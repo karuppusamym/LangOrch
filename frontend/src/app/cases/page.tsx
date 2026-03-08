@@ -842,7 +842,7 @@ export default function CasesPage() {
     } catch (err) {
       if (isNotFoundError(err)) {
         toast("Case not found. It may have been deleted. Please refresh the page.", "error");
-        void load();
+        void loadCases();
       } else {
         toast(err instanceof Error ? err.message : "Failed to start run for case", "error");
       }

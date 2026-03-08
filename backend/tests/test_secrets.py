@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import pytest
 
@@ -12,6 +13,37 @@ from app.services.secrets_service import (
     get_secrets_manager,
     _secrets_manager,
 )
+
+
+class TestSecretsApiCryptoHelpers:
+    def test_encrypt_requires_encryption_key(self, monkeypatch):
+        from app.api.secrets import _encrypt
+
+        monkeypatch.delenv("SECRETS_ENCRYPTION_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="SECRETS_ENCRYPTION_KEY must be configured"):
+            _encrypt("super-secret")
+
+    def test_decrypt_legacy_base64_without_key(self, monkeypatch):
+        from app.api.secrets import _decrypt
+
+        monkeypatch.delenv("SECRETS_ENCRYPTION_KEY", raising=False)
+
+        decoded = _decrypt(base64.b64encode(b"legacy-secret").decode())
+
+        assert decoded == "legacy-secret"
+
+    def test_encrypt_decrypt_round_trip_with_fernet_key(self, monkeypatch):
+        pytest.importorskip("cryptography.fernet")
+        from cryptography.fernet import Fernet
+        from app.api.secrets import _decrypt, _encrypt
+
+        monkeypatch.setenv("SECRETS_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+        encrypted = _encrypt("fresh-secret")
+
+        assert encrypted != "fresh-secret"
+        assert _decrypt(encrypted) == "fresh-secret"
 
 
 class TestEnvironmentSecretsProvider:

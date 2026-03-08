@@ -23,6 +23,13 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
+function renderCapacitySlots(concurrencyLimit: number) {
+  const slots = Math.max(1, Math.min(concurrencyLimit, 12));
+  return Array.from({ length: slots }, (_, index) => (
+    <div key={index} className="h-full flex-1 rounded-full bg-blue-500" />
+  ));
+}
+
 export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentInstance[]>([]);
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
@@ -332,8 +339,8 @@ export default function AgentsPage() {
                 <p><span className="text-neutral-400">Resource:</span> {agent.resource_key}</p>
                 <div className="flex items-center gap-2">
                   <span className="text-neutral-400">Capacity:</span>
-                  <div className="flex-1 h-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 overflow-hidden">
-                    <div className="h-full bg-blue-500 rounded-full" style={{ width: `${(1 / Math.max(agent.concurrency_limit, 1)) * 100}%` }} />
+                  <div className="flex h-1.5 flex-1 gap-1 overflow-hidden rounded-full bg-neutral-100 p-[1px] dark:bg-neutral-800">
+                    {renderCapacitySlots(agent.concurrency_limit)}
                   </div>
                   <span className="text-neutral-400">{agent.concurrency_limit}</span>
                 </div>

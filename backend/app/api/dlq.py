@@ -59,9 +59,32 @@ async def default_retry_handler(event_type: str, payload: dict, dlq_entry):
             await _deliver_to_subscription(db, subscription_id, event_data)
     
     elif event_type == "callback_timeout":
-        # For callback timeouts, we might want to re-execute or notify
-        logger.warning(f"Callback timeout retry not implemented yet: {payload}")
-        raise NotImplementedError("Callback timeout retry not yet supported")
+        from app.services import run_service
+        from app.worker.enqueue import requeue_run
+
+        run_id = payload.get("run_id") or dlq_entry.entity_id
+        if not run_id:
+            raise ValueError("Missing run_id in callback timeout payload")
+
+        async with async_session() as retry_db:
+            run = await run_service.get_run(retry_db, run_id)
+            if not run:
+                raise ValueError(f"Run not found for callback timeout retry: {run_id}")
+
+            await run_service.prepare_retry(retry_db, run_id)
+            await requeue_run(retry_db, run_id, priority=10)
+            await run_service.emit_event(
+                retry_db,
+                run_id,
+                "callback_timeout_retry_requested",
+                node_id=payload.get("resume_node_id"),
+                step_id=payload.get("resume_step_id"),
+                payload={
+                    "dlq_id": dlq_entry.dlq_id,
+                    "timeout_minutes": payload.get("timeout_minutes"),
+                },
+            )
+            await retry_db.commit()
     
     else:
         logger.warning(f"Unknown event_type for retry: {event_type}")

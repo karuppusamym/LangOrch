@@ -112,7 +112,7 @@ async def cleanup_artifacts(
 
             should_delete = False
             if run is not None:
-                if run.status not in ("completed", "failed", "canceled"):
+                if run.status not in ("completed", "failed", "canceled", "cancelled"):
                     skipped += 1
                     continue  # active run — never delete
                 run_ts = run.created_at

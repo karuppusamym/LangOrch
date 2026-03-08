@@ -49,6 +49,100 @@ const TYPE_BG: Record<string, string> = {
   terminate: "#6B7280",
 };
 
+const TYPE_THEME: Record<string, {
+  accent: string;
+  iconBg: string;
+  tint: string;
+  text: string;
+  border: string;
+}> = {
+  sequence: {
+    accent: "bg-blue-500",
+    iconBg: "bg-blue-500",
+    tint: "bg-blue-50",
+    text: "text-blue-700",
+    border: "border-blue-500",
+  },
+  logic: {
+    accent: "bg-amber-500",
+    iconBg: "bg-amber-500",
+    tint: "bg-amber-50",
+    text: "text-amber-700",
+    border: "border-amber-500",
+  },
+  loop: {
+    accent: "bg-violet-500",
+    iconBg: "bg-violet-500",
+    tint: "bg-violet-50",
+    text: "text-violet-700",
+    border: "border-violet-500",
+  },
+  parallel: {
+    accent: "bg-cyan-500",
+    iconBg: "bg-cyan-500",
+    tint: "bg-cyan-50",
+    text: "text-cyan-700",
+    border: "border-cyan-500",
+  },
+  human_approval: {
+    accent: "bg-red-500",
+    iconBg: "bg-red-500",
+    tint: "bg-red-50",
+    text: "text-red-700",
+    border: "border-red-500",
+  },
+  llm_action: {
+    accent: "bg-emerald-500",
+    iconBg: "bg-emerald-500",
+    tint: "bg-emerald-50",
+    text: "text-emerald-700",
+    border: "border-emerald-500",
+  },
+  processing: {
+    accent: "bg-indigo-500",
+    iconBg: "bg-indigo-500",
+    tint: "bg-indigo-50",
+    text: "text-indigo-700",
+    border: "border-indigo-500",
+  },
+  verification: {
+    accent: "bg-orange-500",
+    iconBg: "bg-orange-500",
+    tint: "bg-orange-50",
+    text: "text-orange-700",
+    border: "border-orange-500",
+  },
+  transform: {
+    accent: "bg-pink-500",
+    iconBg: "bg-pink-500",
+    tint: "bg-pink-50",
+    text: "text-pink-700",
+    border: "border-pink-500",
+  },
+  subflow: {
+    accent: "bg-teal-500",
+    iconBg: "bg-teal-500",
+    tint: "bg-teal-50",
+    text: "text-teal-700",
+    border: "border-teal-500",
+  },
+  terminate: {
+    accent: "bg-gray-500",
+    iconBg: "bg-gray-500",
+    tint: "bg-gray-100",
+    text: "text-gray-700",
+    border: "border-gray-500",
+  },
+};
+
+const DEFAULT_NODE_THEME = {
+  accent: "bg-gray-400",
+  iconBg: "bg-gray-400",
+  tint: "bg-gray-100",
+  text: "text-gray-700",
+  border: "border-gray-400",
+};
+
 /* ── Execution state styling ─────────────────────────────────── */
 const STATE_BORDER: Record<string, string> = {
   current: "#3B82F6",
@@ -85,6 +179,36 @@ const STATE_LABEL_COLOR: Record<string, string> = {
   sla_breached: "#EA580C",
   pending: "#6B7280",
   paused: "#B45309",
+};
+
+const STATE_CONTAINER_CLASS: Record<string, string> = {
+  current: "border-blue-500 shadow-[0_0_16px_4px_rgba(59,130,246,0.45)] animate-[glow-pulse_1.6s_ease-in-out_infinite]",
+  running: "border-blue-500 shadow-[0_0_16px_4px_rgba(59,130,246,0.45)] animate-[glow-pulse_1.6s_ease-in-out_infinite]",
+  completed: "border-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.35)]",
+  failed: "border-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.45),0_0_12px_2px_rgba(239,68,68,0.3)]",
+  sla_breached: "border-orange-500 shadow-[0_0_0_3px_rgba(249,115,22,0.45)]",
+  pending: "border-gray-400 shadow-[0_2px_8px_rgba(0,0,0,0.07)]",
+  paused: "border-amber-600 shadow-[0_0_0_3px_rgba(217,119,6,0.45),0_0_12px_4px_rgba(217,119,6,0.25)] animate-[paused-pulse_2.5s_ease-in-out_infinite]",
+};
+
+const STATE_ICON_CLASS: Record<string, string> = {
+  current: "bg-blue-500 animate-spin [animation-duration:2s]",
+  running: "bg-blue-500 animate-spin [animation-duration:2s]",
+  completed: "bg-green-500",
+  failed: "bg-red-500",
+  sla_breached: "bg-orange-500",
+  pending: "bg-gray-400",
+  paused: "bg-amber-600",
+};
+
+const STATE_LABEL_CLASS: Record<string, string> = {
+  current: "text-blue-600",
+  running: "text-blue-600",
+  completed: "text-green-600",
+  failed: "text-red-600",
+  sla_breached: "text-orange-600",
+  pending: "text-gray-500",
+  paused: "text-amber-700",
 };
 
 /* ── Edge styling by label keyword ──────────────────────────── */
@@ -140,12 +264,14 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
   const { label, nodeType, agent, isStart, isEnd, description, stepCount, _execState: execState, _loopCount: loopCount } = data;
   const color = TYPE_BG[nodeType] ?? data.color ?? "#9CA3AF";
   const icon = TYPE_ICONS[nodeType] ?? "●";
-  const borderColor = execState ? (STATE_BORDER[execState] ?? color) : color;
-  const shadow = execState && STATE_RING[execState] !== "none" ? STATE_RING[execState] : "0 2px 8px rgba(0,0,0,0.07)";
+  const theme = TYPE_THEME[nodeType] ?? DEFAULT_NODE_THEME;
   const isLive = execState === "current" || execState === "running";
   const isFailed = execState === "failed";
   const isPending = execState === "pending";
   const isPaused = execState === "paused";
+  const containerClass = execState
+    ? (STATE_CONTAINER_CLASS[execState] ?? `${theme.border} shadow-[0_2px_8px_rgba(0,0,0,0.07)]`)
+    : `${theme.border} shadow-[0_2px_8px_rgba(0,0,0,0.07)]`;
 
   return (
     <>
@@ -156,25 +282,17 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
       />
 
       <div
-        className={`relative rounded-xl border-2 bg-white transition-all duration-300 ${isPending ? "opacity-60 grayscale-[0.2]" : ""} ${isPaused ? "opacity-90" : ""}`}
-        style={{
-          borderColor,
-          boxShadow: shadow,
-          width: NODE_W,
-          minHeight: NODE_H,
-          animation: isLive ? "glow-pulse 1.6s ease-in-out infinite" : isPaused ? "paused-pulse 2.5s ease-in-out infinite" : undefined,
-        }}
+        className={`relative w-[244px] min-h-[116px] rounded-xl border-2 bg-white transition-all duration-300 ${containerClass} ${isPending ? "opacity-60 grayscale-[0.2]" : ""} ${isPaused ? "opacity-90" : ""}`}
       >
         {/* Accent stripe */}
-        <div className="h-[6px] w-full rounded-t-[10px]" style={{ background: color }} />
+        <div className={`h-[6px] w-full rounded-t-[10px] ${theme.accent}`} />
 
         <div className="px-3 pt-2 pb-3">
           {/* Header row */}
           <div className="flex items-center justify-between gap-1">
             <div className="flex items-center gap-1.5 min-w-0">
               <span
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] text-white"
-                style={{ background: color }}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] text-white ${theme.iconBg}`}
               >
                 {icon}
               </span>
@@ -185,21 +303,20 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
             <div className="flex items-center gap-1 shrink-0">
               {/* Step count badge */}
               {stepCount != null && stepCount > 0 && (
-                <span className="rounded-full px-1.5 py-0.5 text-[9px] font-bold" style={{ background: `${color}18`, color }}>
+                <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${theme.tint} ${theme.text}`}>
                   {stepCount} step{stepCount !== 1 ? "s" : ""}
                 </span>
               )}
               {/* Loop count badge */}
               {loopCount && (
-                <span className="rounded-full px-1.5 py-0.5 text-[9px] font-bold whitespace-nowrap" style={{ background: `${color}18`, color }}>
+                <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold whitespace-nowrap ${theme.tint} ${theme.text}`}>
                   ↻ {loopCount}
                 </span>
               )}
               {/* Exec state badge */}
               {execState && (
                 <span
-                  className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-black text-white${isLive ? " animate-spin" : ""}`}
-                  style={{ background: STATE_BORDER[execState] ?? color, animationDuration: "2s" }}
+                  className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-black text-white ${STATE_ICON_CLASS[execState] ?? theme.iconBg}`}
                   title={execState}
                 >
                   {STATE_STATUS_ICON[execState] ?? execState[0]}
@@ -220,7 +337,7 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
 
           {/* Exec state label */}
           {execState && (
-            <p className="mt-0.5 text-[9px] font-bold uppercase tracking-widest" style={{ color: STATE_LABEL_COLOR[execState] ?? color }}>
+            <p className={`mt-0.5 text-[9px] font-bold uppercase tracking-widest ${STATE_LABEL_CLASS[execState] ?? theme.text}`}>
               {execState.replace(/_/g, " ")}
             </p>
           )}
@@ -228,8 +345,7 @@ function CkpNode({ data }: NodeProps<Node<CkpNodeData>>) {
           {/* Agent chip */}
           {agent && (
             <span
-              className="mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-              style={{ background: `${color}18`, color }}
+              className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${theme.tint} ${theme.text}`}
             >
               🤖 {agent}
             </span>
@@ -529,7 +645,7 @@ export default function WorkflowGraph({ graph, nodeStates, edgeCounts }: Workflo
                   <div className="space-y-1">
                     {EXEC_LEGEND.map(({ color, label, icon }) => (
                       <div key={label} className="flex items-center gap-2">
-                        <span className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-black text-white" style={{ background: color }}>
+                        <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-black text-white ${color === "#22C55E" ? "bg-green-500" : color === "#EF4444" ? "bg-red-500" : color === "#3B82F6" ? "bg-blue-500" : color === "#F97316" ? "bg-orange-500" : color === "#D97706" ? "bg-amber-600" : "bg-gray-400"}`}>
                           {icon}
                         </span>
                         <span className="text-[10px] text-gray-600">{label}</span>

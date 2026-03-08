@@ -82,16 +82,12 @@ async def get_current_user(
 
     if not settings.AUTH_ENABLED:
         if authorization and authorization.lower().startswith("bearer "):
-            try:
-                import jwt
-                token = authorization.split(" ", 1)[1]
-                payload = jwt.decode(token, settings.AUTH_SECRET_KEY, algorithms=["HS256"])
-                return Principal(
-                    identity=payload.get("sub", "unknown"),
-                    roles=payload.get("roles", ["viewer"])
-                )
-            except Exception:
-                pass
+            token = authorization.split(" ", 1)[1]
+            payload = _decode_jwt(token, settings.AUTH_SECRET_KEY)
+            return Principal(
+                identity=payload.get("sub", "unknown"),
+                roles=payload.get("roles", ["viewer"]),
+            )
         return _ANON_ADMIN
 
     # ── X-API-Key ────────────────────────────────────────────────

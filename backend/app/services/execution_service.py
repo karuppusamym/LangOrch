@@ -597,6 +597,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                         )
                         record_run_completed(run_duration, "completed")
                         await db.commit()
+                        clear_run_affinity(run_id)
                         return
                 error_msg = str(error.get("message", error) if isinstance(error, dict) else error)
                 await run_service.update_run_status(db, run_id, "failed", error_message=error_msg)

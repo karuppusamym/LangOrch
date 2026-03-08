@@ -423,6 +423,13 @@ class TriggerRegistration(Base):
 class TriggerDedupeRecord(Base):
     """Deduplicate webhook payloads within a configurable window."""
     __tablename__ = "trigger_dedupe_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "procedure_id",
+            "payload_hash",
+            name="uq_trigger_dedupe_records_procedure_payload",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     procedure_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)

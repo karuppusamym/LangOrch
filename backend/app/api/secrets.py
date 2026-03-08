@@ -39,8 +39,7 @@ router = APIRouter(tags=["secrets"])
 def _get_fernet():
     """Build a Fernet instance from SECRETS_ENCRYPTION_KEY env var.
 
-    If the key is not set, returns None (dev mode: values stored as base64
-    without real encryption — NOT suitable for production).
+    If the key is not set, returns None.
     """
     raw_key = os.environ.get("SECRETS_ENCRYPTION_KEY")
     if not raw_key:
@@ -58,23 +57,47 @@ def _get_fernet():
             encoded = base64.urlsafe_b64encode(raw_bytes[:32])
             return Fernet(encoded)
     except ImportError:
-        logger.warning("cryptography package not installed — secrets stored as base64 (insecure)")
+        logger.warning("cryptography package not installed — secure secret storage is unavailable")
         return None
+
+
+def _decode_legacy_base64(encrypted: str) -> str:
+    return base64.b64decode(encrypted).decode()
 
 
 def _encrypt(value: str) -> str:
     f = _get_fernet()
-    if f:
-        return f.encrypt(value.encode()).decode()
-    # Fallback: base64 encode (NOT encrypted)
-    return base64.b64encode(value.encode()).decode()
+    if not f:
+        raise ValueError(
+            "SECRETS_ENCRYPTION_KEY must be configured before storing database-backed secrets"
+        )
+    return f.encrypt(value.encode()).decode()
 
 
 def _decrypt(encrypted: str) -> str:
     f = _get_fernet()
     if f:
-        return f.decrypt(encrypted.encode()).decode()
-    return base64.b64decode(encrypted).decode()
+        try:
+            return f.decrypt(encrypted.encode()).decode()
+        except Exception:
+            try:
+                decoded = _decode_legacy_base64(encrypted)
+            except Exception:
+                raise
+            logger.warning(
+                "Decrypting legacy base64-encoded secret without real encryption; re-save this secret after configuring SECRETS_ENCRYPTION_KEY"
+            )
+            return decoded
+    try:
+        decoded = _decode_legacy_base64(encrypted)
+    except Exception as exc:
+        raise ValueError(
+            "SECRETS_ENCRYPTION_KEY must be configured to decrypt database-backed secrets"
+        ) from exc
+    logger.warning(
+        "Decrypting legacy base64-encoded secret without real encryption; configure SECRETS_ENCRYPTION_KEY and rotate this secret"
+    )
+    return decoded
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
@@ -145,9 +168,13 @@ async def create_secret(
     existing = await db.execute(select(SecretEntry).where(SecretEntry.name == body.name))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail=f"Secret '{body.name}' already exists. Use PUT to update.")
+    try:
+        encrypted_value = _encrypt(body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     entry = SecretEntry(
         name=body.name,
-        encrypted_value=_encrypt(body.value),
+        encrypted_value=encrypted_value,
         description=body.description,
         provider_hint=body.provider_hint,
         tags_json=json.dumps(body.tags),
@@ -195,7 +222,10 @@ async def update_secret(
     if not entry:
         raise HTTPException(status_code=404, detail=f"Secret '{name}' not found")
     if body.value is not None:
-        entry.encrypted_value = _encrypt(body.value)
+        try:
+            entry.encrypted_value = _encrypt(body.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if body.description is not None:
         entry.description = body.description
     if body.tags is not None:

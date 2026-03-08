@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -45,6 +46,48 @@ _AUTOSCALER_POLL_INTERVAL = 120  # seconds (every 2 minutes)
 
 _CIRCUIT_OPEN_THRESHOLD = 3  # consecutive failures before opening circuit
 _CIRCUIT_RESET_SECONDS = 300  # auto-reset circuit after 5 min
+
+
+def _apply_config_sync_rows(rows: list[tuple[str, str]]) -> int:
+    """Apply synced config override rows, logging malformed entries explicitly."""
+    reload_count = 0
+    for key, value_json in rows:
+        try:
+            value = json.loads(value_json)
+        except Exception:
+            logger.warning("HA Sync: Skipping malformed config override %s", key, exc_info=True)
+            continue
+
+        if getattr(settings, key, None) != value:
+            setattr(settings, key, value)
+            reload_count += 1
+            logger.info("HA Sync: Reloaded config override %s", key)
+
+    return reload_count
+
+
+def _apply_llm_api_key_secret(entry: object | None, decrypt_func) -> bool:
+    """Apply the synced LLM secret entry, logging decryption failures explicitly."""
+    if entry is None:
+        return False
+
+    encrypted_value = getattr(entry, "encrypted_value", None)
+    if not encrypted_value:
+        logger.warning("HA Sync: Secret entry LLM_API_KEY is missing encrypted_value")
+        return False
+
+    try:
+        decrypted = decrypt_func(encrypted_value)
+    except Exception:
+        logger.warning("HA Sync: Failed to decrypt secret LLM_API_KEY", exc_info=True)
+        return False
+
+    if settings.LLM_API_KEY != decrypted:
+        settings.LLM_API_KEY = decrypted
+        logger.info("HA Sync: Reloaded LLM_API_KEY from secrets")
+        return True
+
+    return False
 
 
 async def _agent_health_loop() -> None:
@@ -233,7 +276,7 @@ async def _checkpoint_retention_loop() -> None:
                 result = await db.execute(
                     select(Run.run_id).where(
                         Run.created_at < cutoff,
-                        Run.status.in_(["completed", "failed", "canceled"]),
+                        Run.status.in_(["completed", "failed", "canceled", "cancelled"]),
                     )
                 )
                 old_run_ids = [r for (r,) in result.all()]
@@ -305,7 +348,7 @@ async def _artifact_retention_loop() -> None:
 
                 should_delete = False
                 if run is not None:
-                    if run.status not in ("completed", "failed", "canceled"):
+                    if run.status not in ("completed", "failed", "canceled", "cancelled"):
                         continue  # active run — never delete
                     run_ts = run.created_at
                     if run_ts is not None and run_ts.tzinfo is None:
@@ -349,7 +392,6 @@ async def _config_sync_loop() -> None:
     Provides HA synchronization across multiple LangOrch workers/containers."""
     from sqlalchemy import text, select
     from app.db.models import SecretEntry
-    import json
 
     while True:
         await asyncio.sleep(30)
@@ -357,29 +399,18 @@ async def _config_sync_loop() -> None:
             async with async_session() as db:
                 # Sync standard settings
                 result = await db.execute(text("SELECT key, value_json FROM system_settings"))
-                for key, value_json in result.all():
-                    try:
-                        val = json.loads(value_json)
-                        if getattr(settings, key, None) != val:
-                            setattr(settings, key, val)
-                            logger.info("HA Sync: Reloaded config override %s", key)
-                    except Exception:
-                        pass
+                _apply_config_sync_rows(result.all())
                 
                 # Sync secrets
                 try:
                     from app.api.secrets import _decrypt
                     res = await db.execute(select(SecretEntry).where(SecretEntry.name == "LLM_API_KEY"))
                     entry = res.scalar_one_or_none()
-                    if entry:
-                        decrypted = _decrypt(entry.encrypted_value)
-                        if settings.LLM_API_KEY != decrypted:
-                            settings.LLM_API_KEY = decrypted
-                            logger.info("HA Sync: Reloaded LLM_API_KEY from secrets")
+                    _apply_llm_api_key_secret(entry, _decrypt)
                 except Exception:
-                    pass
+                    logger.warning("HA Sync: Failed to reload LLM_API_KEY from secrets", exc_info=True)
         except Exception as exc:
-            logger.debug("Error in config sync loop: %s", exc)
+            logger.warning("Error in config sync loop: %s", exc, exc_info=True)
 
 
 async def _autoscaler_evaluation_loop() -> None:

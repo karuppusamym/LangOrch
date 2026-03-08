@@ -102,8 +102,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className="fixed inset-y-0 left-0 z-30 flex flex-col bg-white dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-800"
-      style={{ width: "var(--sidebar-width)" }}
+      className="fixed inset-y-0 left-0 z-30 flex w-64 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       {/* Logo */}
       <div className="flex h-[var(--header-height)] shrink-0 items-center gap-2 px-6 border-b border-neutral-200 dark:border-neutral-800">

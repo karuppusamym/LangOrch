@@ -70,6 +70,7 @@ async def receive_webhook(
     # Deduplification
     payload_hash = trigger_service.compute_payload_hash(body)
     if reg.dedupe_window_seconds > 0:
+        await trigger_service.acquire_trigger_fire_lock(db, procedure_id, reg.version)
         existing_run_id = await trigger_service.check_dedupe(
             db, procedure_id, payload_hash, reg.dedupe_window_seconds
         )
@@ -104,6 +105,7 @@ async def receive_webhook(
             trigger_type="webhook",
             triggered_by=f"webhook:{request.client.host if request.client else 'unknown'}",
             input_vars=input_vars,
+            lock_acquired=reg.dedupe_window_seconds > 0,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))

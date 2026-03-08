@@ -8,10 +8,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import RunEvent
+from app.config import settings
+from app.db.models import AgentInstance, Procedure, Run, RunEvent
 
 logger = logging.getLogger("langorch.autoscaler")
 
@@ -77,20 +79,76 @@ async def get_queue_depth_by_pool(
     Returns:
         Dictionary mapping pool_id to queue depth
     """
-    from app.db.models import RunJob, Run, Procedure
+    from app.db.models import RunJob
+
+    def _extract_channel_from_ckp_json(ckp_json: str, node_id_hint: str | None = None) -> str | None:
+        try:
+            doc = json.loads(ckp_json)
+        except Exception:
+            return None
+
+        workflow_graph = doc.get("workflow_graph") or {}
+        nodes = workflow_graph.get("nodes") or {}
+        if not isinstance(nodes, dict):
+            return None
+
+        candidate_ids: list[str] = []
+        if isinstance(node_id_hint, str) and node_id_hint:
+            candidate_ids.append(node_id_hint)
+        start_node = workflow_graph.get("start_node")
+        if isinstance(start_node, str) and start_node:
+            candidate_ids.append(start_node)
+
+        seen: set[str] = set()
+        for node_id in candidate_ids:
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            node = nodes.get(node_id)
+            if isinstance(node, dict):
+                agent = node.get("agent")
+                if isinstance(agent, str) and agent.strip():
+                    return agent.strip().lower()
+
+        return None
+
+    agent_rows = (
+        await db.execute(
+            select(AgentInstance.channel, AgentInstance.pool_id)
+            .where(AgentInstance.status == "online")
+            .where(AgentInstance.pool_id.is_not(None))
+        )
+    ).all()
+
+    channel_to_pools: dict[str, set[str]] = defaultdict(set)
+    for channel, pool_id in agent_rows:
+        if isinstance(channel, str) and channel and isinstance(pool_id, str) and pool_id:
+            channel_to_pools[channel.lower()].add(pool_id)
     
     stmt = (
-        select(Run.procedure_id, Run.procedure_version, RunJob.job_id)
+        select(Run.run_id, Run.last_node_id, Procedure.ckp_json)
         .join(RunJob, Run.run_id == RunJob.run_id)
+        .join(
+            Procedure,
+            (Procedure.procedure_id == Run.procedure_id)
+            & (Procedure.version == Run.procedure_version),
+        )
         .where(RunJob.status.in_(["queued", "retrying"]))
     )
     result = await db.execute(stmt)
     rows = result.all()
-    
-    # Map procedures to pools (simplified - in production, would need pool assignment metadata)
-    # For now, just count total queue depth
+
     queue_depth: dict[str, int] = defaultdict(int)
-    queue_depth["default"] = len(rows)
+
+    for _run_id, last_node_id, ckp_json in rows:
+        if not isinstance(ckp_json, str) or not ckp_json:
+            continue
+        channel = _extract_channel_from_ckp_json(ckp_json, last_node_id)
+        if not channel:
+            continue
+        pool_ids = channel_to_pools.get(channel, set())
+        if len(pool_ids) == 1:
+            queue_depth[next(iter(pool_ids))] += 1
     
     return dict(queue_depth)
 
@@ -195,21 +253,46 @@ async def request_pool_scale_action(
     except Exception:
         pass
     
-    # TODO: Integrate with actual infrastructure provider
-    # Examples:
-    # - Kubernetes HPA: PATCH deployment replicas
-    # - AWS ECS: UpdateService(desiredCount=target_instances)
-    # - Custom agent spawn API: POST /agents/pools/{pool_id}/scale
-    
     logger.info(
         "Autoscaler recommendation for pool %s: target_instances=%d (reason: %s)",
         pool_id,
         target_instances,
         reason,
     )
-    
-    # For now, just log the recommendation
-    # Return True to indicate the recommendation was generated successfully
+
+    webhook_url = settings.AUTOSCALER_SCALE_WEBHOOK_URL
+    if not webhook_url:
+        # No provider integration configured yet; keep logging-only behavior.
+        return True
+
+    payload = {
+        "pool_id": pool_id,
+        "target_instances": target_instances,
+        "reason": reason,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    headers = {"Content-Type": "application/json"}
+    if settings.AUTOSCALER_SCALE_WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.AUTOSCALER_SCALE_WEBHOOK_TOKEN}"
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.AUTOSCALER_SCALE_WEBHOOK_TIMEOUT_SECONDS) as client:
+            response = await client.post(webhook_url, json=payload, headers=headers)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning(
+            "Autoscaler scale action failed for pool %s via %s: %s",
+            pool_id,
+            webhook_url,
+            exc,
+        )
+        return False
+
+    logger.info(
+        "Autoscaler scale action submitted for pool %s via %s",
+        pool_id,
+        webhook_url,
+    )
     return True
 
 

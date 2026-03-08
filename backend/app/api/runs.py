@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db, async_session
-from app.db.models import RunJob, RunEvent
+from app.db.models import Run, RunJob, RunEvent
 from app.schemas.runs import ArtifactOut, RunCreate, RunDiagnostics, RunOut, CheckpointMetadata, CheckpointState
 from app.services import case_service, procedure_service, run_service
 from app.services import checkpoint_service
@@ -188,6 +188,7 @@ async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db), _principal
     await _mark_run_cancelled_db(run_id, db)
     # Also signal in-process event for immediate effect in embedded mode
     _mark_run_cancelled(run_id)
+    await run_service.cancel_pending_run_job(db, run_id)
     run = await run_service.update_run_status(db, run_id, "canceled")
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -316,7 +317,7 @@ async def workflow_callback(
     # ── State validation ─────────────────────────────────────────────────────
     if run.status != "paused":
         # If run is already completed/failed, this is a late callback - acknowledge but ignore
-        if run.status in ("completed", "failed", "cancelled"):
+        if run.status in ("completed", "failed", "canceled", "cancelled"):
             _log.warning(
                 "Late callback for terminal run: run=%s status=%s",
                 run_id, run.status,
@@ -376,6 +377,65 @@ async def workflow_callback(
         run_id, callback_status, resume_node, resume_step,
     )
 
+    transition_status = "failed" if callback_status == "failure" else "queued"
+    now_utc = datetime.now(timezone.utc)
+    transition_values = {
+        "status": transition_status,
+        "updated_at": now_utc,
+    }
+    if callback_status == "failure":
+        transition_values["ended_at"] = now_utc
+        transition_values["error_message"] = (error_msg or "Workflow callback reported failure")[:2000]
+
+    transition_result = await db.execute(
+        update(Run)
+        .where(Run.run_id == run_id, Run.status == "paused")
+        .values(**transition_values)
+    )
+    if (transition_result.rowcount or 0) == 0:
+        current_run_result = await db.execute(
+            select(Run)
+            .where(Run.run_id == run_id)
+            .limit(1)
+        )
+        current_run = current_run_result.scalar_one_or_none()
+        matching_callback_result = await db.execute(
+            select(RunEvent.event_id)
+            .where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "workflow_callback_received",
+                RunEvent.node_id == resume_node,
+                RunEvent.step_id == resume_step,
+            )
+            .limit(1)
+        )
+        if current_run is not None and matching_callback_result.scalar_one_or_none():
+            _log.warning(
+                "Duplicate callback lost atomic race: run=%s node=%s step=%s status=%s",
+                run_id, resume_node, resume_step, current_run.status,
+            )
+            return {
+                "resumed": False,
+                "status": "duplicate",
+                "run_id": run_id,
+                "message": "Callback already processed for this step"
+            }
+        if current_run is not None and current_run.status in ("completed", "failed", "canceled", "cancelled"):
+            _log.warning(
+                "Late callback after atomic transition miss: run=%s status=%s",
+                run_id, current_run.status,
+            )
+            return {
+                "resumed": False,
+                "status": current_run.status,
+                "run_id": run_id,
+                "message": f"Run already in terminal state: {current_run.status}"
+            }
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is not paused (status={getattr(current_run, 'status', 'unknown')}). Callback ignored.",
+        )
+
     # Record the callback event (this acts as idempotency marker)
     await run_service.emit_event(
         db, run_id, "workflow_callback_received",
@@ -389,7 +449,6 @@ async def workflow_callback(
 
     if callback_status == "failure":
         # Mark run as failed, don't resume
-        await run_service.update_run_status(db, run_id, "failed")
         await run_service.emit_event(
             db, run_id, "run_failed",
             payload={"reason": "workflow_callback_failure", "error": error_msg},
@@ -407,7 +466,6 @@ async def workflow_callback(
         )
 
     # Re-queue the run to resume execution from where it paused
-    await run_service.update_run_status(db, run_id, "queued")
     from app.worker.enqueue import requeue_run as _requeue
     await _requeue(db, run_id)
     await db.commit()

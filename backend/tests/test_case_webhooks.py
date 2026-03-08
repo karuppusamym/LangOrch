@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -232,6 +233,115 @@ async def test_process_pending_deliveries_retries_then_succeeds(monkeypatch):
         ).scalar_one()
         assert final_row.status == "delivered"
         assert int(final_row.attempts or 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_process_pending_deliveries_isolates_invalid_payload_rows(monkeypatch):
+    from datetime import datetime, timezone
+    from sqlalchemy import delete, select
+
+    from app.db.engine import async_session
+    from app.db.models import CaseWebhookDelivery, CaseWebhookSubscription, DeadLetterQueue
+    from app.services import case_webhook_service
+
+    posts: list[dict] = []
+
+    class _Resp:
+        def __init__(self, status_code: int = 200):
+            self.status_code = status_code
+
+    class _Client:
+        def __init__(self, timeout: float = 0):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, json: dict | None = None, headers: dict | None = None):
+            posts.append({"url": url, "json": json, "headers": headers or {}})
+            return _Resp(200)
+
+    monkeypatch.setattr(case_webhook_service.httpx, "AsyncClient", _Client)
+
+    async with async_session() as db:
+        await db.execute(delete(DeadLetterQueue))
+        await db.execute(delete(CaseWebhookDelivery))
+        await db.execute(delete(CaseWebhookSubscription))
+
+        sub = CaseWebhookSubscription(
+            event_type="case_created",
+            target_url="https://invalid-payload-test.invalid/hook",
+            enabled=True,
+        )
+        db.add(sub)
+        await db.flush()
+
+        now = datetime.now(timezone.utc)
+        db.add(
+            CaseWebhookDelivery(
+                subscription_id=sub.subscription_id,
+                case_event_id=1001,
+                case_id="case_bad_payload",
+                event_type="case_created",
+                payload_json='{"event_type":',
+                status="pending",
+                attempts=0,
+                max_attempts=1,
+                next_attempt_at=now,
+            )
+        )
+        db.add(
+            CaseWebhookDelivery(
+                subscription_id=sub.subscription_id,
+                case_event_id=1002,
+                case_id="case_good_payload",
+                event_type="case_created",
+                payload_json='{"event_type":"case_created","case_id":"case_good_payload"}',
+                status="pending",
+                attempts=0,
+                max_attempts=2,
+                next_attempt_at=now,
+            )
+        )
+        await db.commit()
+
+    result = await case_webhook_service.process_pending_deliveries(limit=10)
+
+    assert result == {"claimed": 2, "delivered": 1, "retried": 0, "failed": 1}
+    assert len(posts) == 1
+    assert posts[0]["json"]["case_id"] == "case_good_payload"
+
+    async with async_session() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(CaseWebhookDelivery).order_by(CaseWebhookDelivery.case_id.asc())
+                )
+            ).scalars().all()
+        )
+        row_by_case = {row.case_id: row for row in rows}
+        bad_row = row_by_case["case_bad_payload"]
+        good_row = row_by_case["case_good_payload"]
+
+        assert bad_row.status == "failed"
+        assert "Invalid payload JSON" in (bad_row.last_error or "")
+        assert good_row.status == "delivered"
+
+        dlq_rows = list(
+            (
+                await db.execute(
+                    select(DeadLetterQueue).where(DeadLetterQueue.entity_id == bad_row.delivery_id)
+                )
+            ).scalars().all()
+        )
+        assert len(dlq_rows) == 1
+        dlq_payload = json.loads(dlq_rows[0].payload_json)
+        assert dlq_payload["delivery_id"] == bad_row.delivery_id
+        assert dlq_payload["subscription_id"] == bad_row.subscription_id
+        assert dlq_payload["raw_payload_json"] == '{"event_type":'
 
 
 @pytest.mark.asyncio

@@ -722,10 +722,6 @@ async def execute_sequence(
                 
                     # Final failure after retries exhausted or retry not enabled
                     record_step_execution(node.node_id, "failed")
-                    if db_factory is not None and run_id:
-                        async with db_factory() as db:
-                            await _mark_step_failed(db, run_id, node.node_id, step.step_id)
-                            await db.commit()
                     # screenshot_on_fail: emit screenshot_requested event if global_config flag is set
                     _screenshot_flag = (state.get("global_config") or {}).get("screenshot_on_fail", False)
                     if _screenshot_flag and db_factory is not None and run_id:
@@ -790,6 +786,10 @@ async def execute_sequence(
                                 attempt += 1
                                 _eh_retry_step = True
                                 break
+                            if db_factory is not None and run_id:
+                                async with db_factory() as _fdb:
+                                    await _mark_step_failed(_fdb, run_id, node.node_id, step.step_id)
+                                    await _fdb.commit()
                             raise  # handler retries exhausted
 
                         # action: "screenshot_and_fail" — log then re-raise
@@ -798,10 +798,18 @@ async def execute_sequence(
                                 "screenshot_and_fail: step %s/%s",
                                 node.node_id, step.step_id,
                             )
+                            if db_factory is not None and run_id:
+                                async with db_factory() as _fdb:
+                                    await _mark_step_failed(_fdb, run_id, node.node_id, step.step_id)
+                                    await _fdb.commit()
                             raise
 
                         # action: "fail" — re-raise
                         if _eh_action == "fail":
+                            if db_factory is not None and run_id:
+                                async with db_factory() as _fdb:
+                                    await _mark_step_failed(_fdb, run_id, node.node_id, step.step_id)
+                                    await _fdb.commit()
                             raise
 
                         # action: "escalate" or "ignore" — route via fallback_node or suppress
@@ -818,6 +826,10 @@ async def execute_sequence(
                         break
 
                     if not _eh_matched:
+                        if db_factory is not None and run_id:
+                            async with db_factory() as db:
+                                await _mark_step_failed(db, run_id, node.node_id, step.step_id)
+                                await db.commit()
                         raise  # no handler matched
                     if _eh_retry_step:
                         continue  # restart while loop to retry the step
@@ -1482,6 +1494,20 @@ async def execute_subflow(
     child_final = await _invoke_with_optional_checkpointer(child_graph, child_initial, subflow_thread_id)
 
     if child_final.get("error"):
+        async with db_factory() as db:
+            await run_service.emit_event(
+                db,
+                run_id,
+                "subflow_failed",
+                node_id=node.node_id,
+                payload={
+                    "procedure_id": child_ir.procedure_id,
+                    "version": child_ir.version,
+                    "on_failure": (payload.on_failure or "fail_parent").lower(),
+                    "error": child_final.get("error"),
+                },
+            )
+            await db.commit()
         on_failure = (payload.on_failure or "fail_parent").lower()
         if on_failure == "continue":
             return {

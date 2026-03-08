@@ -191,6 +191,34 @@ const TYPE_BG: Record<string, string> = {
   terminate: "#6B7280",
 };
 
+const TYPE_THEME: Record<string, {
+  accent: string;
+  iconBg: string;
+  tint: string;
+  text: string;
+  border: string;
+}> = {
+  sequence: { accent: "bg-blue-500", iconBg: "bg-blue-500", tint: "bg-blue-50", text: "text-blue-700", border: "border-blue-500" },
+  logic: { accent: "bg-amber-500", iconBg: "bg-amber-500", tint: "bg-amber-50", text: "text-amber-700", border: "border-amber-500" },
+  loop: { accent: "bg-violet-500", iconBg: "bg-violet-500", tint: "bg-violet-50", text: "text-violet-700", border: "border-violet-500" },
+  parallel: { accent: "bg-cyan-500", iconBg: "bg-cyan-500", tint: "bg-cyan-50", text: "text-cyan-700", border: "border-cyan-500" },
+  human_approval: { accent: "bg-red-500", iconBg: "bg-red-500", tint: "bg-red-50", text: "text-red-700", border: "border-red-500" },
+  llm_action: { accent: "bg-emerald-500", iconBg: "bg-emerald-500", tint: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-500" },
+  processing: { accent: "bg-indigo-500", iconBg: "bg-indigo-500", tint: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-500" },
+  verification: { accent: "bg-orange-500", iconBg: "bg-orange-500", tint: "bg-orange-50", text: "text-orange-700", border: "border-orange-500" },
+  transform: { accent: "bg-pink-500", iconBg: "bg-pink-500", tint: "bg-pink-50", text: "text-pink-700", border: "border-pink-500" },
+  subflow: { accent: "bg-teal-500", iconBg: "bg-teal-500", tint: "bg-teal-50", text: "text-teal-700", border: "border-teal-500" },
+  terminate: { accent: "bg-gray-500", iconBg: "bg-gray-500", tint: "bg-gray-100", text: "text-gray-700", border: "border-gray-500" },
+};
+
+const DEFAULT_NODE_THEME = {
+  accent: "bg-gray-400",
+  iconBg: "bg-gray-400",
+  tint: "bg-gray-100",
+  text: "text-gray-700",
+  border: "border-gray-400",
+};
+
 // ── 3-tier node categories ────────────────────────────────────────────────────
 type NodeCategory = "deterministic" | "intelligent" | "control";
 
@@ -227,6 +255,12 @@ const CATEGORY_META: Record<NodeCategory, { label: string; color: string; descri
     description: "Logic, loops, approvals, human-in-the-loop",
     badge: "bg-orange-100 text-orange-700",
   },
+};
+
+const CATEGORY_THEME: Record<NodeCategory, { bg: string; dot: string; text: string }> = {
+  deterministic: { bg: "bg-blue-50", dot: "bg-blue-500", text: "text-blue-700" },
+  intelligence: { bg: "bg-violet-50", dot: "bg-violet-500", text: "text-violet-700" },
+  control: { bg: "bg-orange-50", dot: "bg-orange-500", text: "text-orange-700" },
 };
 
 const NODE_PALETTE_GROUPS: Array<{ category: NodeCategory; types: CkpNodeType[] }> = [
@@ -455,34 +489,27 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
   const icon = TYPE_ICONS[nodeType] ?? "●";
   const category = TYPE_CATEGORY[nodeType];
   const catMeta = category ? CATEGORY_META[category] : null;
+  const theme = TYPE_THEME[nodeType] ?? DEFAULT_NODE_THEME;
+  const categoryTheme = category ? CATEGORY_THEME[category] : null;
 
   return (
     <>
       <Handle
         type="target"
         position={Position.Top}
-        style={{ background: "#D1D5DB", width: 10, height: 10, border: "2px solid #fff" }}
+        className="!h-[10px] !w-[10px] !border-2 !border-white !bg-gray-300"
       />
       <div
-        className="relative rounded-xl border-2 bg-white transition-shadow duration-150"
-        style={{ // NOSONAR
-          borderColor: selected ? "#6366F1" : color,
-          boxShadow: selected
-            ? "0 0 0 3px rgba(99,102,241,0.3), 0 4px 12px rgba(0,0,0,0.12)"
-            : "0 2px 8px rgba(0,0,0,0.07)",
-          width: NODE_W,
-          minHeight: NODE_H,
-        }}
+        className={`relative w-[244px] min-h-[116px] rounded-xl border-2 bg-white transition-shadow duration-150 ${selected ? "border-indigo-500 shadow-[0_0_0_3px_rgba(99,102,241,0.3),0_4px_12px_rgba(0,0,0,0.12)]" : `${theme.border} shadow-[0_2px_8px_rgba(0,0,0,0.07)]`}`}
       >
         {/* Accent stripe */}
-        <div className="h-[6px] w-full rounded-t-[10px]" style={{ background: color }} /> {/* NOSONAR */}
+        <div className={`h-[6px] w-full rounded-t-[10px] ${theme.accent}`} />
 
         <div className="px-3 pt-2 pb-3">
           <div className="flex items-center justify-between gap-1">
             <div className="flex items-center gap-1.5 min-w-0">
               <span
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] text-white"
-                style={{ background: color }} // NOSONAR
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] text-white ${theme.iconBg}`}
               >
                 {icon}
               </span>
@@ -502,8 +529,7 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
             )}
             {catMeta && (
               <span
-                className="rounded-full px-1.5 py-0.5 text-[8px] font-bold"
-                style={{ background: `${catMeta.color}20`, color: catMeta.color }} // NOSONAR
+                className={`rounded-full px-1.5 py-0.5 text-[8px] font-bold ${categoryTheme?.bg ?? "bg-gray-100"} ${categoryTheme?.text ?? "text-gray-700"}`}
               >
                 {catMeta.label.slice(0, 3).toUpperCase()}
               </span>
@@ -515,8 +541,7 @@ function BuilderNode({ data, selected }: NodeProps<Node<BuilderNodeData>>) {
           )}
           {agent && (
             <span
-              className="mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-              style={{ background: `${color}18`, color }} // NOSONAR
+              className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${theme.tint} ${theme.text}`}
             >
               🤖 {agent}
             </span>
@@ -1554,13 +1579,11 @@ function NodePalette({
         return (
           <div key={category} className="mb-2">
             <div
-              className="flex items-center gap-1.5 px-1.5 py-1 rounded-md mb-1"
-              style={{ background: `${meta.color}15` }} // NOSONAR
+              className={`mb-1 flex items-center gap-1.5 rounded-md px-1.5 py-1 ${CATEGORY_THEME[category].bg}`}
             >
-              <div className="h-2 w-2 rounded-full shrink-0" style={{ background: meta.color }} /> {/* NOSONAR */}
+              <div className={`h-2 w-2 rounded-full shrink-0 ${CATEGORY_THEME[category].dot}`} />
               <span
-                className="text-[9px] font-bold uppercase tracking-widest"
-                style={{ color: meta.color }} // NOSONAR
+                className={`text-[9px] font-bold uppercase tracking-widest ${CATEGORY_THEME[category].text}`}
               >
                 {meta.label}
               </span>
@@ -1571,8 +1594,7 @@ function NodePalette({
                   key={t}
                   onClick={() => onAdd(t)}
                   title={meta.description}
-                  className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-left text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors"
-                  style={{ borderLeftColor: TYPE_BG[t], borderLeftWidth: 3 }} // NOSONAR
+                  className={`flex items-center gap-2 rounded-lg border border-gray-200 border-l-[3px] bg-white px-2 py-1.5 text-left text-xs font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 ${(TYPE_THEME[t] ?? DEFAULT_NODE_THEME).border}`}
                 >
                   <span className="text-sm leading-none">{TYPE_ICONS[t]}</span>
                   <span className="capitalize text-[11px]">{t.replace(/_/g, " ")}</span>

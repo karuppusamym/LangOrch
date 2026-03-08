@@ -275,6 +275,71 @@ async def test_sync_schedules_runs_when_leader():
     assert list_called, "list_trigger_registrations should be called when leader"
 
 
+@pytest.mark.asyncio
+async def test_sync_schedules_keeps_tracked_job_when_remove_fails():
+    """Failed stale-job removal should stay tracked so cleanup retries next cycle."""
+    from app.runtime.scheduler import TriggerScheduler
+    import app.runtime.leader as leader_mod
+
+    ts = TriggerScheduler()
+    ts._running_jobs = {"job-1": "proc-a|1.0.0"}
+    ts._scheduler = MagicMock()
+    ts._scheduler.get_job.return_value = object()
+    ts._scheduler.remove_job.side_effect = RuntimeError("scheduler down")
+
+    mock_leader = MagicMock()
+    mock_leader.is_leader = True
+
+    @asynccontextmanager
+    async def _mock_session():
+        yield AsyncMock()
+
+    async def _list(_db, enabled_only=True):
+        return []
+
+    with (
+        patch.object(leader_mod, "leader_election", mock_leader),
+        patch("app.services.trigger_service.list_trigger_registrations", _list),
+        patch("app.db.engine.async_session", _mock_session),
+    ):
+        await ts.sync_schedules()
+
+    assert ts._running_jobs == {"job-1": "proc-a|1.0.0"}
+    ts._scheduler.remove_job.assert_called_once_with("job-1")
+
+
+@pytest.mark.asyncio
+async def test_sync_schedules_drops_tracking_for_missing_scheduler_job():
+    """Missing APScheduler jobs should be removed from internal tracking."""
+    from app.runtime.scheduler import TriggerScheduler
+    import app.runtime.leader as leader_mod
+
+    ts = TriggerScheduler()
+    ts._running_jobs = {"job-1": "proc-a|1.0.0"}
+    ts._scheduler = MagicMock()
+    ts._scheduler.get_job.return_value = None
+
+    mock_leader = MagicMock()
+    mock_leader.is_leader = True
+
+    @asynccontextmanager
+    async def _mock_session():
+        yield AsyncMock()
+
+    async def _list(_db, enabled_only=True):
+        return []
+
+    with (
+        patch.object(leader_mod, "leader_election", mock_leader),
+        patch("app.services.trigger_service.list_trigger_registrations", _list),
+        patch("app.db.engine.async_session", _mock_session),
+    ):
+        await ts.sync_schedules()
+
+    assert ts._running_jobs == {}
+    ts._scheduler.remove_job.assert_not_called()
+
+
 # ── 12. _fire_scheduled_trigger skips when not leader ────────────────────────
 
 @pytest.mark.asyncio

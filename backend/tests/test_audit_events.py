@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import pytest
 import httpx
 from httpx import ASGITransport
@@ -126,21 +127,27 @@ async def test_user_create_emits_audit(client: httpx.AsyncClient):
 async def test_secret_create_emits_audit(client: httpx.AsyncClient):
     """Creating a secret via POST /api/secrets should emit a secret_mgmt:create audit event."""
     import uuid
+    pytest.importorskip("cryptography.fernet")
+    from cryptography.fernet import Fernet
     name = f"audit_secret_{uuid.uuid4().hex[:8]}"
+    os.environ["SECRETS_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
-    resp = await client.post(
-        "/api/secrets",
-        json={"name": name, "value": "s3cr3t"},
-    )
-    if resp.status_code in (401, 403):
-        pytest.skip("Auth required for secret creation, skipping audit check")
-    assert resp.status_code in (200, 201)
+    try:
+        resp = await client.post(
+            "/api/secrets",
+            json={"name": name, "value": "s3cr3t"},
+        )
+        if resp.status_code in (401, 403):
+            pytest.skip("Auth required for secret creation, skipping audit check")
+        assert resp.status_code in (200, 201)
 
-    audit_resp = await client.get("/api/audit", params={"category": "secret_mgmt", "action": "create"})
-    assert audit_resp.status_code == 200
-    events = audit_resp.json()["events"]
-    assert any(e["resource_id"] == name for e in events), \
-        f"Expected audit event for secret '{name}' creation"
+        audit_resp = await client.get("/api/audit", params={"category": "secret_mgmt", "action": "create"})
+        assert audit_resp.status_code == 200
+        events = audit_resp.json()["events"]
+        assert any(e["resource_id"] == name for e in events), \
+            f"Expected audit event for secret '{name}' creation"
 
-    # Cleanup
-    await client.delete(f"/api/secrets/{name}")
+        # Cleanup
+        await client.delete(f"/api/secrets/{name}")
+    finally:
+        os.environ.pop("SECRETS_ENCRYPTION_KEY", None)

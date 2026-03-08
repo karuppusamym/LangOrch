@@ -12,9 +12,14 @@ Five-tier role hierarchy:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
+import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +29,9 @@ from app.db.engine import get_db
 
 logger = logging.getLogger("langorch.auth")
 router = APIRouter()
+
+_SSO_STATE_PURPOSE = "sso_oauth_state"
+_SSO_STATE_TTL_SECONDS = 600
 
 
 # -- Shared helpers --
@@ -44,6 +52,78 @@ def _issue_jwt(identity: str, roles: list[str], expire_minutes: int, secret: str
         "exp": now + timedelta(minutes=expire_minutes),
     }
     return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def _issue_sso_state(secret: str, nonce: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "purpose": _SSO_STATE_PURPOSE,
+        "nonce": nonce,
+        "iat": now,
+        "exp": now + timedelta(seconds=_SSO_STATE_TTL_SECONDS),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def _decode_sso_state(state: str, secret: str) -> dict:
+    try:
+        payload = jwt.decode(
+            state,
+            secret,
+            algorithms=["HS256"],
+            options={"require": ["exp", "iat", "nonce"]},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid or expired SSO state") from exc
+    if payload.get("purpose") != _SSO_STATE_PURPOSE:
+        raise HTTPException(status_code=400, detail="Invalid SSO state")
+    return payload
+
+
+async def _fetch_oidc_configuration(authority: str) -> dict:
+    discovery_url = f"{authority.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(discovery_url)
+            response.raise_for_status()
+            config = response.json()
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch OIDC configuration from %s: %s", discovery_url, exc)
+        raise HTTPException(status_code=400, detail="Failed to fetch SSO configuration") from exc
+
+    if not config.get("jwks_uri"):
+        raise HTTPException(status_code=400, detail="SSO provider configuration missing jwks_uri")
+    return config
+
+
+async def _verify_sso_id_token(
+    id_token: str,
+    authority: str,
+    client_id: str,
+    expected_nonce: str,
+) -> dict:
+    oidc_config = await _fetch_oidc_configuration(authority)
+
+    try:
+        jwk_client = jwt.PyJWKClient(oidc_config["jwks_uri"])
+        signing_key = await asyncio.to_thread(jwk_client.get_signing_key_from_jwt, id_token)
+        payload = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256", "RS384", "RS512"],
+            audience=client_id,
+            issuer=oidc_config.get("issuer"),
+            options={"require": ["exp", "iat", "sub"]},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("SSO ID token validation failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Invalid ID token") from exc
+
+    if payload.get("nonce") != expected_nonce:
+        raise HTTPException(status_code=400, detail="Invalid ID token nonce")
+    return payload
 
 
 # -- Schemas --
@@ -209,14 +289,13 @@ async def sso_login():
     """Redirect the user to the configured SSO provider."""
     from fastapi.responses import RedirectResponse
     from app.config import settings
-    import secrets
-    from urllib.parse import urlencode
     
     if not settings.SSO_ENABLED:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="SSO is not enabled")
     
-    state = secrets.token_urlsafe(16)
+    nonce = secrets.token_urlsafe(24)
+    state = _issue_sso_state(settings.AUTH_SECRET_KEY, nonce)
     authority = (settings.SSO_AUTHORITY or "").rstrip("/")
     auth_url = f"{authority}/oauth2/v2.0/authorize"
     
@@ -227,6 +306,7 @@ async def sso_login():
         "response_mode": "query",
         "scope": "openid profile email",
         "state": state,
+        "nonce": nonce,
     }
     url = f"{auth_url}?{urlencode(params)}"
     return RedirectResponse(url)
@@ -249,12 +329,12 @@ async def sso_callback(
     from app.db.models import User
     from app.services.user_service import create_user
     from sqlalchemy import select
-    import httpx
-    import jwt
-    import secrets
 
     if not settings.SSO_ENABLED:
         raise HTTPException(status_code=400, detail="SSO is not enabled")
+
+    state_payload = _decode_sso_state(state, settings.AUTH_SECRET_KEY)
+    expected_nonce = state_payload["nonce"]
         
     authority = (settings.SSO_AUTHORITY or "").rstrip("/")
     token_url = f"{authority}/oauth2/v2.0/token"
@@ -278,8 +358,13 @@ async def sso_callback(
     id_token = token_data.get("id_token")
     if not id_token:
         raise HTTPException(status_code=400, detail="No id_token received from SSO provider")
-        
-    payload = jwt.decode(id_token, options={"verify_signature": False})
+
+    payload = await _verify_sso_id_token(
+        id_token=id_token,
+        authority=authority,
+        client_id=settings.SSO_CLIENT_ID or "",
+        expected_nonce=expected_nonce,
+    )
     
     sso_sub = payload.get("sub")
     email = payload.get("email") or payload.get("preferred_username") or f"{sso_sub}@sso.local"

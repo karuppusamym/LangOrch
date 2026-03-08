@@ -73,8 +73,12 @@ class LoadTester:
         
         try:
             response = await self.client.post(
-                f"/api/procedures/{procedure_id}/run",
-                json={"vars": {}},
+                "/api/runs",
+                json={
+                    "procedure_id": procedure_id,
+                    "procedure_version": "1.0.0",
+                    "input_vars": {},
+                },
             )
             elapsed = time.perf_counter() - start_time
             
