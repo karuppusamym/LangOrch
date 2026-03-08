@@ -25,6 +25,7 @@ from app.api.orchestrators import router as orchestrators_router
 from app.api.catalog import router as catalog_router
 from app.api.leases import router as leases_router
 from app.api.projects import router as projects_router
+from app.api.cases import router as cases_router
 from app.api.triggers import router as triggers_router
 from app.api.artifacts import router as artifacts_router
 from app.api.auth import router as auth_router
@@ -33,11 +34,13 @@ from app.api.secrets import router as secrets_router
 from app.api.config import router as config_router
 from app.api.audit import router as audit_router
 from app.api.agent_credentials import router as agent_credentials_router
+from app.api.dlq import router as dlq_router
 
 from app.utils.logger import setup_logger
 logger = setup_logger(log_format=settings.LOG_FORMAT, log_level="DEBUG" if settings.DEBUG else "INFO")
 _EXPIRY_POLL_INTERVAL = 30  # seconds
 _HEALTH_POLL_INTERVAL = 60  # seconds
+_AUTOSCALER_POLL_INTERVAL = 120  # seconds (every 2 minutes)
 
 
 _CIRCUIT_OPEN_THRESHOLD = 3  # consecutive failures before opening circuit
@@ -160,8 +163,56 @@ async def _workflow_timeout_loop() -> None:
             logger.exception("Error in workflow timeout loop")
 
 
+async def _case_sla_loop() -> None:
+    """Background task: mark overdue cases as SLA breached (leader-only)."""
+    from app.runtime.leader import leader_election
+    from app.services.case_service import mark_sla_breaches
+
+    while True:
+        await asyncio.sleep(settings.CASE_SLA_POLL_INTERVAL_SECONDS)
+        if not settings.CASE_SLA_AUTOMATION_ENABLED:
+            continue
+        if not leader_election.is_leader:
+            continue
+        try:
+            async with async_session() as db:
+                breached = await mark_sla_breaches(db)
+                if breached:
+                    await db.commit()
+                    logger.info("Auto-marked %d case(s) as SLA breached", len(breached))
+        except Exception:
+            logger.exception("Error in case SLA loop")
+
+
+async def _case_webhook_delivery_loop() -> None:
+    """Background task: process durable case webhook deliveries (leader-only)."""
+    from app.runtime.leader import leader_election
+    from app.services.case_webhook_service import process_pending_deliveries
+
+    while True:
+        await asyncio.sleep(settings.CASE_WEBHOOK_DELIVERY_POLL_INTERVAL_SECONDS)
+        if not settings.CASE_WEBHOOK_DELIVERY_ENABLED:
+            continue
+        if not leader_election.is_leader:
+            continue
+        try:
+            summary = await process_pending_deliveries(settings.CASE_WEBHOOK_DELIVERY_BATCH_SIZE)
+            if summary.get("claimed", 0):
+                logger.info(
+                    "Case webhook outbox: claimed=%d delivered=%d retried=%d failed=%d",
+                    summary.get("claimed", 0),
+                    summary.get("delivered", 0),
+                    summary.get("retried", 0),
+                    summary.get("failed", 0),
+                )
+        except Exception:
+            logger.exception("Error in case webhook delivery loop")
+
+
 _RETENTION_POLL_INTERVAL = 3600  # hourly
 _FILE_WATCH_POLL_INTERVAL = 60   # every minute
+_EVENT_TRIGGER_POLL_INTERVAL = 15  # seconds
+_EVENT_TRIGGER_BATCH_SIZE = 5
 
 
 async def _checkpoint_retention_loop() -> None:
@@ -331,6 +382,57 @@ async def _config_sync_loop() -> None:
             logger.debug("Error in config sync loop: %s", exc)
 
 
+async def _autoscaler_evaluation_loop() -> None:
+    """Background task: evaluate autoscaling decisions for agent pools based on saturation events.
+    
+    Only the leader runs this loop to avoid duplicate scaling requests.
+    """
+    from app.runtime.leader import leader_election
+    from app.services.autoscaler_service import run_autoscaler_evaluation
+    from sqlalchemy import select, func
+    from app.db.models import AgentInstance
+
+    while True:
+        await asyncio.sleep(_AUTOSCALER_POLL_INTERVAL)
+        if not leader_election.is_leader:
+            logger.debug("autoscaler_loop: not leader — skipping")
+            continue
+        
+        try:
+            async with async_session() as db:
+                # Get distinct pool_ids from agent instances
+                result = await db.execute(
+                    select(AgentInstance.pool_id, func.count(AgentInstance.agent_id))
+                    .where(AgentInstance.pool_id.is_not(None))
+                    .group_by(AgentInstance.pool_id)
+                )
+                pools = result.all()
+                
+                for pool_id, instance_count in pools:
+                    if not pool_id:
+                        continue
+                    
+                    try:
+                        evaluation = await run_autoscaler_evaluation(
+                            db,
+                            pool_id,
+                            current_instances=instance_count,
+                        )
+                        
+                        if evaluation.get("decision") != "no_change":
+                            logger.info(
+                                "Autoscaler: pool=%s decision=%s target=%d reason=%s",
+                                pool_id,
+                                evaluation.get("decision"),
+                                evaluation.get("target_instances"),
+                                evaluation.get("reason"),
+                            )
+                    except Exception:
+                        logger.exception("Autoscaler: error evaluating pool %s", pool_id)
+        except Exception:
+            logger.exception("Error in autoscaler evaluation loop")
+
+
 async def _file_watch_trigger_loop() -> None:
     """Background task: poll file_watch trigger registrations and fire runs when files change.
 
@@ -410,6 +512,130 @@ async def _file_watch_trigger_loop() -> None:
             logger.exception("Error in file_watch trigger loop")
 
 
+async def _event_trigger_loop() -> None:
+    """Background task: consume `type: event` trigger sources and fire runs.
+
+    Supported sources are adapter-driven (Kafka/SQS style) and are resolved from
+    `TriggerRegistration.event_source`.
+
+    Only the current scheduler leader runs this loop.  Non-leaders skip each
+    cycle to avoid duplicate consumption.
+    """
+    import json
+    from sqlalchemy import select
+    from app.db.models import TriggerRegistration
+    from app.runtime.leader import leader_election
+    from app.runtime import event_bus_adapters
+    from app.services import trigger_service
+
+    while True:
+        await asyncio.sleep(_EVENT_TRIGGER_POLL_INTERVAL)
+        if not leader_election.is_leader:
+            logger.debug("event_trigger_loop: not leader — skipping")
+            continue
+
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(TriggerRegistration).where(
+                        TriggerRegistration.trigger_type == "event",
+                        TriggerRegistration.enabled == True,  # noqa: E712
+                    )
+                )
+                registrations = list(result.scalars().all())
+
+            for reg in registrations:
+                source = reg.event_source
+                if not source:
+                    continue
+
+                try:
+                    events = await event_bus_adapters.poll_events(
+                        source,
+                        max_messages=_EVENT_TRIGGER_BATCH_SIZE,
+                    )
+                except Exception:
+                    logger.exception(
+                        "event_trigger: poll failed for source=%s (proc=%s v=%s)",
+                        source, reg.procedure_id, reg.version,
+                    )
+                    continue
+
+                for event in events:
+                    try:
+                        payload = event.payload if isinstance(event.payload, dict) else {"payload": event.payload}
+                        payload_hash = trigger_service.compute_payload_hash(
+                            json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+                        )
+
+                        if reg.dedupe_window_seconds > 0:
+                            async with async_session() as db:
+                                existing_run_id = await trigger_service.check_dedupe(
+                                    db,
+                                    reg.procedure_id,
+                                    payload_hash,
+                                    reg.dedupe_window_seconds,
+                                )
+                            if existing_run_id:
+                                await event_bus_adapters.ack_event(source, event)
+                                logger.info(
+                                    "event_trigger dedupe hit for %s (existing run=%s)",
+                                    reg.procedure_id,
+                                    existing_run_id,
+                                )
+                                continue
+
+                        try:
+                            async with async_session() as db:
+                                run = await trigger_service.fire_trigger(
+                                    db=db,
+                                    procedure_id=reg.procedure_id,
+                                    version=reg.version,
+                                    trigger_type="event",
+                                    triggered_by=source,
+                                    input_vars={
+                                        "event_source": source,
+                                        "event_message_id": event.message_id,
+                                        "event_payload": payload,
+                                        "event_attributes": event.attributes,
+                                    },
+                                )
+                                if reg.dedupe_window_seconds > 0:
+                                    await trigger_service.record_dedupe(
+                                        db,
+                                        reg.procedure_id,
+                                        run.run_id,
+                                        payload_hash,
+                                    )
+                                await db.commit()
+
+                            await event_bus_adapters.ack_event(source, event)
+                            # Run is enqueued by trigger_service.fire_trigger();
+                            # worker loop will execute it.
+                        except RuntimeError as exc:
+                            # Concurrency guard hit; do not ACK so source can redeliver later.
+                            logger.info(
+                                "event_trigger dropped for %s v%s: %s",
+                                reg.procedure_id,
+                                reg.version,
+                                exc,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "event_trigger failed for %s v%s",
+                                reg.procedure_id,
+                                reg.version,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "event_trigger: failed to process message for %s v%s",
+                            reg.procedure_id,
+                            reg.version,
+                        )
+        except Exception:
+            logger.exception("Error in event trigger loop")
+
+
 async def _metrics_push_loop() -> None:
     """Background task: push Prometheus metrics to a Pushgateway on a fixed interval.
 
@@ -468,6 +694,10 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE runs ADD COLUMN trigger_type VARCHAR(32)",
             "ALTER TABLE runs ADD COLUMN triggered_by VARCHAR(256)",
             "ALTER TABLE runs ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE runs ADD COLUMN case_id VARCHAR(64)",
+            "ALTER TABLE cases ADD COLUMN case_type VARCHAR(128)",
+            "ALTER TABLE cases ADD COLUMN sla_due_at DATETIME",
+            "ALTER TABLE cases ADD COLUMN sla_breached_at DATETIME",
             "ALTER TABLE agent_instances ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
             "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
             "ALTER TABLE agent_instances ADD COLUMN last_heartbeat_at DATETIME",
@@ -516,6 +746,104 @@ async def lifespan(app: FastAPI):
                 "  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
                 ")"
             ),
+            (
+                "CREATE TABLE IF NOT EXISTS cases ("
+                "  case_id VARCHAR(64) PRIMARY KEY, "
+                "  project_id VARCHAR(64), "
+                "  external_ref VARCHAR(256), "
+                "  case_type VARCHAR(128), "
+                "  title VARCHAR(256) NOT NULL, "
+                "  description TEXT, "
+                "  status VARCHAR(32) NOT NULL DEFAULT 'open', "
+                "  priority VARCHAR(32) NOT NULL DEFAULT 'normal', "
+                "  owner VARCHAR(256), "
+                "  sla_due_at DATETIME, "
+                "  sla_breached_at DATETIME, "
+                "  tags_json TEXT, "
+                "  metadata_json TEXT, "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS case_events ("
+                "  event_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "  case_id VARCHAR(64) NOT NULL, "
+                "  ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                "  event_type VARCHAR(64) NOT NULL, "
+                "  actor VARCHAR(256), "
+                "  payload_json TEXT"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS case_sla_policies ("
+                "  policy_id VARCHAR(64) PRIMARY KEY, "
+                "  name VARCHAR(256) NOT NULL, "
+                "  project_id VARCHAR(64), "
+                "  case_type VARCHAR(128), "
+                "  priority VARCHAR(32), "
+                "  due_minutes INTEGER NOT NULL, "
+                "  breach_status VARCHAR(32) NOT NULL DEFAULT 'escalated', "
+                "  enabled BOOLEAN NOT NULL DEFAULT 1, "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS case_webhook_subscriptions ("
+                "  subscription_id VARCHAR(64) PRIMARY KEY, "
+                "  event_type VARCHAR(64) NOT NULL, "
+                "  target_url TEXT NOT NULL, "
+                "  project_id VARCHAR(64), "
+                "  secret_env_var VARCHAR(256), "
+                "  enabled BOOLEAN NOT NULL DEFAULT 1, "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS case_webhook_deliveries ("
+                "  delivery_id VARCHAR(64) PRIMARY KEY, "
+                "  subscription_id VARCHAR(64) NOT NULL, "
+                "  case_event_id INTEGER, "
+                "  case_id VARCHAR(64), "
+                "  project_id VARCHAR(64), "
+                "  event_type VARCHAR(64) NOT NULL, "
+                "  payload_json TEXT NOT NULL, "
+                "  status VARCHAR(32) NOT NULL DEFAULT 'pending', "
+                "  attempts INTEGER NOT NULL DEFAULT 0, "
+                "  max_attempts INTEGER NOT NULL DEFAULT 5, "
+                "  next_attempt_at DATETIME NOT NULL, "
+                "  last_status_code INTEGER, "
+                "  last_error TEXT, "
+                "  delivered_at DATETIME, "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
+            "CREATE INDEX IF NOT EXISTS ix_cases_external_ref ON cases (external_ref)",
+            "CREATE INDEX IF NOT EXISTS ix_cases_case_type ON cases (case_type)",
+            "CREATE INDEX IF NOT EXISTS ix_cases_project_created_at ON cases (project_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_cases_status_created_at ON cases (status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_cases_sla_due_status ON cases (sla_due_at, status)",
+            "CREATE INDEX IF NOT EXISTS ix_case_events_case_id ON case_events (case_id)",
+            "CREATE INDEX IF NOT EXISTS ix_case_events_case_ts ON case_events (case_id, ts)",
+            "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_project ON case_sla_policies (project_id)",
+            "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_case_type ON case_sla_policies (case_type)",
+            "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_priority ON case_sla_policies (priority)",
+            "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_enabled ON case_sla_policies (enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_subscriptions_event_type ON case_webhook_subscriptions (event_type)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_subscriptions_project_id ON case_webhook_subscriptions (project_id)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_status_next ON case_webhook_deliveries (status, next_attempt_at)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_subscription ON case_webhook_deliveries (subscription_id)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_event_type ON case_webhook_deliveries (event_type)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_status_created_at ON case_webhook_deliveries (status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_status_updated_at ON case_webhook_deliveries (status, updated_at)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_status_attempts ON case_webhook_deliveries (status, attempts)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_case_status_created_at ON case_webhook_deliveries (case_id, status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_subscription_status_created_at ON case_webhook_deliveries (subscription_id, status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_event_status_created_at ON case_webhook_deliveries (event_type, status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_runs_case_created_at ON runs (case_id, created_at)",
             # Batch 38: persistent agent dispatch counters
             (
                 "CREATE TABLE IF NOT EXISTS agent_dispatch_counters ("
@@ -524,13 +852,72 @@ async def lifespan(app: FastAPI):
                 "  updated_at DATETIME NOT NULL"
                 ")"
             ),
+            # Phase 1: Deployment history and canary routing
+            (
+                "CREATE TABLE IF NOT EXISTS procedure_deployment_history ("
+                "  deployment_id VARCHAR(64) PRIMARY KEY, "
+                "  procedure_id VARCHAR(256) NOT NULL, "
+                "  action VARCHAR(32) NOT NULL, "
+                "  target_channel VARCHAR(16) NOT NULL, "
+                "  deployed_version VARCHAR(64) NOT NULL, "
+                "  replaced_version VARCHAR(64), "
+                "  deployed_by VARCHAR(256) NOT NULL, "
+                "  deployed_at DATETIME NOT NULL, "
+                "  reason TEXT, "
+                "  status VARCHAR(32) NOT NULL DEFAULT 'success'"
+                ")"
+            ),
+            "CREATE INDEX IF NOT EXISTS ix_proc_deploy_procedure_id ON procedure_deployment_history (procedure_id)",
+            "CREATE INDEX IF NOT EXISTS ix_proc_deploy_channel ON procedure_deployment_history (target_channel)",
+            "CREATE INDEX IF NOT EXISTS ix_proc_deploy_action_ts ON procedure_deployment_history (action, deployed_at)",
+            "CREATE INDEX IF NOT EXISTS ix_proc_deploy_proc_channel_ts ON procedure_deployment_history (procedure_id, target_channel, deployed_at)",
+            (
+                "CREATE TABLE IF NOT EXISTS canary_deployments ("
+                "  canary_id VARCHAR(64) PRIMARY KEY, "
+                "  procedure_id VARCHAR(256) NOT NULL, "
+                "  release_channel VARCHAR(16) NOT NULL, "
+                "  canary_version VARCHAR(64) NOT NULL, "
+                "  stable_version VARCHAR(64) NOT NULL, "
+                "  traffic_percent INTEGER NOT NULL DEFAULT 10, "
+                "  status VARCHAR(32) NOT NULL DEFAULT 'active', "
+                "  route_filter_json TEXT, "
+                "  rollback_config_json TEXT, "
+                "  canary_run_count INTEGER NOT NULL DEFAULT 0, "
+                "  canary_failure_count INTEGER NOT NULL DEFAULT 0, "
+                "  stable_run_count INTEGER NOT NULL DEFAULT 0, "
+                "  stable_failure_count INTEGER NOT NULL DEFAULT 0, "
+                "  created_by VARCHAR(256) NOT NULL, "
+                "  created_at DATETIME NOT NULL, "
+                "  completed_at DATETIME, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
+            "CREATE INDEX IF NOT EXISTS ix_canary_procedure_channel ON canary_deployments (procedure_id, release_channel)",
+            "CREATE INDEX IF NOT EXISTS ix_canary_status ON canary_deployments (status)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_canary_proc_channel ON canary_deployments (procedure_id, release_channel)",
         ]
+        migration_successes = 0
+        migration_skips = 0
+        migration_errors = 0
         async with engine.begin() as conn:
             for stmt in _new_cols:
                 try:
                     await conn.execute(__import__("sqlalchemy").text(stmt))
-                except Exception:
-                    pass  # column already exists — ignore
+                    migration_successes += 1
+                except Exception as _migration_exc:
+                    migration_skips += 1
+                    error_str = str(_migration_exc).lower()
+                    if "duplicate column" in error_str or "already exists" in error_str:
+                        logger.debug("Migration skipped (already exists): %s...", stmt[:60])
+                    else:
+                        migration_errors += 1
+                        logger.warning("Migration failed: %s | Error: %s", stmt[:60], _migration_exc)
+        
+        if migration_successes > 0 or migration_errors > 0:
+            logger.info(
+                "SQLite migrations: %d succeeded, %d skipped (already exist), %d errors",
+                migration_successes, migration_skips, migration_errors
+            )
                     
     # Load persistent system settings overrides from DB into the settings singleton
     try:
@@ -540,13 +927,20 @@ async def lifespan(app: FastAPI):
         import json
         async with _asm_cfg() as _db_cfg:
             result = await _db_cfg.execute(__import__("sqlalchemy").text("SELECT key, value_json FROM system_settings"))
+            config_loaded = 0
+            config_errors = 0
             for key, value_json in result.all():
                 try:
                     val = json.loads(value_json)
                     setattr(settings, key, val)
+                    config_loaded += 1
                     logger.debug("Loaded config override from DB: %s", key)
-                except Exception:
-                    pass
+                except Exception as _cfg_exc:
+                    config_errors += 1
+                    logger.warning("Failed to load config override for key '%s': %s", key, _cfg_exc)
+            
+            if config_loaded > 0:
+                logger.info("Loaded %d config overrides from DB (%d errors)", config_loaded, config_errors)
             
             # Load secure API keys
             try:
@@ -555,9 +949,9 @@ async def lifespan(app: FastAPI):
                 entry = sec_res.scalar_one_or_none()
                 if entry:
                     settings.LLM_API_KEY = _decrypt(entry.encrypted_value)
-                    logger.debug("Loaded secure LLM_API_KEY from DB")
+                    logger.info("Loaded secure LLM_API_KEY from DB")
             except Exception as _sec_e:
-                logger.debug("Failed to load secure LLM_API_KEY: %s", _sec_e)
+                logger.warning("Failed to load secure LLM_API_KEY from DB: %s", _sec_e)
 
     except Exception as _e:
         logger.warning("Failed to load DB config overrides: %s", _e)
@@ -581,12 +975,16 @@ async def lifespan(app: FastAPI):
     # Start background loops
     _expiry_task = asyncio.create_task(_approval_expiry_loop())
     _workflow_t_task = asyncio.create_task(_workflow_timeout_loop())
+    _case_sla_task = asyncio.create_task(_case_sla_loop())
+    _case_webhook_task = asyncio.create_task(_case_webhook_delivery_loop())
     _health_task = asyncio.create_task(_agent_health_loop())
     _retention_task = asyncio.create_task(_checkpoint_retention_loop())
     _artifact_retention_task = asyncio.create_task(_artifact_retention_loop())
     _file_watch_task = asyncio.create_task(_file_watch_trigger_loop())
+    _event_trigger_task = asyncio.create_task(_event_trigger_loop())
     _metrics_push_task = asyncio.create_task(_metrics_push_loop())
     _config_sync_task = asyncio.create_task(_config_sync_loop())
+    _autoscaler_task = asyncio.create_task(_autoscaler_evaluation_loop())
     # Start trigger scheduler
     from app.runtime.scheduler import scheduler as _trigger_scheduler
     _trigger_scheduler.start()
@@ -616,12 +1014,16 @@ async def lifespan(app: FastAPI):
     finally:
         _expiry_task.cancel()
         _workflow_t_task.cancel()
+        _case_sla_task.cancel()
+        _case_webhook_task.cancel()
         _health_task.cancel()
         _retention_task.cancel()
         _artifact_retention_task.cancel()
         _file_watch_task.cancel()
+        _event_trigger_task.cancel()
         _metrics_push_task.cancel()
         _config_sync_task.cancel()
+        _autoscaler_task.cancel()
         _trigger_scheduler.stop()
         _leader_election.stop()
         if _worker_task is not None:
@@ -660,6 +1062,7 @@ app.include_router(orchestrators_router, prefix="/api/orchestrators", tags=["orc
 app.include_router(catalog_router, prefix="/api", tags=["catalog"])
 app.include_router(leases_router, prefix="/api/leases", tags=["leases"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
+app.include_router(cases_router, prefix="/api/cases", tags=["cases"])
 app.include_router(triggers_router, prefix="/api/triggers", tags=["triggers"])
 app.include_router(artifacts_router, prefix="/api/artifacts-admin", tags=["artifacts"])
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
@@ -668,6 +1071,7 @@ app.include_router(secrets_router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(config_router, tags=["config"])
 app.include_router(audit_router)  # prefix is defined in router: /api/audit
 app.include_router(agent_credentials_router)
+app.include_router(dlq_router, prefix="/api/dlq", tags=["dlq"])
 
 # ── Serve local artifacts as static files ──────────────────────────────────
 # Agents write artifacts to ARTIFACTS_DIR and return URIs like

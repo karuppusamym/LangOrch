@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Absolute path to the backend/ directory — one level up from this file (app/).
@@ -12,6 +13,8 @@ from pydantic_settings import BaseSettings
 # will always read/write the same database file.
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _DEFAULT_DB_URL = f"sqlite+aiosqlite:///{_BACKEND_DIR / 'langorch.db'}"
+
+logger = logging.getLogger("langorch.config")
 
 
 class Settings(BaseSettings):
@@ -63,6 +66,9 @@ class Settings(BaseSettings):
     # ── CORS (frontend) ────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
+    # Frontend application base URL used for auth redirects.
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+
     # ── Checkpointer ───────────────────────────────────────────
     # Dev default: SQLite file.
     # For PostgreSQL this is auto-set to ORCH_DB_URL; install
@@ -90,6 +96,9 @@ class Settings(BaseSettings):
     # Shape: {"model-name": {"prompt": 0.01, "completion": 0.03}, ...}
     # Merged on top of built-in defaults so you only need to specify overrides.
     LLM_MODEL_COST_JSON: str | None = None
+
+    # Enable automatic LLM fallback to cheaper/alternative models on failure
+    LLM_ENABLE_FALLBACK: bool = True
 
     # ── Apigee Gateway Integration ─────────────────────────────
     APIGEE_ENABLED: bool = False
@@ -145,6 +154,15 @@ class Settings(BaseSettings):
     # Artifact folders at ARTIFACTS_DIR/<run_id>/ older than this many days
     # will be deleted by the background artifact-retention loop (0 = disabled).
     ARTIFACT_RETENTION_DAYS: int = 30
+    # Case SLA automation loop (leader-only): marks overdue cases as breached.
+    CASE_SLA_AUTOMATION_ENABLED: bool = True
+    CASE_SLA_POLL_INTERVAL_SECONDS: int = 60
+    # Durable case webhook delivery outbox loop.
+    CASE_WEBHOOK_DELIVERY_ENABLED: bool = True
+    CASE_WEBHOOK_DELIVERY_POLL_INTERVAL_SECONDS: int = 5
+    CASE_WEBHOOK_DELIVERY_BATCH_SIZE: int = 100
+    CASE_WEBHOOK_MAX_ATTEMPTS: int = 5
+    CASE_WEBHOOK_RETRY_BASE_SECONDS: int = 15
     # ── Worker (durable job queue) ─────────────────────────────
     # WORKER_EMBEDDED=true  → worker runs as an asyncio.Task inside the API
     #                         process (default for SQLite dev mode).
@@ -221,6 +239,28 @@ class Settings(BaseSettings):
     SECRETS_ROTATION_CHECK: bool = False
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def _coerce_debug(cls, value: object) -> object:
+        """Coerce common non-boolean DEBUG env values to a safe bool.
+
+        This avoids startup failures when operators use values like
+        ``DEBUG=release`` or ``DEBUG=production``.
+        """
+        if isinstance(value, bool) or value is None:
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "t", "yes", "y", "on", "dev", "debug", "development"}:
+                return True
+            if normalized in {"0", "false", "f", "no", "n", "off", "prod", "production", "release"}:
+                return False
+            logger.warning("Unrecognized DEBUG value '%s' - defaulting DEBUG=false", value)
+            return False
+        return value
 
     # ── Computed helpers (not env vars) ────────────────────────
 

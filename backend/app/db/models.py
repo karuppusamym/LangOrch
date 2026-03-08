@@ -46,9 +46,161 @@ class Project(Base):
 # ── Procedures ──────────────────────────────────────────────────
 
 
+class Case(Base):
+    __tablename__ = "cases"
+    __table_args__ = (
+        Index("ix_cases_project_created_at", "project_id", "created_at"),
+        Index("ix_cases_status_created_at", "status", "created_at"),
+        Index("ix_cases_sla_due_status", "sla_due_at", "status"),
+    )
+
+    case_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.project_id"), nullable=True
+    )
+    external_ref: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    case_type: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    priority: Mapped[str] = mapped_column(String(32), default="normal", nullable=False)
+    owner: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_breached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    events: Mapped[list[CaseEvent]] = relationship(back_populates="case", lazy="noload")
+
+
+class CaseEvent(Base):
+    __tablename__ = "case_events"
+    __table_args__ = (Index("ix_case_events_case_ts", "case_id", "ts"),)
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.case_id"), nullable=False, index=True
+    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    case: Mapped[Case] = relationship(back_populates="events")
+
+
+class CaseWebhookSubscription(Base):
+    __tablename__ = "case_webhook_subscriptions"
+    __table_args__ = (
+        Index("ix_case_webhook_subscriptions_event_type", "event_type"),
+        Index("ix_case_webhook_subscriptions_project_id", "project_id"),
+    )
+
+    subscription_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # Specific event type (case_created, case_updated, case_sla_breached, run_linked) or "*".
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, default="*")
+    target_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Optional project filter; null means all projects.
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.project_id"), nullable=True
+    )
+    # Optional env var containing HMAC secret for signing outbound payloads.
+    secret_env_var: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CaseWebhookDelivery(Base):
+    __tablename__ = "case_webhook_deliveries"
+    __table_args__ = (
+        Index("ix_case_webhook_deliveries_status_next", "status", "next_attempt_at"),
+        Index("ix_case_webhook_deliveries_subscription", "subscription_id"),
+        Index("ix_case_webhook_deliveries_event_type", "event_type"),
+        # DLQ/operator queries frequently filter by status and sort on one of these fields.
+        Index("ix_case_webhook_deliveries_status_created_at", "status", "created_at"),
+        Index("ix_case_webhook_deliveries_status_updated_at", "status", "updated_at"),
+        Index("ix_case_webhook_deliveries_status_attempts", "status", "attempts"),
+        Index(
+            "ix_case_webhook_deliveries_case_status_created_at",
+            "case_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_case_webhook_deliveries_subscription_status_created_at",
+            "subscription_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_case_webhook_deliveries_event_status_created_at",
+            "event_type",
+            "status",
+            "created_at",
+        ),
+    )
+
+    delivery_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    subscription_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("case_webhook_subscriptions.subscription_id"), nullable=False
+    )
+    case_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    case_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # pending | processing | retrying | delivered | failed
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    last_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CaseSlaPolicy(Base):
+    __tablename__ = "case_sla_policies"
+    __table_args__ = (
+        Index("ix_case_sla_policies_project", "project_id"),
+        Index("ix_case_sla_policies_case_type", "case_type"),
+        Index("ix_case_sla_policies_priority", "priority"),
+        Index("ix_case_sla_policies_enabled", "enabled"),
+    )
+
+    policy_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Null means global/default scope.
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.project_id"), nullable=True
+    )
+    # Null means any type.
+    case_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Null means any priority.
+    priority: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # SLA target in minutes from case creation.
+    due_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Status to set when breached (usually escalated).
+    breach_status: Mapped[str] = mapped_column(String(32), nullable=False, default="escalated")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class Procedure(Base):
     __tablename__ = "procedures"
-    __table_args__ = (UniqueConstraint("procedure_id", "version"),)
+    __table_args__ = (
+        UniqueConstraint("procedure_id", "version"),
+        Index("ix_procedures_release_channel", "release_channel"),
+        Index("ix_procedures_proc_release_channel", "procedure_id", "release_channel"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     procedure_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
@@ -61,6 +213,12 @@ class Procedure(Base):
     provenance_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # provenance block
     retrieval_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # retrieval_metadata block
     trigger_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # parsed trigger block
+    # dev | qa | prod (nullable for legacy rows imported before release governance)
+    release_channel: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # When promoted into a channel, captures the previously active version in that channel.
+    promoted_from_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promoted_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
     )
@@ -76,6 +234,7 @@ class Run(Base):
         Index("ix_runs_status_created_at", "status", "created_at"),
         Index("ix_runs_project_created_at", "project_id", "created_at"),
         Index("ix_runs_procedure_created_at", "procedure_id", "created_at"),
+        Index("ix_runs_case_created_at", "case_id", "created_at"),
     )
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
@@ -100,6 +259,9 @@ class Run(Base):
     cancellation_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     project_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("projects.project_id"), nullable=True
+    )
+    case_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("cases.case_id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
@@ -450,4 +612,143 @@ class SystemSetting(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+# ── Release Governance & Deployment Tracking ────────────────────────────────
+
+
+class ProcedureDeploymentHistory(Base):
+    """Tracks all procedure promotions and rollbacks for audit and analysis.
+    
+    Captures complete deployment history across dev/qa/prod channels for
+    compliance and troubleshooting. Each promotion or rollback creates a record.
+    """
+    __tablename__ = "procedure_deployment_history"
+    __table_args__ = (
+        Index("ix_proc_deploy_procedure_id", "procedure_id"),
+        Index("ix_proc_deploy_channel", "target_channel"),
+        Index("ix_proc_deploy_action_ts", "action", "deployed_at"),
+        Index("ix_proc_deploy_proc_channel_ts", "procedure_id", "target_channel", "deployed_at"),
+    )
+
+    deployment_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    procedure_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    # promote | rollback
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    # dev | qa | prod
+    target_channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Version that became active after this deployment
+    deployed_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Version that was replaced (None for first deployment to channel)
+    replaced_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # User who performed the action
+    deployed_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Timestamp of deployment
+    deployed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    # Optional: reason or commit message for audit trail
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # success | failed | rolled_back
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
+
+
+class CanaryDeployment(Base):
+    """Canary deployment configuration for gradual rollout with traffic split.
+    
+    Enables controlled testing of new procedure versions by routing a subset of
+    traffic to the canary while the rest hits the stable version. Includes
+    automatic rollback triggers on SLO breach.
+    """
+    __tablename__ = "canary_deployments"
+    __table_args__ = (
+        Index("ix_canary_procedure_channel", "procedure_id", "release_channel"),
+        Index("ix_canary_status", "status"),
+        UniqueConstraint("procedure_id", "release_channel", name="uq_canary_proc_channel"),
+    )
+
+    canary_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    procedure_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    # dev | qa | prod
+    release_channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Version being tested (canary)
+    canary_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Current stable version (baseline)
+    stable_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Traffic percentage to canary (0-100)
+    traffic_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    # active | paused | completed | failed | rolled_back
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    # Optional: trigger_source or project_id filter for routing
+    route_filter_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Auto-rollback thresholds (JSON config)
+    rollback_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Observability: counts
+    canary_run_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    canary_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stable_run_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stable_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Lifecycle timestamps
+    created_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+# ── Dead-Letter Queue (Event Replay & Failure Recovery) ────────
+
+
+class DeadLetterQueue(Base):
+    """Dead-letter queue for failed webhook deliveries, callback timeouts, and other retriable events.
+    
+    Supports event replay, bulk retry with rate limiting, and detailed failure inspection.
+    Failed events are automatically added to DLQ after max retries exhausted or non-retriable errors.
+    
+    Event lifecycle:
+        pending → retrying → succeeded (removed from DLQ)
+        pending → retrying → exhausted (max attempts reached)
+        pending → non_retriable (permanent failure)
+    """
+    __tablename__ = "dead_letter_queue"
+    __table_args__ = (
+        Index("ix_dlq_event_type_status", "event_type", "status"),
+        Index("ix_dlq_failed_at", "failed_at"),
+        Index("ix_dlq_status", "status"),
+        Index("ix_dlq_entity_ref", "entity_type", "entity_id"),
+    )
+
+    dlq_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    
+    # Event classification
+    # webhook_delivery | callback_timeout | webhook_subscription_delivery | run_failure | custom
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    
+    # Reference to original entity (case_id, run_id, webhook_subscription_id, etc.)
+    entity_type: Mapped[str | None] = mapped_column(String(64), nullable=True)  # case | run | webhook_subscription
+    entity_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    
+    # Original event payload (JSON) — allows full replay
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    
+    # Timestamps
+    original_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)  # When event first occurred
+    failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)  # When added to DLQ
+    last_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    # Failure details
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)  # HTTPError | Timeout | ConnectionError | ValidationError
+    http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)  # For webhook delivery failures
+    
+    # Retry management
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    
+    # Status: pending | retrying | succeeded | exhausted | non_retriable
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    
+    # Optional metadata (project_id, priority, tags, etc.)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # Audit trail
+    created_by: Mapped[str | None] = mapped_column(String(256), nullable=True)  # system | admin | auto_retry
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

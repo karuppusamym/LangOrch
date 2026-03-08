@@ -420,7 +420,7 @@ export default function WorkflowGraph({ graph, nodeStates, edgeCounts }: Workflo
           target: e.target,
           label: displayLabel,
           animated: isTraversed || e.label === "loop body" || animated,
-          type: "bezier",
+          type: "default",
           style: {
             ...es,
             strokeWidth: isTraversed ? Math.max((es.strokeWidth as number) + 0.8, 2.8) : es.strokeWidth,
@@ -459,7 +459,7 @@ export default function WorkflowGraph({ graph, nodeStates, edgeCounts }: Workflo
         }
       `}</style>
 
-      <div ref={containerRef} className="h-full min-h-[420px] w-full overflow-hidden rounded-xl border border-gray-200 bg-slate-50 shadow-sm">
+      <div ref={containerRef} className="h-[70vh] min-h-[420px] max-h-[860px] w-full overflow-hidden rounded-xl border border-gray-200 bg-slate-50 shadow-sm">
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}

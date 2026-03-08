@@ -29,9 +29,11 @@ def _make_step(*, mode: str | None = None):
     return step
 
 
-def _make_node(step):
+def _make_node(step, *, node_dispatch_mode: str | None = None):
     node = MagicMock()
     node.node_id = "n_wf"
+    node.agent = "web_agent"
+    node.dispatch_mode = node_dispatch_mode
     node.payload = MagicMock()
     node.payload.steps = [step]
     node.payload.error_handlers = []
@@ -88,6 +90,12 @@ async def test_workflow_dispatch_mode_sync_runs_inline_without_pause():
         result = await execute_sequence(node, state, db_factory=db_factory)
 
     assert mock_dispatch.await_count == 1
+    call_kwargs = mock_dispatch.await_args.kwargs
+    wf_ctx = call_kwargs["params"]["_workflow_context"]
+    assert wf_ctx["dispatch_mode"] == "sync"
+    assert wf_ctx["node_id"] == "n_wf"
+    assert len(wf_ctx["node_steps"]) == 1
+    assert wf_ctx["node_steps"][0]["step_id"] == "wf_step"
     assert result.get("_workflow_pending") is not True
     assert "workflow_delegated" not in emitted_events
     assert result["vars"]["wf_result"] == {"ok": True, "mode": "sync"}
@@ -132,3 +140,32 @@ async def test_workflow_dispatch_mode_async_pauses_and_emits_delegation():
     delegated = [payload for (event_type, payload) in emitted_calls if event_type == "workflow_delegated"]
     assert delegated, "workflow_delegated event should be emitted for async mode"
     assert delegated[0]["payload"]["dispatch_mode"] == "async"
+    assert delegated[0]["payload"]["workflow_context"]["dispatch_mode"] == "async"
+
+
+async def test_node_dispatch_mode_sync_used_when_step_mode_missing():
+    step = _make_step(mode=None)
+    node = _make_node(step, node_dispatch_mode="sync")
+    state = _base_state(global_mode="async")
+
+    binding = MagicMock()
+    binding.kind = "agent_http"
+    binding.ref = "http://agent:9000"
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: None))
+    db_factory = _make_db_factory(mock_db)
+
+    with patch("app.runtime.executor_dispatch.resolve_executor", new=AsyncMock(return_value=(binding, "workflow"))), \
+         patch("app.runtime.executor_dispatch.dispatch_to_agent", new=AsyncMock(return_value={"ok": True, "mode": "sync"})) as mock_dispatch, \
+         patch("app.services.run_service.emit_event", new=AsyncMock()), \
+         patch("app.runtime.node_executors._get_completed_step_result", new=AsyncMock(return_value=None)), \
+         patch("app.runtime.node_executors._mark_step_started", new=AsyncMock()), \
+         patch("app.runtime.node_executors._acquire_agent_lease", new=AsyncMock(return_value=None)), \
+         patch("app.runtime.node_executors._release_lease", new=AsyncMock()):
+        result = await execute_sequence(node, state, db_factory=db_factory)
+
+    assert mock_dispatch.await_count == 1
+    wf_ctx = mock_dispatch.await_args.kwargs["params"]["_workflow_context"]
+    assert wf_ctx["dispatch_mode"] == "sync"
+    assert result.get("_workflow_pending") is not True

@@ -3,13 +3,27 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { listProcedures, importProcedure, listProjects, createRun, getProcedure } from "@/lib/api";
+import { listProcedures, importProcedure, listProjects, createRun, getProcedure, getCase, isNotFoundError } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import { flattenVariablesSchema, isFieldSensitive } from "@/lib/redact";
 import type { Procedure, Project, ProcedureDetail } from "@/lib/types";
 
 import { Suspense } from "react";
+
+const RELEASE_CHANNELS = ["dev", "qa", "prod"] as const;
+
+function normalizeReleaseChannel(channel: string | null | undefined): (typeof RELEASE_CHANNELS)[number] {
+  if (channel === "qa" || channel === "prod") return channel;
+  return "dev";
+}
+
+function releaseChannelBadgeClass(channel: string | null | undefined): string {
+  const normalized = normalizeReleaseChannel(channel);
+  if (normalized === "prod") return "bg-emerald-100 text-emerald-700 border-emerald-200";
+  if (normalized === "qa") return "bg-amber-100 text-amber-700 border-amber-200";
+  return "bg-sky-100 text-sky-700 border-sky-200";
+}
 
 function ProceduresContent() {
   const { toast } = useToast();
@@ -29,6 +43,7 @@ function ProceduresContent() {
   const [createError, setCreateError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [releaseChannelFilter, setReleaseChannelFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState(searchParams.get("project_id") ?? "");
   const [runningId, setRunningId] = useState<string | null>(null);
   const [procPage, setProcPage] = useState(0);
@@ -39,6 +54,7 @@ function ProceduresContent() {
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
   const [runCreating, setRunCreating] = useState(false);
+  const [quickRunCaseId, setQuickRunCaseId] = useState("");
 
   useEffect(() => {
     const pid = searchParams.get("project_id") ?? "";
@@ -62,7 +78,7 @@ function ProceduresContent() {
 
   useEffect(() => { void loadProcedures(); }, [loadProcedures]);
   useEffect(() => { listProjects().then(setProjects).catch(() => { }); }, []);
-  useEffect(() => { setProcPage(0); }, [search, statusFilter, projectFilter]);
+  useEffect(() => { setProcPage(0); }, [search, statusFilter, releaseChannelFilter, projectFilter]);
 
   function changeProjectFilter(val: string) {
     setProjectFilter(val);
@@ -99,7 +115,26 @@ function ProceduresContent() {
         setShowVarsModal(true);
       } else {
         // No variables — run immediately
-        const run = await createRun(proc.procedure_id, proc.version);
+        // Validate case if provided
+        if (quickRunCaseId.trim()) {
+          try {
+            await getCase(quickRunCaseId.trim());
+          } catch (err) {
+            if (isNotFoundError(err)) {
+              toast("Case not found. Please check the case ID.", "error");
+              setRunningId(null);
+              return;
+            }
+            throw err;
+          }
+        }
+
+        const run = await createRun(
+          proc.procedure_id,
+          proc.version,
+          undefined,
+          { case_id: quickRunCaseId.trim() || undefined }
+        );
         toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
         router.push("/runs");
       }
@@ -114,12 +149,35 @@ function ProceduresContent() {
     if (!quickRunProc) return;
     setRunCreating(true);
     try {
-      const run = await createRun(quickRunProc.procedure_id, quickRunProc.version, vars);
+      // Validate case if provided
+      if (quickRunCaseId.trim()) {
+        try {
+          await getCase(quickRunCaseId.trim());
+        } catch (err) {
+          if (isNotFoundError(err)) {
+            toast("Case not found. Please check the case ID.", "error");
+            setRunCreating(false);
+            return;
+          }
+          throw err;
+        }
+      }
+
+      const run = await createRun(
+        quickRunProc.procedure_id,
+        quickRunProc.version,
+        vars,
+        { case_id: quickRunCaseId.trim() || undefined }
+      );
       toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
       setShowVarsModal(false);
       router.push("/runs");
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to start run", "error");
+      if (isNotFoundError(err)) {
+        toast("Case not found. Please check the case ID.", "error");
+      } else {
+        toast(err instanceof Error ? err.message : "Failed to start run", "error");
+      }
     } finally {
       setRunCreating(false);
     }
@@ -210,9 +268,10 @@ function ProceduresContent() {
 
   const activeProject = projects.find((p) => p.project_id === projectFilter);
   const filtered = procedures.filter((proc) =>
-    !search ||
-    proc.name.toLowerCase().includes(search.toLowerCase()) ||
-    proc.procedure_id.toLowerCase().includes(search.toLowerCase())
+    (!search ||
+      proc.name.toLowerCase().includes(search.toLowerCase()) ||
+      proc.procedure_id.toLowerCase().includes(search.toLowerCase())) &&
+    (!releaseChannelFilter || normalizeReleaseChannel(proc.release_channel) === releaseChannelFilter)
   );
   const PROC_PAGE_SIZE = 15;
   const totalProcPages = Math.ceil(filtered.length / PROC_PAGE_SIZE);
@@ -264,11 +323,24 @@ function ProceduresContent() {
             <option value="deprecated">Deprecated</option>
             <option value="archived">Archived</option>
           </select>
+          <select value={releaseChannelFilter} onChange={(e) => setReleaseChannelFilter(e.target.value)} aria-label="Filter by release channel"
+            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
+            <option value="">All Channels</option>
+            <option value="dev">Dev</option>
+            <option value="qa">QA</option>
+            <option value="prod">Prod</option>
+          </select>
           <select value={projectFilter} onChange={(e) => changeProjectFilter(e.target.value)} aria-label="Filter by project"
             className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
             <option value="">All Projects</option>
             {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
           </select>
+          <input
+            value={quickRunCaseId}
+            onChange={(e) => setQuickRunCaseId(e.target.value)}
+            placeholder="Run case_id (optional)"
+            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none"
+          />
           <span className="text-xs text-neutral-400">{filtered.length}{filtered.length !== procedures.length ? ` of ${procedures.length}` : ""} procedure{procedures.length !== 1 ? "s" : ""}</span>
         </div>
       </div>
@@ -381,7 +453,14 @@ function ProceduresContent() {
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      <StatusBadge status={proc.status} />
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={proc.status} />
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${releaseChannelBadgeClass(proc.release_channel)}`}
+                        >
+                          {normalizeReleaseChannel(proc.release_channel).toUpperCase()}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-5 py-3 text-xs text-neutral-400">{new Date(proc.created_at).toLocaleDateString()}</td>
                     <td className="px-5 py-3">

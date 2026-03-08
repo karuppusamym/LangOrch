@@ -399,6 +399,23 @@ async def worker_loop(
                             name=f"job-{job.job_id}",
                         )
                         active_tasks.add(task)
+                    
+                    # Track queue depth for SLO monitoring
+                    try:
+                        async with async_session() as db:
+                            from sqlalchemy import func, select
+                            from app.db.models import RunJob
+                            result = await db.execute(
+                                select(func.count()).select_from(RunJob).where(
+                                    RunJob.status.in_(["queued", "retrying"])
+                                )
+                            )
+                            queue_depth = result.scalar() or 0
+                            from app.utils.metrics import record_queue_depth
+                            record_queue_depth("run_queue", queue_depth)
+                    except Exception:
+                        pass  # Don't fail worker loop if metrics fail
+                        
                 except Exception:
                     logger.exception("Error claiming jobs")
 

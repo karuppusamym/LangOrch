@@ -7,11 +7,25 @@ import type {
   Project,
   Run,
   RunEvent,
+  ProcedurePromoteResponse,
+  ProcedureRollbackResponse,
   Approval,
   AgentInstance,
   AgentCapability,
   RunDiagnostics,
   MetricsSummary,
+  Case,
+  CaseEvent,
+  CaseQueueItem,
+  CaseQueueAnalytics,
+  CaseSlaPolicy,
+  CaseWebhookDelivery,
+  CaseWebhookDeliveryCount,
+  CaseWebhookDeliverySummary,
+  CaseWebhookPurgeResult,
+  CaseWebhookPurgeSelectedResult,
+  CaseWebhookReplayResult,
+  CaseWebhookSubscription,
   CheckpointMetadata,
   CheckpointState,
   ExplainReport,
@@ -22,6 +36,40 @@ import type {
 import { getToken } from "./auth";
 
 const API_BASE = "/api";
+
+let queueAnalyticsSupported: boolean | undefined;
+
+export class ApiError extends Error {
+  status: number;
+  body: string;
+
+  constructor(status: number, body: string) {
+    super(`API ${status}: ${body}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export function isNotFoundError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404;
+}
+
+function emptyQueueAnalytics(): CaseQueueAnalytics {
+  return {
+    total_active_cases: 0,
+    unassigned_cases: 0,
+    breached_cases: 0,
+    breach_risk_next_window_cases: 0,
+    breach_risk_next_window_percent: 0,
+    wait_p50_seconds: 0,
+    wait_p95_seconds: 0,
+    wait_by_priority: {},
+    wait_by_case_type: {},
+    reassignment_rate_24h: 0,
+    abandonment_rate_24h: 0,
+  };
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
@@ -38,7 +86,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
     }
     const body = await res.text();
-    throw new Error(`API ${res.status}: ${body}`);
+    throw new ApiError(res.status, body);
   }
   // 204 No Content — no body to parse
   if (res.status === 204 || res.headers.get("content-length") === "0") {
@@ -102,6 +150,33 @@ export async function updateProcedure(
   });
 }
 
+export async function promoteProcedure(
+  id: string,
+  version: string,
+  targetChannel: "dev" | "qa" | "prod"
+): Promise<ProcedurePromoteResponse> {
+  return request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/promote`, {
+    method: "POST",
+    body: JSON.stringify({ target_channel: targetChannel }),
+  });
+}
+
+export async function rollbackProcedure(
+  id: string,
+  version: string,
+  targetChannel: "dev" | "qa" | "prod",
+  rollbackToVersion?: string
+): Promise<ProcedureRollbackResponse> {
+  const body: { target_channel: "dev" | "qa" | "prod"; rollback_to_version?: string } = {
+    target_channel: targetChannel,
+  };
+  if (rollbackToVersion) body.rollback_to_version = rollbackToVersion;
+  return request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function deleteProcedure(id: string, version: string): Promise<void> {
   await request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}`, {
     method: "DELETE",
@@ -121,6 +196,8 @@ export async function getGraph(
 
 export async function listRuns(params?: {
   procedure_id?: string;
+  project_id?: string;
+  case_id?: string;
   status?: string;
   createdFrom?: string;
   createdTo?: string;
@@ -130,6 +207,8 @@ export async function listRuns(params?: {
 }): Promise<Run[]> {
   const q = new URLSearchParams();
   if (params?.procedure_id) q.set("procedure_id", params.procedure_id);
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
   if (params?.status && params.status !== "all") q.set("status", params.status);
   if (params?.createdFrom) q.set("created_from", params.createdFrom);
   if (params?.createdTo) q.set("created_to", params.createdTo);
@@ -147,7 +226,8 @@ export async function getRun(id: string): Promise<Run> {
 export async function createRun(
   procedureId: string,
   version: string,
-  inputVars?: Record<string, unknown>
+  inputVars?: Record<string, unknown>,
+  opts?: { project_id?: string; case_id?: string }
 ): Promise<Run> {
   return request("/runs", {
     method: "POST",
@@ -155,6 +235,8 @@ export async function createRun(
       procedure_id: procedureId,
       procedure_version: version,
       input_vars: inputVars ?? {},
+      project_id: opts?.project_id,
+      case_id: opts?.case_id,
     }),
   });
 }
@@ -281,6 +363,320 @@ export async function updateProject(
 
 export async function deleteProject(projectId: string): Promise<void> {
   await request(`/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+}
+
+/* €€ Cases €€ */
+
+export async function listCases(params?: {
+  project_id?: string;
+  status?: string;
+  owner?: string;
+  external_ref?: string;
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}): Promise<Case[]> {
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.status) q.set("status", params.status);
+  if (params?.owner) q.set("owner", params.owner);
+  if (params?.external_ref) q.set("external_ref", params.external_ref);
+  if (params?.order) q.set("order", params.order);
+  if (params?.limit !== undefined) {
+    // Backend validation enforces 1 <= limit <= 500 for /cases.
+    const clampedLimit = Math.max(1, Math.min(500, params.limit));
+    q.set("limit", String(clampedLimit));
+  }
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return request(`/cases${qs ? `?${qs}` : ""}`);
+}
+
+export async function getCase(caseId: string): Promise<Case> {
+  return request(`/cases/${encodeURIComponent(caseId)}`);
+}
+
+export async function createCase(data: {
+  title: string;
+  project_id?: string | null;
+  external_ref?: string | null;
+  case_type?: string | null;
+  description?: string | null;
+  status?: string;
+  priority?: string;
+  owner?: string | null;
+  sla_due_at?: string | null;
+  tags?: string[] | null;
+  metadata?: Record<string, unknown> | null;
+}): Promise<Case> {
+  return request("/cases", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateCase(caseId: string, data: Record<string, unknown>): Promise<Case> {
+  return request(`/cases/${encodeURIComponent(caseId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteCase(caseId: string): Promise<void> {
+  await request(`/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
+}
+
+export async function listCaseEvents(caseId: string, limit = 200): Promise<CaseEvent[]> {
+  return request(`/cases/${encodeURIComponent(caseId)}/events?limit=${limit}`);
+}
+
+export async function listCaseQueue(params?: {
+  project_id?: string;
+  owner?: string;
+  only_unassigned?: boolean;
+  include_terminal?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<CaseQueueItem[]> {
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.owner) q.set("owner", params.owner);
+  if (params?.only_unassigned !== undefined) q.set("only_unassigned", String(params.only_unassigned));
+  if (params?.include_terminal !== undefined) q.set("include_terminal", String(params.include_terminal));
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return request(`/cases/queue${qs ? `?${qs}` : ""}`);
+}
+
+export async function getCaseQueueAnalytics(params?: {
+  project_id?: string;
+  risk_window_minutes?: number;
+}): Promise<CaseQueueAnalytics> {
+  if (queueAnalyticsSupported === false) {
+    return emptyQueueAnalytics();
+  }
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.risk_window_minutes !== undefined) q.set("risk_window_minutes", String(params.risk_window_minutes));
+  const qs = q.toString();
+  try {
+    const data = await request<CaseQueueAnalytics>(`/cases/queue/analytics${qs ? `?${qs}` : ""}`);
+    queueAnalyticsSupported = true;
+    return data;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("API 404:")) {
+      // Some running backend instances may not expose this endpoint yet.
+      queueAnalyticsSupported = false;
+      return emptyQueueAnalytics();
+    }
+    throw err;
+  }
+}
+
+export async function claimCase(caseId: string, owner: string, setInProgress = true): Promise<Case> {
+  return request(`/cases/${encodeURIComponent(caseId)}/claim`, {
+    method: "POST",
+    body: JSON.stringify({ owner, set_in_progress: setInProgress }),
+  });
+}
+
+export async function releaseCase(caseId: string, owner?: string, setOpen = false): Promise<Case> {
+  return request(`/cases/${encodeURIComponent(caseId)}/release`, {
+    method: "POST",
+    body: JSON.stringify({ owner, set_open: setOpen }),
+  });
+}
+
+export async function listCaseSlaPolicies(params?: {
+  project_id?: string;
+  case_type?: string;
+  priority?: string;
+  enabled_only?: boolean;
+}): Promise<CaseSlaPolicy[]> {
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.case_type) q.set("case_type", params.case_type);
+  if (params?.priority) q.set("priority", params.priority);
+  if (params?.enabled_only !== undefined) q.set("enabled_only", String(params.enabled_only));
+  const qs = q.toString();
+  return request(`/cases/sla-policies${qs ? `?${qs}` : ""}`);
+}
+
+export async function createCaseSlaPolicy(data: {
+  name: string;
+  project_id?: string | null;
+  case_type?: string | null;
+  priority?: string | null;
+  due_minutes: number;
+  breach_status?: string;
+  enabled?: boolean;
+}): Promise<CaseSlaPolicy> {
+  return request("/cases/sla-policies", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateCaseSlaPolicy(policyId: string, data: Record<string, unknown>): Promise<CaseSlaPolicy> {
+  return request(`/cases/sla-policies/${encodeURIComponent(policyId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteCaseSlaPolicy(policyId: string): Promise<void> {
+  await request(`/cases/sla-policies/${encodeURIComponent(policyId)}`, { method: "DELETE" });
+}
+
+export async function listCaseWebhooks(params?: {
+  project_id?: string;
+  enabled_only?: boolean;
+}): Promise<CaseWebhookSubscription[]> {
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.enabled_only !== undefined) q.set("enabled_only", String(params.enabled_only));
+  const qs = q.toString();
+  return request(`/cases/webhooks${qs ? `?${qs}` : ""}`);
+}
+
+export async function createCaseWebhook(data: {
+  event_type: string;
+  target_url: string;
+  project_id?: string | null;
+  secret_env_var?: string | null;
+  enabled?: boolean;
+}): Promise<CaseWebhookSubscription> {
+  return request("/cases/webhooks", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function deleteCaseWebhook(subscriptionId: string): Promise<void> {
+  await request(`/cases/webhooks/${encodeURIComponent(subscriptionId)}`, { method: "DELETE" });
+}
+
+export async function listCaseWebhookDeliveries(params?: {
+  status?: "pending" | "processing" | "retrying" | "delivered" | "failed";
+  subscription_id?: string;
+  case_id?: string;
+  event_type?: string;
+  sort_by?: "created_at" | "updated_at" | "attempts";
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}): Promise<CaseWebhookDelivery[]> {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.subscription_id) q.set("subscription_id", params.subscription_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.event_type) q.set("event_type", params.event_type);
+  if (params?.sort_by) q.set("sort_by", params.sort_by);
+  if (params?.order) q.set("order", params.order);
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return request(`/cases/webhooks/deliveries${qs ? `?${qs}` : ""}`);
+}
+
+export async function listCaseWebhookDlq(params?: {
+  subscription_id?: string;
+  case_id?: string;
+  event_type?: string;
+  sort_by?: "created_at" | "updated_at" | "attempts";
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}): Promise<CaseWebhookDelivery[]> {
+  const q = new URLSearchParams();
+  if (params?.subscription_id) q.set("subscription_id", params.subscription_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.event_type) q.set("event_type", params.event_type);
+  if (params?.sort_by) q.set("sort_by", params.sort_by);
+  if (params?.order) q.set("order", params.order);
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return request(`/cases/webhooks/dlq${qs ? `?${qs}` : ""}`);
+}
+
+export async function getCaseWebhookDlqCount(params?: {
+  subscription_id?: string;
+  case_id?: string;
+  event_type?: string;
+  older_than_hours?: number;
+}): Promise<CaseWebhookDeliveryCount> {
+  const q = new URLSearchParams();
+  if (params?.subscription_id) q.set("subscription_id", params.subscription_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.event_type) q.set("event_type", params.event_type);
+  if (params?.older_than_hours !== undefined) q.set("older_than_hours", String(params.older_than_hours));
+  const qs = q.toString();
+  return request(`/cases/webhooks/dlq/count${qs ? `?${qs}` : ""}`);
+}
+
+export async function getCaseWebhookDeliverySummary(params?: {
+  subscription_id?: string;
+  case_id?: string;
+  event_type?: string;
+}): Promise<CaseWebhookDeliverySummary> {
+  const q = new URLSearchParams();
+  if (params?.subscription_id) q.set("subscription_id", params.subscription_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.event_type) q.set("event_type", params.event_type);
+  const qs = q.toString();
+  return request(`/cases/webhooks/deliveries/summary${qs ? `?${qs}` : ""}`);
+}
+
+export async function replayCaseWebhookDelivery(deliveryId: string): Promise<CaseWebhookReplayResult> {
+  return request(`/cases/webhooks/deliveries/${encodeURIComponent(deliveryId)}/replay`, {
+    method: "POST",
+  });
+}
+
+export async function replayCaseWebhookDlq(params?: {
+  subscription_id?: string;
+  case_id?: string;
+  event_type?: string;
+  limit?: number;
+}): Promise<CaseWebhookReplayResult> {
+  const q = new URLSearchParams();
+  if (params?.subscription_id) q.set("subscription_id", params.subscription_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.event_type) q.set("event_type", params.event_type);
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return request(`/cases/webhooks/dlq/replay${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+  });
+}
+
+export async function replayCaseWebhookDlqSelected(deliveryIds: string[]): Promise<CaseWebhookReplayResult> {
+  return request("/cases/webhooks/dlq/replay-selected", {
+    method: "POST",
+    body: JSON.stringify({ delivery_ids: deliveryIds }),
+  });
+}
+
+export async function purgeCaseWebhookDlq(params?: {
+  subscription_id?: string;
+  case_id?: string;
+  event_type?: string;
+  older_than_hours?: number;
+  limit?: number;
+}): Promise<CaseWebhookPurgeResult> {
+  const q = new URLSearchParams();
+  if (params?.subscription_id) q.set("subscription_id", params.subscription_id);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.event_type) q.set("event_type", params.event_type);
+  if (params?.older_than_hours !== undefined) q.set("older_than_hours", String(params.older_than_hours));
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return request(`/cases/webhooks/dlq/purge${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+  });
+}
+
+export async function purgeCaseWebhookDlqSelected(
+  deliveryIds: string[]
+): Promise<CaseWebhookPurgeSelectedResult> {
+  return request("/cases/webhooks/dlq/purge-selected", {
+    method: "POST",
+    body: JSON.stringify({ delivery_ids: deliveryIds }),
+  });
 }
 
 /* ── Diagnostics & Metrics ────────────────── */

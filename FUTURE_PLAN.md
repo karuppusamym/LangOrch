@@ -18,7 +18,7 @@ Use this section as the authoritative snapshot of what is still missing. If any 
 | Gap | Current state | Priority |
 |-----|---------------|----------|
 | External observability backend | ✅ Complete — OTEL traces (OTLPSpanExporter), metrics (OTLPMetricExporter + PeriodicExportingMetricReader), and logs (OTLPLogExporter + LoggingHandler) all wired; trace_id/span_id injected into JSON log records and run event payloads; Prometheus Pushgateway push still available alongside | ~~P0~~ ✅ |
-| Event-bus trigger adapters | Cron/webhook/file-watch/manual are implemented; Kafka/SQS-style consumer adapters are pending | P1 |
+| Event-bus trigger adapters | ✅ Complete — event-bus loop + adapter resolution implemented; Kafka (`kafka://topic`) and SQS (`sqs://queue`) consumer adapters added (optional deps), with dedupe + max_concurrent_runs enforcement preserved | ~~P1~~ ✅ |
 | Multi-tenant isolation | Single-tenant model; no tenant-scoped data partitioning and policy enforcement | P1 |
 | Procedure promotion/canary/rollback | Versioning + status lifecycle (PATCH `/status` endpoint) done; controlled environment promotion and canary/blue-green rollout are pending | P1 |
 | LLM fallback-model routing | Hard budget abort (`max_cost_usd`) now implemented; fallback-model routing policy (cost-based model selection) is pending | P1 |
@@ -425,7 +425,7 @@ For sequence step failures, effective order is:
 
 ### Not yet implemented (high impact gaps)
 - ~~**External observability stack**~~ → ✅ OTEL traces + metrics + logs all shipping via OTLP; trace_id/span_id in log records and run events; Prometheus Pushgateway push still available (2026-02-27)
-- **Event-bus trigger adapters** — cron/webhook/file-watch are implemented; Kafka/SQS-style consumer adapters are still pending
+- ~~**Event-bus trigger adapters**~~ → ✅ Kafka/SQS-style event-bus consumer adapters + event trigger loop implemented (2026-03-06)
 - **Multi-tenant governance** — project-level operations are implemented, but tenant-scoped isolation and policy enforcement are not yet implemented
 
 ---
@@ -468,7 +468,7 @@ For sequence step failures, effective order is:
 - ✅ **HA-safe scheduling (Batch 29)** — `LeaderElection` class in `app/runtime/leader.py`; DB row (`scheduler_leader_leases`) with INSERT-wins / UPDATE-steal / renewal; TTL 60s, renew every 15s; APScheduler sync loop + `_fire_scheduled_trigger` + `_file_watch_trigger_loop` + `_approval_expiry_loop` all skip execution when not leader; `SchedulerLeaderLease` ORM model; Alembic migration updated; 18 new tests
 
 ### Remaining gaps
-- Event-driven triggers beyond webhook/file-watch (if adopting external event bus)
+- Event-bus operational hardening: dead-letter handling, per-source backoff visibility, and replay tooling
 - Trigger operational tooling: pause/resume per trigger, per-trigger backoff/retry visibility, dead-lettering
 
 ### Next implementation items
@@ -910,7 +910,7 @@ Non-goals for this sprint (explicitly deferred): multi-tenancy, full external ob
 **Current state** (as of 2026-02-18 audit): Parser reads `procedure_id`, `version`, `global_config` including `secrets_config` and `audit_config`, `variables_schema`, `workflow_graph`, `provenance`, `retrieval_metadata`.
 
 **Still missing from IR and runtime**:
-- `trigger` field (manual/scheduled/webhook/event/file_watch) — not parsed, no DB model, no scheduler/webhook handler
+- ~~`trigger` field (manual/scheduled/webhook/event/file_watch)~~ — ✅ Parsed, persisted, and enforced with scheduler/webhook/file-watch/registry + dedupe/concurrency controls (Batch 20)
 - ~~`retrieval_metadata` (intents, domain, keywords)~~ → ✅ Parsed and stored (Batch 10); tag search supported
 - ~~`provenance` (compiled_on, compiler_version, sources)~~ → ✅ Parsed and stored in DB (Batch 10)
 - `global_config` deep fields not enforced:

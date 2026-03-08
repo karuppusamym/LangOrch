@@ -29,6 +29,7 @@ const NAV_SECTIONS: { title?: string; items: { href: string; label: string; d: s
       { href: "/procedures", label: "Procedures", d: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" },
       { href: "/builder", label: "Graph Viewer", d: "M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" },
       { href: "/runs", label: "Runs", d: "M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z", d2: "M21 12a9 9 0 11-18 0 9 9 0 0118 0z", badge: "failed" },
+      { href: "/cases", label: "Cases", d: "M7 3h10a2 2 0 012 2v6.5a2 2 0 01-.586 1.414l-4.5 4.5A2 2 0 0112.5 18H7a2 2 0 01-2-2V5a2 2 0 012-2z", d2: "M9 8h6M9 12h4" },
       { href: "/approvals", label: "Approvals", d: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z", badge: "pending" },
       { href: "/triggers", label: "Triggers", d: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" },
     ],

@@ -22,6 +22,7 @@ class MetricsCollector:
     def __init__(self):
         self.counters: dict[str, int] = defaultdict(int)
         self.histograms: dict[str, list[float]] = defaultdict(list)
+        self.gauges: dict[str, float] = {}
         
     def increment_counter(self, name: str, value: int = 1, labels: dict[str, str] | None = None):
         """Increment a counter metric."""
@@ -32,6 +33,11 @@ class MetricsCollector:
         """Record a histogram observation."""
         key = self._build_key(name, labels)
         self.histograms[key].append(value)
+        
+    def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None):
+        """Set a gauge metric to a specific value."""
+        key = self._build_key(name, labels)
+        self.gauges[key] = value
         
     def get_counter(self, name: str, labels: dict[str, str] | None = None) -> int:
         """Get current counter value."""
@@ -57,18 +63,20 @@ class MetricsCollector:
             "avg": sum(sorted_vals) / n,
             "p95": sorted_vals[p95_idx],
         }
-    
+
     def get_all_metrics(self) -> dict[str, Any]:
         """Get all metrics as a dictionary."""
         metrics = {
             "counters": dict(self.counters),
-            "histograms": {k: self.get_histogram_stats(k) for k in self.histograms.keys()}
+            "gauges": dict(self.gauges),
+            "histograms": {k: self.get_histogram_stats(k) for k in self.histograms.keys()},
         }
         return metrics
     
     def reset(self):
         """Reset all metrics."""
         self.counters.clear()
+        self.gauges.clear()
         self.histograms.clear()
     
     @staticmethod
@@ -129,6 +137,78 @@ def record_step_timeout(node_id: str, step_id: str, timeout_ms: int):
 def record_custom_metric(name: str, value: int = 1, labels: dict[str, str] | None = None):
     """Increment a custom metric counter defined in node telemetry.custom_metrics."""
     metrics.increment_counter(name, value=value, labels=labels)
+# ── SLO Instrumentation ──────────────────────────────────────────────────
+
+
+def record_queue_depth(queue_type: str, depth: int):
+    """
+    Record current queue depth gauge for SLO monitoring.
+    
+    Args:
+        queue_type: Type of queue (run_queue, case_queue, approval_queue)
+        depth: Current number of items in queue
+    """
+    metrics.set_gauge("queue_depth", float(depth), labels={"queue_type": queue_type})
+
+
+def record_trigger_lag(trigger_type: str, lag_seconds: float):
+    """
+    Record trigger processing lag for SLO monitoring.
+    
+    Args:
+        trigger_type: Type of trigger (schedule, event, webhook, file_watch)
+        lag_seconds: Time between event occurrence and processing start
+    """
+    metrics.observe_histogram("trigger_lag_seconds", lag_seconds, labels={"trigger_type": trigger_type})
+
+
+def record_callback_timeout(callback_type: str):
+    """
+    Record a callback timeout event for SLO monitoring.
+    
+    Args:
+        callback_type: Type of callback (workflow, approval, webhook)
+    """
+    metrics.increment_counter("callback_timeout_total", labels={"callback_type": callback_type})
+
+
+def record_sla_breach(case_type: str | None = None, priority: str | None = None):
+    """
+    Record a case SLA breach event.
+    
+    Args:
+        case_type: Optional case type filter
+        priority: Optional priority filter
+    """
+    labels = {}
+    if case_type:
+        labels["case_type"] = case_type
+    if priority:
+        labels["priority"] = priority
+    metrics.increment_counter("sla_breach_total", labels=labels or None)
+
+
+def record_webhook_delivery(status: str, event_type: str):
+    """
+    Record webhook delivery outcome.
+    
+    Args:
+        status: Delivery status (delivered, failed, retrying)
+        event_type: Case event type
+    """
+    metrics.increment_counter("webhook_delivery_total", labels={"status": status, "event_type": event_type})
+
+
+def record_pool_saturation(pool_id: str):
+    """
+    Record agent pool saturation event.
+    
+    Args:
+        pool_id: Identifier of the saturated pool
+    """
+    metrics.increment_counter("pool_saturation_total", labels={"pool_id": pool_id})
+
+
 
 
 def get_metrics_summary() -> dict:
@@ -197,6 +277,17 @@ def to_prometheus_text() -> str:
         counter_families[prom_name].append((label_str, val))
     for prom_name, entries in counter_families.items():
         lines.append(f"# TYPE {prom_name} counter")
+        for label_str, val in entries:
+            lines.append(f"{prom_name}{label_str} {val}")
+
+    # ── Gauges ─────────────────────────────────────────────────────────────
+    gauge_families: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for key, val in summary.get("gauges", {}).items():
+        base_name, label_str = _parse_metric_key(key)
+        prom_name = "langorch_" + base_name
+        gauge_families[prom_name].append((label_str, val))
+    for prom_name, entries in gauge_families.items():
+        lines.append(f"# TYPE {prom_name} gauge")
         for label_str, val in entries:
             lines.append(f"{prom_name}{label_str} {val}")
 

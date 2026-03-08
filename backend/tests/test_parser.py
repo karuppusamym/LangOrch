@@ -344,3 +344,55 @@ class TestParseWorkflowDispatchMode:
         }
         ir = parse_ckp(ckp)
         assert ir.global_config["workflow_dispatch_mode"] == "async"
+
+    def test_node_dispatch_mode_parsed(self):
+        ckp = {
+            "procedure_id": "wf_mode_node_proc",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "dispatch_mode": "sync",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        ir = parse_ckp(ckp)
+        assert ir.nodes["seq"].dispatch_mode == "sync"
+
+    def test_node_workflow_dispatch_mode_alias_parsed(self):
+        ckp = {
+            "procedure_id": "wf_mode_node_alias_proc",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "workflow_dispatch_mode": "async",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        ir = parse_ckp(ckp)
+        assert ir.nodes["seq"].dispatch_mode == "async"

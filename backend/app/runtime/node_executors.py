@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Callable
+from uuid import uuid4
 
 from app.compiler.ir import (
     IRHumanApprovalPayload,
@@ -111,17 +112,23 @@ def _get_step_retry_config(step: Any, state: OrchestratorState) -> dict[str, Any
     }
 
 
-def _get_workflow_dispatch_mode(step: Any, state: OrchestratorState) -> str:
+def _get_workflow_dispatch_mode(step: Any, node: Any, state: OrchestratorState) -> str:
     """Resolve workflow dispatch mode for a step.
 
-    Priority:
-      1) step.workflow_dispatch_mode
-      2) state.global_config.workflow_dispatch_mode
-      3) "async" (default/backward-compatible)
+        Priority:
+            1) step.workflow_dispatch_mode
+            2) node.dispatch_mode
+            3) state.global_config.workflow_dispatch_mode
+            4) "async" (default/backward-compatible)
     """
     step_mode = getattr(step, "workflow_dispatch_mode", None)
     if isinstance(step_mode, str) and step_mode.strip():
         normalized = step_mode.strip().lower()
+        return normalized if normalized in ("async", "sync") else "async"
+
+    node_mode = getattr(node, "dispatch_mode", None)
+    if isinstance(node_mode, str) and node_mode.strip():
+        normalized = node_mode.strip().lower()
         return normalized if normalized in ("async", "sync") else "async"
 
     gc = state.get("global_config") or {}
@@ -131,6 +138,46 @@ def _get_workflow_dispatch_mode(step: Any, state: OrchestratorState) -> str:
         return normalized if normalized in ("async", "sync") else "async"
 
     return "async"
+
+
+def _build_workflow_dispatch_context(
+    node: Any,
+    step: Any,
+    rendered_params: dict[str, Any],
+    state: OrchestratorState,
+    dispatch_mode: str,
+) -> dict[str, Any]:
+    """Build full workflow context sent to workflow-capability agents.
+
+    This gives agents enough detail to run step-level or node-level orchestration
+    in either sync/async mode without requiring extra lookups.
+    """
+    node_steps = []
+    for s in getattr(getattr(node, "payload", None), "steps", []) or []:
+        node_steps.append(
+            {
+                "step_id": getattr(s, "step_id", None),
+                "action": getattr(s, "action", None),
+                "params": getattr(s, "params", {}) or {},
+                "timeout_ms": getattr(s, "timeout_ms", None),
+                "wait_ms": getattr(s, "wait_ms", None),
+                "wait_after_ms": getattr(s, "wait_after_ms", None),
+                "workflow_dispatch_mode": getattr(s, "workflow_dispatch_mode", None),
+                "output_variable": getattr(s, "output_variable", None),
+            }
+        )
+
+    return {
+        "dispatch_mode": dispatch_mode,
+        "channel": getattr(node, "agent", None),
+        "run_id": state.get("run_id"),
+        "procedure_id": state.get("procedure_id"),
+        "node_id": getattr(node, "node_id", None),
+        "current_step_id": getattr(step, "step_id", None),
+        "current_step_action": getattr(step, "action", None),
+        "current_step_params": rendered_params,
+        "node_steps": node_steps,
+    }
 
 
 def _build_template_vars(state: OrchestratorState) -> dict[str, Any]:
@@ -390,7 +437,15 @@ async def execute_sequence(
                             else:
                                 result = await _dyn_internal_coro
                         elif binding.kind == "agent_http" and cap_type == "workflow":
-                            _wf_mode = _get_workflow_dispatch_mode(step, state)
+                            _wf_mode = _get_workflow_dispatch_mode(step, node, state)
+                            _wf_context = _build_workflow_dispatch_context(
+                                node=node,
+                                step=step,
+                                rendered_params=rendered_params,
+                                state=state,
+                                dispatch_mode=_wf_mode,
+                            )
+                            _wf_params = {**rendered_params, "_workflow_context": _wf_context}
 
                             if _wf_mode == "sync":
                                 logger.info(
@@ -401,7 +456,7 @@ async def execute_sequence(
                                 _dispatch_coro = dispatch_to_agent(
                                     agent_url=binding.ref,
                                     action=step.action,
-                                    params=rendered_params,
+                                    params=_wf_params,
                                     run_id=run_id,
                                     node_id=node.node_id,
                                     step_id=step.step_id,
@@ -448,30 +503,77 @@ async def execute_sequence(
                                         _hashlib.sha256,
                                     ).hexdigest()
                                     _callback_url = f"{_callback_url}?token={_token}"
-                                _wf_params = {**rendered_params, "callback_url": _callback_url}
+                                _wf_params = {
+                                    **_wf_params,
+                                    "callback_url": _callback_url,
+                                }
 
                                 logger.info(
                                     "Workflow async dispatch: action=%s agent=%s callback=%s",
                                     step.action, binding.ref, _callback_url,
                                 )
 
-                                # Fire-and-forget — do NOT await the full response
+                                # Fire-and-forget with retry — do NOT await the full response
                                 async def _fire_workflow():
-                                    try:
-                                        async with _httpx.AsyncClient(timeout=10.0) as _c:
-                                            await _c.post(
-                                                f"{binding.ref.rstrip('/')}/execute",
-                                                json={
-                                                    "action": step.action,
-                                                    "params": _wf_params,
-                                                    "run_id": run_id,
-                                                    "node_id": node.node_id,
-                                                    "step_id": step.step_id,
-                                                },
-                                                timeout=10.0,
-                                            )
-                                    except Exception as _exc:
-                                        logger.warning("Workflow fire-and-forget error: %s", _exc)
+                                    """Dispatch workflow agent with exponential backoff retry."""
+                                    _payload = {
+                                        "action": step.action,
+                                        "params": _wf_params,
+                                        "run_id": run_id,
+                                        "node_id": node.node_id,
+                                        "step_id": step.step_id,
+                                    }
+                                    _max_retries = 3
+                                    _base_delay = 1.0  # seconds
+                                    
+                                    for _attempt in range(_max_retries):
+                                        try:
+                                            async with _httpx.AsyncClient(timeout=10.0) as _c:
+                                                _resp = await _c.post(
+                                                    f"{binding.ref.rstrip('/')}/execute",
+                                                    json=_payload,
+                                                    timeout=10.0,
+                                                )
+                                                _resp.raise_for_status()
+                                                logger.info(
+                                                    "Workflow dispatch succeeded: run=%s node=%s step=%s attempt=%d",
+                                                    run_id, node.node_id, step.step_id, _attempt + 1,
+                                                )
+                                                return  # Success - exit retry loop
+                                        except Exception as _exc:
+                                            _is_last_attempt = (_attempt == _max_retries - 1)
+                                            if _is_last_attempt:
+                                                # Final failure - log and enroll in DLQ
+                                                logger.error(
+                                                    "Workflow dispatch failed after %d attempts: run=%s error=%s",
+                                                    _max_retries, run_id, _exc,
+                                                )
+                                                # Enroll in DLQ for manual retry/investigation
+                                                if db_factory is not None and run_id:
+                                                    try:
+                                                        from app.services.dlq_service import add_to_dlq
+                                                        async with db_factory() as _dlq_db:
+                                                            await add_to_dlq(
+                                                                _dlq_db,
+                                                                event_type="workflow_dispatch_failure",
+                                                                payload=_payload,
+                                                                component="workflow_dispatcher",
+                                                                error_message=str(_exc),
+                                                                run_id=run_id,
+                                                                node_id=node.node_id,
+                                                                step_id=step.step_id,
+                                                            )
+                                                            await _dlq_db.commit()
+                                                    except Exception as _dlq_exc:
+                                                        logger.exception("Failed to enroll in DLQ: %s", _dlq_exc)
+                                            else:
+                                                # Retry with exponential backoff
+                                                _delay = _base_delay * (2 ** _attempt)
+                                                logger.warning(
+                                                    "Workflow dispatch attempt %d failed (retrying in %.1fs): %s",
+                                                    _attempt + 1, _delay, _exc,
+                                                )
+                                                await asyncio.sleep(_delay)
 
                                 asyncio.create_task(_fire_workflow())
 
@@ -488,6 +590,7 @@ async def execute_sequence(
                                                 "resume_node_id": node.node_id,
                                                 "resume_step_id": step.step_id,
                                                 "dispatch_mode": "async",
+                                                "workflow_context": _wf_context,
                                             },
                                         )
                                         # Update run status to paused so scheduler doesn't re-pick it
@@ -1067,8 +1170,10 @@ def execute_human_approval(node: IRNode, state: OrchestratorState) -> Orchestrat
 
 
 async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory: Callable | None = None) -> OrchestratorState:
-    """Execute LLM action via OpenAI-compatible chat completion API."""
+    """Execute LLM action via OpenAI-compatible chat completion API with automatic fallback."""
     from app.connectors.llm_client import LLMCallError, LLMClient
+    from app.services.llm_fallback_service import get_fallback_policy
+    from app.config import settings
 
     payload: IRLlmActionPayload = node.payload
     vs = _build_template_vars(state)
@@ -1096,19 +1201,37 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
         )
         _eff_system_prompt = ((_eff_system_prompt or "") + _orchestration_instruction).strip() or None
 
+    # Extract cost/quality constraints from global config
+    global_max_cost = (state.get("global_config") or {}).get("max_cost_per_llm_call_usd")
+    global_min_quality = (state.get("global_config") or {}).get("min_llm_quality")
+
     attempt = 0
     last_exc: Exception | None = None
     while True:
         try:
-            llm_result = await asyncio.to_thread(
-                LLMClient().complete,
-                prompt=prompt,
-                model=payload.model,
-                temperature=payload.temperature,
-                max_tokens=payload.max_tokens,
-                system_prompt=_eff_system_prompt,
-                json_mode=_eff_json_mode,
-            )
+            # Use fallback policy if enabled, otherwise standard client
+            if settings.LLM_ENABLE_FALLBACK:
+                fallback_policy = get_fallback_policy()
+                llm_result = await fallback_policy.complete_with_fallback(
+                    prompt=prompt,
+                    model=payload.model,
+                    temperature=payload.temperature,
+                    max_tokens=payload.max_tokens,
+                    system_prompt=_eff_system_prompt,
+                    json_mode=_eff_json_mode,
+                    max_cost_usd=global_max_cost,
+                    min_quality=global_min_quality,
+                )
+            else:
+                llm_result = await asyncio.to_thread(
+                    LLMClient().complete,
+                    prompt=prompt,
+                    model=payload.model,
+                    temperature=payload.temperature,
+                    max_tokens=payload.max_tokens,
+                    system_prompt=_eff_system_prompt,
+                    json_mode=_eff_json_mode,
+                )
             last_exc = None
             break
         except LLMCallError as exc:
@@ -1444,8 +1567,15 @@ def _execute_internal_action(action: str, params: dict, vars_ctx: dict) -> Any:
             vars_ctx[var] = val
         return val
     if action == "screenshot":
-        logger.info("[CKP] screenshot requested")
-        return {"screenshot": "placeholder"}
+        explicit_uri = params.get("uri") or params.get("artifact_uri") or params.get("screenshot")
+        if isinstance(explicit_uri, str) and explicit_uri.strip():
+            screenshot_uri = explicit_uri.strip()
+        else:
+            name_hint = str(params.get("name") or params.get("step_id") or "capture").strip() or "capture"
+            safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in name_hint)
+            screenshot_uri = f"memory://screenshot/{safe_name}-{uuid4().hex}"
+        logger.info("[CKP] screenshot requested uri=%s", screenshot_uri)
+        return {"screenshot": screenshot_uri}
     # Unknown or external action — return params as-is for connector dispatch
     return {"action": action, "params": params}
 
@@ -1779,6 +1909,12 @@ async def _acquire_agent_lease(
                 "pool_id": instance.pool_id,
             }
         )
+        # Record pool saturation metric for SLO monitoring
+        try:
+            from app.utils.metrics import record_pool_saturation
+            record_pool_saturation(instance.pool_id or instance.agent_id)
+        except Exception:
+            pass
         raise RuntimeError(f"Resource busy for agent '{instance.agent_id}' ({instance.resource_key})")
 
     return lease.lease_id

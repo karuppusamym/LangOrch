@@ -93,15 +93,36 @@ async def submit_decision(
     decided_by: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> Approval | None:
-    approval = await db.get(Approval, approval_id)
+    """Submit approval decision with transaction isolation to prevent race conditions.
+    
+    Uses SELECT FOR UPDATE to ensure only one decision can be submitted even with
+    concurrent requests.
+    """
+    from sqlalchemy import select
+    
+    # Use SELECT FOR UPDATE to lock the approval row and prevent concurrent modifications
+    stmt = select(Approval).where(Approval.approval_id == approval_id).with_for_update()
+    result = await db.execute(stmt)
+    approval = result.scalar_one_or_none()
+    
     if not approval or approval.status != "pending":
         return None
+    
     approval.status = decision  # "approved" or "rejected"
     approval.decided_by = decided_by
     approval.decision_json = json.dumps(payload) if payload else None
     approval.decided_at = datetime.now(timezone.utc)
     await db.flush()
     await db.refresh(approval)
+    
+    # Record approval timeout metric for SLO monitoring
+    if decision == "timeout":
+        try:
+            from app.utils.metrics import record_callback_timeout
+            record_callback_timeout("approval")
+        except Exception:
+            pass
+    
     return approval
 
 

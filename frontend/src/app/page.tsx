@@ -5,9 +5,9 @@ import Link from "next/link";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { listProcedures, listRuns, listApprovals, listAgents, listProjects } from "@/lib/api";
+import { listProcedures, listRuns, listApprovals, listAgents, listProjects, listCases, listCaseQueue } from "@/lib/api";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import type { Run, AgentInstance } from "@/lib/types";
+import type { Run, AgentInstance, CaseQueueItem } from "@/lib/types";
 
 //  inline icon helper 
 const Icon = ({ path, path2, cls = "" }: { path: string; path2?: string; cls?: string }) => (
@@ -37,14 +37,65 @@ function buildChartData(runs: Run[]) {
   return hours;
 }
 
+type SlaTrendWindow = "24h" | "7d";
+
+function buildSlaTrendData(cases: Array<{ created_at: string; sla_breached_at: string | null }>, window: SlaTrendWindow) {
+  const now = Date.now();
+  if (window === "24h") {
+    const buckets: { time: string; opened: number; breached: number }[] = [];
+    for (let i = 23; i >= 0; i--) {
+      const ts = new Date(now - i * 3600_000);
+      buckets.push({
+        time: `${ts.getHours().toString().padStart(2, "0")}:00`,
+        opened: 0,
+        breached: 0,
+      });
+    }
+    for (const item of cases) {
+      const createdDiff = Math.floor((now - new Date(item.created_at).getTime()) / 3600_000);
+      if (createdDiff >= 0 && createdDiff < 24) buckets[23 - createdDiff].opened += 1;
+      if (item.sla_breached_at) {
+        const breachDiff = Math.floor((now - new Date(item.sla_breached_at).getTime()) / 3600_000);
+        if (breachDiff >= 0 && breachDiff < 24) buckets[23 - breachDiff].breached += 1;
+      }
+    }
+    return buckets;
+  }
+
+  const buckets: { time: string; opened: number; breached: number }[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const ts = new Date(now - i * 24 * 3600_000);
+    buckets.push({
+      time: ts.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+      opened: 0,
+      breached: 0,
+    });
+  }
+  for (const item of cases) {
+    const createdDiff = Math.floor((now - new Date(item.created_at).getTime()) / (24 * 3600_000));
+    if (createdDiff >= 0 && createdDiff < 7) buckets[6 - createdDiff].opened += 1;
+    if (item.sla_breached_at) {
+      const breachDiff = Math.floor((now - new Date(item.sla_breached_at).getTime()) / (24 * 3600_000));
+      if (breachDiff >= 0 && breachDiff < 7) buckets[6 - breachDiff].breached += 1;
+    }
+  }
+  return buckets;
+}
+
 interface Stats {
   totalRuns: number;
   activeRuns: number;
   failedRuns: number;
   pendingApprovals: number;
+  totalCases: number;
+  openCases: number;
+  breachedCases: number;
+  queueItems: CaseQueueItem[];
   recentRuns: Run[];
   agents: AgentInstance[];
   chartData: { time: string; runs: number }[];
+  slaTrend24h: { time: string; opened: number; breached: number }[];
+  slaTrend7d: { time: string; opened: number; breached: number }[];
 }
 
 function SkeletonDash() {
@@ -64,25 +115,34 @@ function SkeletonDash() {
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [slaWindow, setSlaWindow] = useState<SlaTrendWindow>("24h");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = async () => {
     try {
-      const [procs, allRuns, approvals, agents, _projects] = await Promise.all([
+      const [_procs, allRuns, approvals, agents, _projects, allCases, caseQueue] = await Promise.all([
         listProcedures(),
         listRuns({ limit: 100 }),
         listApprovals(),
         listAgents(),
         listProjects(),
+        listCases({ limit: 500 }),
+        listCaseQueue({ limit: 8 }),
       ]);
       setStats({
         totalRuns: allRuns.length,
         activeRuns: allRuns.filter((r) => r.status === "running").length,
         failedRuns: allRuns.filter((r) => r.status === "failed").length,
         pendingApprovals: approvals.filter((a) => a.status === "pending").length,
+        totalCases: allCases.length,
+        openCases: allCases.filter((c) => c.status === "open" || c.status === "in_progress").length,
+        breachedCases: allCases.filter((c) => !!c.sla_breached_at).length,
+        queueItems: caseQueue,
         recentRuns: allRuns.slice(0, 8),
         agents,
         chartData: buildChartData(allRuns),
+        slaTrend24h: buildSlaTrendData(allCases, "24h"),
+        slaTrend7d: buildSlaTrendData(allCases, "7d"),
       });
     } catch (err) {
       console.error("Dashboard load error", err);
@@ -109,6 +169,8 @@ export default function DashboardPage() {
   const onlineAgents = stats.agents.filter((a) => a.status === "online");
   const totalAgents = stats.agents.length || 1;
   const capacityPct = Math.round((onlineAgents.length / totalAgents) * 100);
+  const capacitySegments = Math.max(0, Math.min(10, Math.round(capacityPct / 10)));
+  const slaTrend = slaWindow === "24h" ? stats.slaTrend24h : stats.slaTrend7d;
 
   const agentDots = ["bg-green-500", "bg-blue-500", "bg-amber-500", "bg-purple-500", "bg-red-500"];
 
@@ -128,8 +190,8 @@ export default function DashboardPage() {
         </button>
       </div>
 
-      {/* 4 KPI cards */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
         {/* Total Runs */}
         <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
@@ -169,6 +231,26 @@ export default function DashboardPage() {
           <p className="text-3xl font-bold text-amber-600 dark:text-amber-400">{stats.pendingApprovals}</p>
           <Link href="/approvals" className="mt-1 text-xs text-amber-500 hover:underline">Review approvals </Link>
         </div>
+
+        {/* Open Cases */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">Open Cases</p>
+            <Icon path="M7 3h10a2 2 0 012 2v6.5a2 2 0 01-.586 1.414l-4.5 4.5A2 2 0 0112.5 18H7a2 2 0 01-2-2V5a2 2 0 012-2z" path2="M9 8h6M9 12h4" cls="w-5 h-5 text-blue-500" />
+          </div>
+          <p className="text-3xl font-bold text-blue-600 dark:text-blue-400">{stats.openCases}</p>
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">{stats.totalCases} total cases</p>
+        </div>
+
+        {/* SLA Breaches */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">SLA Breached</p>
+            <Icon path="M12 9v4M12 17h.01" path2="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" cls="w-5 h-5 text-red-500" />
+          </div>
+          <p className="text-3xl font-bold text-red-600 dark:text-red-400">{stats.breachedCases}</p>
+          <Link href="/cases" className="mt-1 text-xs text-red-500 hover:underline">Review priorities </Link>
+        </div>
       </div>
 
       {/* Charts row */}
@@ -199,11 +281,13 @@ export default function DashboardPage() {
           <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Agent Capacity</h2>
           <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-4">{onlineAgents.length} of {totalAgents} online</p>
           {/* Progress bar */}
-          <div className="h-2 w-full rounded-full bg-neutral-100 dark:bg-neutral-700 mb-4">
-            <div
-              className="h-2 rounded-full bg-blue-600 transition-all duration-500"
-              style={{ width: `${capacityPct}%` }}
-            />
+          <div className="mb-4 grid grid-cols-10 gap-1" aria-label="Agent capacity indicator">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <span
+                key={`cap-${i}`}
+                className={`h-2 rounded-sm ${i < capacitySegments ? "bg-blue-600" : "bg-neutral-100 dark:bg-neutral-700"}`}
+              />
+            ))}
           </div>
           {/* Agent list */}
           <ul className="flex-1 space-y-2 overflow-y-auto">
@@ -226,8 +310,79 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Case SLA Trend</h2>
+          <div className="inline-flex rounded-lg border border-neutral-200 dark:border-neutral-700 p-0.5">
+            <button
+              onClick={() => setSlaWindow("24h")}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${slaWindow === "24h" ? "bg-blue-600 text-white" : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"}`}
+            >
+              24h
+            </button>
+            <button
+              onClick={() => setSlaWindow("7d")}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${slaWindow === "7d" ? "bg-blue-600 text-white" : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"}`}
+            >
+              7d
+            </button>
+          </div>
+        </div>
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={slaTrend} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+            <defs>
+              <linearGradient id="slaOpened" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#2563eb" stopOpacity={0.2} />
+                <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="slaBreached" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#dc2626" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#dc2626" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey="time" tick={{ fontSize: 11, fill: "#9ca3af" }} tickLine={false} />
+            <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} tickLine={false} axisLine={false} allowDecimals={false} />
+            <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }} />
+            <Area type="monotone" dataKey="opened" stroke="#2563eb" strokeWidth={2} fill="url(#slaOpened)" name="Opened" />
+            <Area type="monotone" dataKey="breached" stroke="#dc2626" strokeWidth={2} fill="url(#slaBreached)" name="Breached" />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+
       {/* Recent Activity */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+        {/* Case Queue */}
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Case Queue</h2>
+            <Link href="/cases" className="text-xs text-blue-600 hover:underline">Open queue </Link>
+          </div>
+          {stats.queueItems.length === 0 ? (
+            <p className="text-sm text-neutral-400 py-4 text-center">No queued cases</p>
+          ) : (
+            <ul className="space-y-3">
+              {stats.queueItems.map((item) => (
+                <li key={item.case_id} className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <Link href={`/cases/${item.case_id}`} className="text-sm font-medium text-neutral-900 dark:text-neutral-100 hover:underline truncate block">
+                      {item.title}
+                    </Link>
+                    <p className="text-xs text-neutral-400">
+                      {item.priority} {item.owner ? `· ${item.owner}` : "· unassigned"}
+                    </p>
+                  </div>
+                  {item.is_sla_breached ? (
+                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-600">breached</span>
+                  ) : (
+                    <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-semibold text-neutral-500">ok</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {/* Recent Runs */}
         <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">

@@ -41,6 +41,13 @@ class TestIRTriggerParsing:
         assert t is not None
         assert t.event_source == "orders.created"
 
+    def test_parse_event_trigger_with_provider_and_topic(self):
+        from app.compiler.parser import _parse_trigger
+        raw = {"type": "event", "event": {"provider": "kafka", "topic": "orders.created"}}
+        t = _parse_trigger(raw)
+        assert t is not None
+        assert t.event_source == "kafka://orders.created"
+
     def test_parse_returns_none_for_missing(self):
         from app.compiler.parser import _parse_trigger
         assert _parse_trigger(None) is None
@@ -113,6 +120,12 @@ class TestTriggerValidation:
         ir = self._make_ir_with_trigger({"type": "webhook", "webhook_secret": "MY_SECRET"})
         errors = validate_ir(ir)
         assert not any("trigger" in e.lower() for e in errors)
+
+    def test_event_without_source_fails(self):
+        from app.compiler.validator import validate_ir
+        ir = self._make_ir_with_trigger({"type": "event"})
+        errors = validate_ir(ir)
+        assert any("event" in e.lower() and "source" in e.lower() for e in errors)
 
 
 # ── HMAC signature verification ─────────────────────────────────

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { getProcedure, createRun, getGraph, listVersions, listRuns } from "@/lib/api";
+import { getProcedure, createRun, getGraph, listVersions, listRuns, getCase, isNotFoundError } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import type { ProcedureDetail, Procedure, Run } from "@/lib/types";
@@ -28,15 +28,24 @@ export default function ProcedureDetailPage() {
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
 
-  const NODE_TYPE_BG: Record<string, string> = {
-    sequence: "#3B82F6", processing: "#2563EB", transform: "#1D4ED8", subflow: "#60A5FA",
-    llm_action: "#7C3AED", loop: "#F97316", parallel: "#EA580C",
-    logic: "#F59E0B", verification: "#D97706", human_approval: "#EF4444", terminate: "#6B7280",
+  const NODE_TYPE_BADGE_CLASS: Record<string, string> = {
+    sequence: "bg-blue-500",
+    processing: "bg-blue-600",
+    transform: "bg-blue-700",
+    subflow: "bg-blue-400",
+    llm_action: "bg-violet-600",
+    loop: "bg-orange-500",
+    parallel: "bg-orange-600",
+    logic: "bg-amber-500",
+    verification: "bg-amber-600",
+    human_approval: "bg-red-500",
+    terminate: "bg-gray-500",
   };
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
   const [runCreating, setRunCreating] = useState(false);
+  const [runCaseId, setRunCaseId] = useState("");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -150,25 +159,43 @@ export default function ProcedureDetailPage() {
     schemaEntries.forEach(([k, v]) => {
       defaults[k] = v?.default !== undefined ? String(v.default) : "";
     });
-    // Always show the modal when the schema has any variables so the user can
-    // review / override values (even if all have defaults).
-    if (schemaEntries.length > 0) {
-      setVarsForm(defaults);
-      setVarsErrors({});
-      setShowVarsModal(true);
-    } else {
-      void doCreateRun({});
-    }
+    // Always show modal so callers can attach optional run context like case_id.
+    setVarsForm(defaults);
+    setVarsErrors({});
+    setShowVarsModal(true);
   }
 
   async function doCreateRun(vars: Record<string, unknown>) {
     if (!procedure) return;
     setRunCreating(true);
     try {
-      const run = await createRun(procedure.procedure_id, procedure.version, vars);
+      // Validate case if provided
+      if (runCaseId.trim()) {
+        try {
+          await getCase(runCaseId.trim());
+        } catch (err) {
+          if (isNotFoundError(err)) {
+            toast("Case not found. Please check the case ID.", "error");
+            setRunCreating(false);
+            return;
+          }
+          throw err;
+        }
+      }
+
+      const run = await createRun(
+        procedure.procedure_id,
+        procedure.version,
+        vars,
+        { case_id: runCaseId.trim() || undefined }
+      );
       router.push(`/runs/${run.run_id}`);
     } catch (err) {
-      console.error(err);
+      if (isNotFoundError(err)) {
+        toast("Case not found. Please check the case ID.", "error");
+      } else {
+        console.error(err);
+      }
       setRunCreating(false);
     }
   }
@@ -295,7 +322,7 @@ export default function ProcedureDetailPage() {
           <div className="space-y-3">
             {nodeEntries.map(([nodeId, node]: [string, any]) => (
               <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white" style={{ background: NODE_TYPE_BG[node.type as string] ?? "#6B7280" }}>{node.type}</span>
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${NODE_TYPE_BADGE_CLASS[node.type as string] ?? "bg-gray-500"}`}>{node.type}</span>
                 <div>
                   <p className="text-sm font-medium">{nodeId}</p>
                   {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
@@ -427,6 +454,12 @@ export default function ProcedureDetailPage() {
                 ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
                 : "All fields have default values. Override any before starting."}
             </p>
+            <input
+              value={runCaseId}
+              onChange={(e) => setRunCaseId(e.target.value)}
+              placeholder="Attach case_id (optional)"
+              className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+            />
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (

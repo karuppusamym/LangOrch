@@ -239,6 +239,9 @@ class IRNode:
     node_id: str
     type: str
     agent: str | None = None
+    # Node-level workflow dispatch override for workflow-capability agents.
+    # Valid values: "async" | "sync".
+    dispatch_mode: str | None = None
     description: str | None = None
     is_checkpoint: bool = False
     next_node_id: str | None = None

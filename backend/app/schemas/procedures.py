@@ -28,6 +28,10 @@ class ProcedureOut(BaseModel):
     status: str
     effective_date: str | None = None
     description: str | None = None
+    release_channel: str | None = None
+    promoted_from_version: str | None = None
+    promoted_at: datetime | None = None
+    promoted_by: str | None = None
     project_id: str | None = None
     created_at: datetime
 
@@ -60,3 +64,30 @@ class ProcedureDetail(ProcedureOut):
         elif hasattr(data, "trigger_config_json"):
             data.trigger = None
         return data
+
+
+class ProcedurePromoteRequest(BaseModel):
+    """Body for POST /api/procedures/{id}/{version}/promote."""
+
+    target_channel: str
+
+
+class ProcedurePromoteResponse(BaseModel):
+    """Response for procedure promotion operations."""
+
+    promoted: ProcedureOut
+    previous_channel_version: str | None = None
+
+
+class ProcedureRollbackRequest(BaseModel):
+    """Body for POST /api/procedures/{id}/{version}/rollback."""
+
+    target_channel: str
+    rollback_to_version: str | None = None
+
+
+class ProcedureRollbackResponse(BaseModel):
+    """Response for procedure rollback operations."""
+
+    restored: ProcedureOut
+    replaced_version: str

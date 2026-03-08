@@ -19,6 +19,7 @@ async def create_run(
     procedure_version: str,
     input_vars: dict[str, Any] | None = None,
     project_id: str | None = None,
+    case_id: str | None = None,
     trigger_type: str | None = None,
     triggered_by: str | None = None,
 ) -> Run:
@@ -28,6 +29,7 @@ async def create_run(
         thread_id="",  # will be set to run_id after flush
         input_vars_json=json.dumps(input_vars) if input_vars else None,
         project_id=project_id,
+        case_id=case_id,
         trigger_type=trigger_type,
         triggered_by=triggered_by,
         status="created",
@@ -41,6 +43,20 @@ async def create_run(
 
     # Emit creation event
     await emit_event(db, run.run_id, "run_created")
+    if case_id:
+        # Keep a case-level timeline of linked run executions.
+        from app.services import case_service
+
+        await case_service.emit_case_event(
+            db,
+            case_id=case_id,
+            event_type="run_linked",
+            payload={
+                "run_id": run.run_id,
+                "procedure_id": procedure_id,
+                "procedure_version": procedure_version,
+            },
+        )
     return run
 
 
@@ -48,6 +64,7 @@ async def list_runs(
     db: AsyncSession,
     procedure_id: str | None = None,
     project_id: str | None = None,
+    case_id: str | None = None,
     status: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
@@ -60,6 +77,8 @@ async def list_runs(
         stmt = stmt.where(Run.procedure_id == procedure_id)
     if project_id:
         stmt = stmt.where(Run.project_id == project_id)
+    if case_id:
+        stmt = stmt.where(Run.case_id == case_id)
     if status:
         stmt = stmt.where(Run.status == status)
     if created_from:
@@ -365,8 +384,9 @@ async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) ->
     """
     from datetime import timedelta
     from app.db.models import Run, RunEvent
-    from sqlalchemy.orm import aliased
     import logging
+
+    logger = logging.getLogger("langorch.services.run_service")
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
     
@@ -402,8 +422,30 @@ async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) ->
         if r.run_id not in run_map or ev.ts > run_map[r.run_id][1].ts:
             run_map[r.run_id] = (r, ev)
             
-    # For each candidate run, fetch its absolute latest event to ensure it is actually workflow_delegated
+    # For each candidate run, verify no callback was received after delegation
     for r_id, (run, ev) in run_map.items():
+        # Check if a callback was received after the delegation event
+        callback_event_stmt = (
+            select(RunEvent.ts)
+            .where(
+                RunEvent.run_id == r_id,
+                RunEvent.event_type == "workflow_callback_received",
+                RunEvent.ts > ev.ts,  # Callback must be after delegation
+            )
+            .order_by(RunEvent.ts.desc())
+            .limit(1)
+        )
+        callback_ts = (await db.execute(callback_event_stmt)).scalar()
+        
+        if callback_ts:
+            # A callback was received - the run is not stalled, skip timeout
+            logger.debug(
+                "Run %s has callback event at %s (after delegation at %s), skipping timeout",
+                r_id, callback_ts, ev.ts,
+            )
+            continue
+        
+        # No callback received - verify the latest event is still workflow_delegated
         latest_event_stmt = (
             select(RunEvent.event_type)
             .where(RunEvent.run_id == r_id)
@@ -426,6 +468,13 @@ async def auto_fail_stalled_workflows(db: AsyncSession, timeout_minutes: int) ->
                 payload={"error": run.error_message, "timeout_minutes": timeout_minutes}
             )
             failed_runs.append(r_id)
+            
+            # Record callback timeout metric for SLO monitoring
+            try:
+                from app.utils.metrics import record_callback_timeout
+                record_callback_timeout("workflow")
+            except Exception:
+                pass
             
     await db.flush()
     return failed_runs

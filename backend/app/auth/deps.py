@@ -137,3 +137,21 @@ def require_roles(allowed_roles: list[str]):
             detail=f"Requires one of roles: {allowed_roles}",
         )
     return _check
+
+
+async def require_user(user: Principal = Depends(get_current_user)) -> Principal:
+    """Compatibility dependency: any authenticated user.
+
+    When AUTH is disabled, this resolves to the anonymous admin principal.
+    """
+    return user
+
+
+async def require_admin(user: Principal = Depends(get_current_user)) -> Principal:
+    """Compatibility dependency: enforce admin role."""
+    if not user.has_role("admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Role 'admin' or higher is required",
+        )
+    return user

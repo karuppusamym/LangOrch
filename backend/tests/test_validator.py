@@ -278,3 +278,55 @@ class TestValidateWorkflowDispatchMode:
         }
         errors = validate_ir(parse_ckp(ckp))
         assert any("global_config.workflow_dispatch_mode" in e for e in errors)
+
+    def test_valid_node_dispatch_mode(self):
+        ckp = {
+            "procedure_id": "wf_mode_valid_node",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "dispatch_mode": "sync",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        errors = validate_ir(parse_ckp(ckp))
+        assert errors == []
+
+    def test_invalid_node_dispatch_mode(self):
+        ckp = {
+            "procedure_id": "wf_mode_invalid_node",
+            "version": "1.0.0",
+            "workflow_graph": {
+                "start_node": "seq",
+                "nodes": {
+                    "seq": {
+                        "type": "sequence",
+                        "agent": "web_agent",
+                        "dispatch_mode": "blocking",
+                        "steps": [
+                            {
+                                "step_id": "s1",
+                                "action": "external_workflow",
+                            }
+                        ],
+                        "next_node": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        errors = validate_ir(parse_ckp(ckp))
+        assert any("dispatch_mode" in e for e in errors)

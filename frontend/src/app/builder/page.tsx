@@ -106,6 +106,7 @@ export default function BuilderPage() {
           <select
             value={selectedId}
             onChange={(e) => { void onProcedureChange(e.target.value); }}
+            aria-label="Select procedure"
             className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none min-w-52"
           >
             <option value="">— Select procedure —</option>
@@ -121,6 +122,7 @@ export default function BuilderPage() {
             <select
               value={selectedVersion}
               onChange={(e) => { void onVersionChange(e.target.value); }}
+              aria-label="Select procedure version"
               className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
             >
               <option value="latest">latest</option>

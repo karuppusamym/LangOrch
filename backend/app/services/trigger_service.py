@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.compiler.ir import IRTrigger
 from app.db.models import Procedure, Run, TriggerDedupeRecord, TriggerRegistration
 from app.services.run_service import create_run
+from app.worker.enqueue import enqueue_run
 
 logger = logging.getLogger("langorch.trigger_service")
 
@@ -200,7 +201,7 @@ async def fire_trigger(
     input_vars: dict[str, Any] | None = None,
     project_id: str | None = None,
 ) -> Run:
-    """Create a run tagged with trigger metadata."""
+    """Create and enqueue a run tagged with trigger metadata."""
     # Enforce max_concurrent_runs if configured
     reg = await get_trigger(db, procedure_id, version)
     if reg and reg.max_concurrent_runs:
@@ -221,7 +222,6 @@ async def fire_trigger(
 
     # Resolve project_id from procedure if not supplied
     if project_id is None:
-        proc = await db.get(Procedure, _find_pk(procedure_id, version))
         # Procedure uses composite key — query instead
         stmt = select(Procedure).where(
             and_(
@@ -243,12 +243,9 @@ async def fire_trigger(
         trigger_type=trigger_type,
         triggered_by=triggered_by,
     )
+    # Trigger-fired runs should always execute via the durable worker queue.
+    enqueue_run(db, run.run_id)
     return run
-
-
-def _find_pk(procedure_id: str, version: str) -> Any:
-    """Placeholder — Procedure uses int PK, not composite."""
-    return None
 
 
 # ── HMAC signature verification ─────────────────────────────────

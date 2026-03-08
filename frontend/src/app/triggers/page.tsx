@@ -121,8 +121,9 @@ export default function TriggersPage() {
   }
 
   function copyWebhook(trigger: TriggerRegistration) {
-    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-    const url = `${apiBase}/api/triggers/${encodeURIComponent(trigger.procedure_id)}/${encodeURIComponent(trigger.version)}/webhook`;
+    const fallbackBase = typeof window !== "undefined" ? window.location.origin : "http://localhost:8000";
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? fallbackBase;
+    const url = `${apiBase}/api/triggers/webhook/${encodeURIComponent(trigger.procedure_id)}`;
     void navigator.clipboard.writeText(url);
     toast("Webhook URL copied", "success");
   }
@@ -193,6 +194,7 @@ export default function TriggersPage() {
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
+          aria-label="Filter triggers by type"
           className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none"
         >
           <option value="all">All types</option>
@@ -203,6 +205,7 @@ export default function TriggersPage() {
         <select
           value={filterEnabled}
           onChange={(e) => setFilterEnabled(e.target.value as "all" | "enabled" | "disabled")}
+          aria-label="Filter triggers by enabled status"
           className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none"
         >
           <option value="all">All status</option>

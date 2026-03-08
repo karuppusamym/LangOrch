@@ -645,7 +645,7 @@ function ckpToRf(
       source,
       target,
       label: label || undefined,
-      type: "bezier",
+      type: "default",
       style: { stroke: col, strokeWidth: 2 },
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: col },
       labelStyle: { fontSize: 10, fontWeight: 700, fill: col },
@@ -1679,7 +1679,7 @@ function WorkflowBuilderInner({
       addEdge(
         {
           ...params,
-          type: "bezier",
+          type: "default",
           style: { stroke: col, strokeWidth: 2 },
           markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: col },
           labelStyle: { fontSize: 10, fontWeight: 700, fill: col },

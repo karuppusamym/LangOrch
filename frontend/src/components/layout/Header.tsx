@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTheme } from "@/components/ThemeProvider";
-import { listApprovals, listRuns, listProcedures, listAgents } from "@/lib/api";
+import { listApprovals, listRuns, listProcedures, listAgents, listCases } from "@/lib/api";
 
 //  tiny icon helpers 
 const SearchIcon = () => (
@@ -32,7 +32,7 @@ const BellIcon = () => (
 );
 
 interface Notification { id: string; title: string; desc: string; href: string; type: "warning" | "info" }
-interface SearchResult { kind: "procedure" | "run" | "agent"; label: string; sub: string; href: string; }
+interface SearchResult { kind: "procedure" | "run" | "agent" | "case"; label: string; sub: string; href: string; }
 
 export default function Header() {
   const pathname = usePathname();
@@ -55,10 +55,11 @@ export default function Header() {
     setSearching(true);
     try {
       const ql = q.toLowerCase();
-      const [procs, runs, agents] = await Promise.all([
+      const [procs, runs, agents, cases] = await Promise.all([
         listProcedures().catch(() => []),
         listRuns({ limit: 100 }).catch(() => []),
         listAgents().catch(() => []),
+        listCases({ limit: 100 }).catch(() => []),
       ]);
       const results: SearchResult[] = [
         ...procs
@@ -73,6 +74,10 @@ export default function Header() {
           .filter((a) => a.name.toLowerCase().includes(ql) || a.agent_id.toLowerCase().includes(ql))
           .slice(0, 3)
           .map((a) => ({ kind: "agent" as const, label: a.name, sub: a.agent_id, href: `/agents` })),
+        ...cases
+          .filter((c) => c.title.toLowerCase().includes(ql) || c.case_id.toLowerCase().includes(ql) || (c.external_ref ?? "").toLowerCase().includes(ql))
+          .slice(0, 4)
+          .map((c) => ({ kind: "case" as const, label: c.title, sub: c.case_id, href: "/cases" })),
       ];
       setSearchResults(results);
       setSearchOpen(true);
@@ -98,8 +103,13 @@ export default function Header() {
   // Close search on navigation
   useEffect(() => { setSearchOpen(false); setQuery(""); }, [pathname]);
 
-  const kindLabel = { procedure: "Procedure", run: "Run", agent: "Agent" } as const;
-  const kindColor = { procedure: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300", run: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", agent: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" } as const;
+  const kindLabel = { procedure: "Procedure", run: "Run", agent: "Agent", case: "Case" } as const;
+  const kindColor = {
+    procedure: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+    run: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+    agent: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+    case: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+  } as const;
 
   const segment = pathname.split("/").filter(Boolean)[0] ?? "";
   const pageLabel = segment
@@ -159,7 +169,7 @@ export default function Header() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => { if (searchResults.length > 0) setSearchOpen(true); }}
-          placeholder="Search procedures, runs, agents..."
+          placeholder="Search procedures, runs, agents, cases..."
           className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-4 py-2 text-sm text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition-all"
         />
         {searching && (

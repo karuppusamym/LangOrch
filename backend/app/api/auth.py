@@ -77,6 +77,10 @@ class MeResponse(BaseModel):
     role: str | None = None
 
 
+class SsoStatusResponse(BaseModel):
+    sso_enabled: bool
+
+
 # -- Routes --
 
 @router.post(
@@ -183,6 +187,18 @@ async def issue_token(body: TokenRequest) -> TokenResponse:
         identity=body.identity,
         roles=body.roles,
     )
+
+
+@router.get(
+    "/sso/status",
+    response_model=SsoStatusResponse,
+    summary="Return whether SSO login is enabled",
+    tags=["auth"],
+)
+async def sso_status() -> SsoStatusResponse:
+    from app.config import settings
+
+    return SsoStatusResponse(sso_enabled=settings.SSO_ENABLED)
 
 @router.get(
     "/sso/login",
@@ -330,7 +346,7 @@ async def sso_callback(
     local_jwt = _issue_jwt(user.username, [user.role], expire, settings.AUTH_SECRET_KEY)
     
     # Redirect to frontend login page, passing the token so it can be stored
-    frontend_url = "http://localhost:3000/login"
+    frontend_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/login"
     redirect_url = f"{frontend_url}?token={local_jwt}"
     
     return RedirectResponse(url=redirect_url)

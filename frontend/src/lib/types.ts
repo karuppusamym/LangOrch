@@ -31,6 +31,10 @@ export interface Procedure {
   name: string;
   description: string;
   status: string;
+  release_channel: "dev" | "qa" | "prod" | null;
+  promoted_from_version: string | null;
+  promoted_at: string | null;
+  promoted_by: string | null;
   effective_date: string | null;
   project_id: string | null;
   created_at: string;
@@ -41,6 +45,16 @@ export interface ProcedureDetail extends Procedure {
   provenance: Record<string, unknown> | null;
   retrieval_metadata: Record<string, unknown> | null;
   trigger: Record<string, unknown> | null;
+}
+
+export interface ProcedurePromoteResponse {
+  promoted: Procedure;
+  previous_channel_version: string | null;
+}
+
+export interface ProcedureRollbackResponse {
+  restored: Procedure;
+  replaced_version: string;
 }
 
 export interface Run {
@@ -61,6 +75,8 @@ export interface Run {
   parent_run_id: string | null;
   trigger_type: string | null;
   triggered_by: string | null;
+  project_id: string | null;
+  case_id: string | null;
   last_node_id: string | null;
   last_step_id: string | null;
   created_at: string;
@@ -143,6 +159,125 @@ export interface Project {
   name: string;
   description: string | null;
   created_at: string;
+}
+
+export interface Case {
+  case_id: string;
+  project_id: string | null;
+  external_ref: string | null;
+  case_type: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  owner: string | null;
+  sla_due_at: string | null;
+  sla_breached_at: string | null;
+  tags: string[] | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CaseQueueItem extends Case {
+  priority_rank: number;
+  age_seconds: number;
+  sla_remaining_seconds: number | null;
+  is_sla_breached: boolean;
+}
+
+export interface CaseQueueAnalytics {
+  total_active_cases: number;
+  unassigned_cases: number;
+  breached_cases: number;
+  breach_risk_next_window_cases: number;
+  breach_risk_next_window_percent: number;
+  wait_p50_seconds: number;
+  wait_p95_seconds: number;
+  wait_by_priority: Record<string, { count: number; wait_p50_seconds: number; wait_p95_seconds: number }>;
+  wait_by_case_type: Record<string, { count: number; wait_p50_seconds: number; wait_p95_seconds: number }>;
+  reassignment_rate_24h: number;
+  abandonment_rate_24h: number;
+}
+
+export interface CaseEvent {
+  event_id: number;
+  case_id: string;
+  ts: string;
+  event_type: string;
+  actor: string | null;
+  payload: Record<string, unknown> | null;
+}
+
+export interface CaseWebhookSubscription {
+  subscription_id: string;
+  event_type: string;
+  target_url: string;
+  project_id: string | null;
+  secret_env_var: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CaseWebhookDelivery {
+  delivery_id: string;
+  subscription_id: string;
+  case_event_id: number | null;
+  case_id: string | null;
+  project_id: string | null;
+  event_type: string;
+  status: "pending" | "processing" | "retrying" | "delivered" | "failed";
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  last_status_code: number | null;
+  last_error: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CaseWebhookDeliverySummary {
+  total: number;
+  by_status: Record<string, number>;
+  oldest_pending_age_seconds: number | null;
+  recent_failures_last_hour: number;
+}
+
+export interface CaseWebhookDeliveryCount {
+  total: number;
+}
+
+export interface CaseWebhookReplayResult {
+  replayed: number;
+  delivery_ids: string[];
+  skipped_non_failed_ids?: string[];
+  not_found_ids?: string[];
+}
+
+export interface CaseWebhookPurgeResult {
+  deleted: number;
+}
+
+export interface CaseWebhookPurgeSelectedResult {
+  deleted: number;
+  delivery_ids: string[];
+  skipped_non_failed_ids?: string[];
+  not_found_ids?: string[];
+}
+
+export interface CaseSlaPolicy {
+  policy_id: string;
+  name: string;
+  project_id: string | null;
+  case_type: string | null;
+  priority: string | null;
+  due_minutes: number;
+  breach_status: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ResourceLeaseDiagnostic {

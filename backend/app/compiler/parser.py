@@ -65,11 +65,22 @@ def _parse_trigger(raw: dict[str, Any] | None) -> IRTrigger | None:
         return None
     event_cfg = raw.get("event") or {}
     file_cfg = raw.get("file_watch") or raw.get("file") or {}
+    event_source = (
+        event_cfg.get("source")
+        or raw.get("event_source")
+    )
+    if not event_source:
+        provider = str(event_cfg.get("provider") or "").strip().lower()
+        topic = event_cfg.get("topic")
+        queue = event_cfg.get("queue") or event_cfg.get("queue_name")
+        target = topic or queue
+        if provider and target:
+            event_source = f"{provider}://{target}"
     return IRTrigger(
         type=raw.get("type", "manual"),
         schedule=raw.get("schedule"),
         webhook_secret=raw.get("webhook_secret"),
-        event_source=event_cfg.get("source") or raw.get("event_source"),
+        event_source=event_source,
         file_watch_path=file_cfg.get("path") or raw.get("file_watch_path"),
         dedupe_window_seconds=int(raw.get("dedupe_window_seconds", 0)),
         max_concurrent_runs=raw.get("max_concurrent_runs"),
@@ -85,6 +96,7 @@ def _parse_node(nid: str, d: dict[str, Any]) -> IRNode:
         node_id=nid,
         type=ntype,
         agent=d.get("agent"),
+        dispatch_mode=d.get("dispatch_mode") or d.get("workflow_dispatch_mode"),
         description=d.get("description"),
         is_checkpoint=d.get("is_checkpoint", False),
         next_node_id=d.get("next_node"),

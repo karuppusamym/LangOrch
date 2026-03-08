@@ -1,15 +1,32 @@
 ﻿"use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns, getTrigger, upsertTrigger, deleteTrigger, fireTrigger } from "@/lib/api";
+import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns, getTrigger, upsertTrigger, deleteTrigger, fireTrigger, promoteProcedure, rollbackProcedure, getCase, isNotFoundError } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { ProcedureDetail, Procedure, ExplainReport, Run, TriggerRegistration } from "@/lib/types";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import { isFieldSensitive } from "@/lib/redact";
+
+const RELEASE_CHANNELS = ["dev", "qa", "prod"] as const;
+type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
+
+function getNextReleaseChannel(channel: string | null | undefined): ReleaseChannel | null {
+  const normalized = (channel ?? "dev") as ReleaseChannel;
+  if (normalized === "dev") return "qa";
+  if (normalized === "qa") return "prod";
+  return null;
+}
+
+function releaseChannelBadgeClass(channel: string | null | undefined): string {
+  const normalized = (channel ?? "dev").toLowerCase();
+  if (normalized === "prod") return "bg-emerald-100 text-emerald-700 border-emerald-200";
+  if (normalized === "qa") return "bg-amber-100 text-amber-700 border-amber-200";
+  return "bg-sky-100 text-sky-700 border-sky-200";
+}
 
 /* ── Simple line-level diff helper ─────────────────────────── */
 interface DiffHunk {
@@ -90,10 +107,18 @@ export default function ProcedureVersionDetailPage() {
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
 
-  const NODE_TYPE_BG: Record<string, string> = {
-    sequence: "#3B82F6", processing: "#2563EB", transform: "#1D4ED8", subflow: "#60A5FA",
-    llm_action: "#7C3AED", loop: "#F97316", parallel: "#EA580C",
-    logic: "#F59E0B", verification: "#D97706", human_approval: "#EF4444", terminate: "#6B7280",
+  const NODE_TYPE_BADGE_CLASS: Record<string, string> = {
+    sequence: "bg-blue-500",
+    processing: "bg-blue-600",
+    transform: "bg-blue-700",
+    subflow: "bg-blue-400",
+    llm_action: "bg-violet-600",
+    loop: "bg-orange-500",
+    parallel: "bg-orange-600",
+    logic: "bg-amber-500",
+    verification: "bg-amber-600",
+    human_approval: "bg-red-500",
+    terminate: "bg-gray-500",
   };
 
   // Trigger state
@@ -115,11 +140,16 @@ export default function ProcedureVersionDetailPage() {
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
   const [runCreating, setRunCreating] = useState(false);
+  const [runCaseId, setRunCaseId] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [diffVersionA, setDiffVersionA] = useState<string>("");
   const [diffVersionB, setDiffVersionB] = useState<string>("");
   const [diffResult, setDiffResult] = useState<{ left: string; right: string; hunks: DiffHunk[] } | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [promotingTo, setPromotingTo] = useState<ReleaseChannel | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
+  const [showRollbackModal, setShowRollbackModal] = useState(false);
+  const [rollbackTargetVersion, setRollbackTargetVersion] = useState("");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -255,24 +285,43 @@ export default function ProcedureVersionDetailPage() {
     schemaEntries.forEach(([k, v]) => {
       defaults[k] = v?.default !== undefined ? String(v.default) : "";
     });
-    // Always show the modal when there are variables so user can review / override
-    if (schemaEntries.length > 0) {
-      setVarsForm(defaults);
-      setVarsErrors({});
-      setShowVarsModal(true);
-    } else {
-      void doCreateRun({});
-    }
+    // Always show modal so callers can attach optional run context like case_id.
+    setVarsForm(defaults);
+    setVarsErrors({});
+    setShowVarsModal(true);
   }
 
   async function doCreateRun(vars: Record<string, unknown>) {
     if (!procedure) return;
     setRunCreating(true);
     try {
-      const run = await createRun(procedure.procedure_id, procedure.version, vars);
+      // Validate case if provided
+      if (runCaseId.trim()) {
+        try {
+          await getCase(runCaseId.trim());
+        } catch (err) {
+          if (isNotFoundError(err)) {
+            toast("Case not found. Please check the case ID.", "error");
+            setRunCreating(false);
+            return;
+          }
+          throw err;
+        }
+      }
+
+      const run = await createRun(
+        procedure.procedure_id,
+        procedure.version,
+        vars,
+        { case_id: runCaseId.trim() || undefined }
+      );
       router.push(`/runs/${run.run_id}`);
     } catch (err) {
-      console.error(err);
+      if (isNotFoundError(err)) {
+        toast("Case not found. Please check the case ID.", "error");
+      } else {
+        console.error(err);
+      }
       setRunCreating(false);
     }
   }
@@ -364,8 +413,89 @@ export default function ProcedureVersionDetailPage() {
     }
   }
 
+  async function handlePromote(targetChannel: ReleaseChannel) {
+    if (!procedure) return;
+    setPromotingTo(targetChannel);
+    try {
+      const result = await promoteProcedure(procedure.procedure_id, procedure.version, targetChannel);
+      const [refreshed, vers] = await Promise.all([
+        getProcedure(procedure.procedure_id, procedure.version),
+        listVersions(procedure.procedure_id),
+      ]);
+      setProcedure(refreshed);
+      setVersions(vers);
+      const previousMsg = result.previous_channel_version
+        ? ` Replaced ${targetChannel} active version ${result.previous_channel_version}.`
+        : "";
+      toast(`Promoted to ${targetChannel.toUpperCase()}.${previousMsg}`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Promotion failed", "error");
+    } finally {
+      setPromotingTo(null);
+    }
+  }
+
+  function openRollbackModal() {
+    if (!procedure) return;
+    const preferredTarget = procedure.promoted_from_version;
+    const hasPreferredTarget = !!preferredTarget && rollbackCandidates.some((v) => v.version === preferredTarget);
+    const defaultTarget = hasPreferredTarget ? (preferredTarget as string) : (rollbackCandidates[0]?.version ?? "");
+    if (!defaultTarget) {
+      toast("No rollback target is available for this version", "error");
+      return;
+    }
+    setRollbackTargetVersion(defaultTarget);
+    setShowRollbackModal(true);
+  }
+
+  async function handleRollback() {
+    if (!procedure) return;
+    const currentChannel = (procedure.release_channel ?? "dev") as ReleaseChannel;
+    if (!rollbackTargetVersion) {
+      toast("Select a rollback target version", "error");
+      return;
+    }
+
+    setRollingBack(true);
+    try {
+      const result = await rollbackProcedure(
+        procedure.procedure_id,
+        procedure.version,
+        currentChannel,
+        rollbackTargetVersion
+      );
+      const [refreshed, vers] = await Promise.all([
+        getProcedure(result.restored.procedure_id, result.restored.version),
+        listVersions(procedure.procedure_id),
+      ]);
+      setProcedure(refreshed);
+      setVersions(vers);
+      if (result.restored.version !== procedure.version) {
+        router.push(`/procedures/${encodeURIComponent(result.restored.procedure_id)}/${encodeURIComponent(result.restored.version)}`);
+      }
+      setShowRollbackModal(false);
+      toast(
+        `Rolled back ${result.replaced_version} to ${result.restored.version} in ${currentChannel.toUpperCase()}.`,
+        "success"
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Rollback failed", "error");
+    } finally {
+      setRollingBack(false);
+    }
+  }
+
   if (loading) return <p className="text-gray-500">Loading procedure...</p>;
   if (!procedure) return <p className="text-red-500">Procedure not found</p>;
+
+  const currentReleaseChannel = (procedure.release_channel ?? "dev") as ReleaseChannel;
+  const nextReleaseChannel = getNextReleaseChannel(currentReleaseChannel);
+  const rollbackCandidates = versions.filter((v) => {
+    if (v.version === procedure.version) return false;
+    if ((v.release_channel ?? "dev") !== currentReleaseChannel) return false;
+    return v.status !== "archived" && v.status !== "draft";
+  });
+  const canRollback = rollbackCandidates.length > 0;
 
   const ckp = procedure.ckp_json;
   const wfNodes = (ckp as any)?.workflow_graph?.nodes ?? {};
@@ -395,6 +525,11 @@ export default function ProcedureVersionDetailPage() {
           <h2 className="mt-2 text-xl font-bold text-gray-900">{procedure.name}</h2>
           <div className="mt-1 flex items-center gap-2">
             <StatusBadge status={procedure.status ?? "draft"} />
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${releaseChannelBadgeClass(procedure.release_channel)}`}
+            >
+              {currentReleaseChannel}
+            </span>
             {procedure.effective_date && (
               <span className="text-xs text-gray-400">Effective: {procedure.effective_date}</span>
             )}
@@ -403,8 +538,40 @@ export default function ProcedureVersionDetailPage() {
           <p className="mt-1 text-xs text-gray-400">
             ID: {procedure.procedure_id} · Version: {procedure.version}
           </p>
+          {(procedure.promoted_at || procedure.promoted_by || procedure.promoted_from_version) && (
+            <p className="mt-1 text-xs text-gray-400">
+              {procedure.promoted_at ? `Promoted ${new Date(procedure.promoted_at).toLocaleString()}` : "Promoted"}
+              {procedure.promoted_by ? ` by ${procedure.promoted_by}` : ""}
+              {procedure.promoted_from_version ? ` from v${procedure.promoted_from_version}` : ""}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
+          {canRollback && (
+            <button
+              onClick={openRollbackModal}
+              disabled={rollingBack || promotingTo !== null}
+              className="rounded-lg border border-orange-300 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-60"
+            >
+              {rollingBack ? "Rolling back..." : "Rollback..."}
+            </button>
+          )}
+          {!canRollback && (
+            <span className="text-xs text-gray-400">
+              No same-channel rollback targets available
+            </span>
+          )}
+          {nextReleaseChannel && (
+            <button
+              onClick={() => handlePromote(nextReleaseChannel)}
+              disabled={promotingTo !== null || rollingBack}
+              className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+            >
+              {promotingTo === nextReleaseChannel
+                ? `Promoting to ${nextReleaseChannel.toUpperCase()}...`
+                : `Promote to ${nextReleaseChannel.toUpperCase()}`}
+            </button>
+          )}
           <button
             onClick={openStartRun}
             disabled={runCreating}
@@ -505,7 +672,7 @@ export default function ProcedureVersionDetailPage() {
           <div className="space-y-3">
             {nodeEntries.map(([nodeId, node]: [string, any]) => (
               <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white" style={{ background: NODE_TYPE_BG[node.type as string] ?? "#6B7280" }}>{node.type}</span>
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${NODE_TYPE_BADGE_CLASS[node.type as string] ?? "bg-gray-500"}`}>{node.type}</span>
                 <div>
                   <p className="text-sm font-medium">{nodeId}</p>
                   {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
@@ -769,12 +936,22 @@ export default function ProcedureVersionDetailPage() {
               <div className="space-y-2">
                 {versions.map((v) => (
                   <div key={v.version} className="flex items-center justify-between rounded-lg border border-gray-100 p-3">
-                    <Link
-                      href={`/procedures/${encodeURIComponent(v.procedure_id)}/${encodeURIComponent(v.version)}`}
-                      className={`text-sm font-medium ${v.version === version ? "text-primary-600 font-bold" : "text-gray-700 hover:text-primary-600"}`}
-                    >
-                      v{v.version} {v.version === version && "(current)"}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <Link
+                        href={`/procedures/${encodeURIComponent(v.procedure_id)}/${encodeURIComponent(v.version)}`}
+                        className={`text-sm font-medium ${v.version === version ? "text-primary-600 font-bold" : "text-gray-700 hover:text-primary-600"}`}
+                      >
+                        v{v.version} {v.version === version && "(current)"}
+                      </Link>
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${releaseChannelBadgeClass(v.release_channel)}`}
+                      >
+                        {(v.release_channel ?? "dev").toUpperCase()}
+                      </span>
+                      {v.promoted_by && (
+                        <span className="text-xs text-gray-400">by {v.promoted_by}</span>
+                      )}
+                    </div>
                     <span className="text-xs text-gray-400">{new Date(v.created_at).toLocaleString()}</span>
                   </div>
                 ))}
@@ -955,8 +1132,9 @@ export default function ProcedureVersionDetailPage() {
             <div className="space-y-4">
               {/* Type selector */}
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">Trigger Type</label>
+                <label htmlFor="trigger_type" className="mb-1 block text-xs font-medium text-gray-600">Trigger Type</label>
                 <select
+                  id="trigger_type"
                   value={triggerForm.trigger_type}
                   onChange={(e) => setTriggerForm((f) => ({ ...f, trigger_type: e.target.value }))}
                   className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
@@ -971,10 +1149,11 @@ export default function ProcedureVersionDetailPage() {
               {/* Schedule — shown only for scheduled */}
               {triggerForm.trigger_type === "scheduled" && (
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">
+                  <label htmlFor="trigger_schedule" className="mb-1 block text-xs font-medium text-gray-600">
                     Cron Expression <span className="text-gray-400">(UTC, 5-field)</span>
                   </label>
                   <input
+                    id="trigger_schedule"
                     value={triggerForm.schedule}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, schedule: e.target.value }))}
                     placeholder="e.g. 0 9 * * 1-5  (weekdays at 9am)"
@@ -987,10 +1166,11 @@ export default function ProcedureVersionDetailPage() {
               {triggerForm.trigger_type === "webhook" && (
                 <>
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                    <label htmlFor="trigger_webhook_secret" className="mb-1 block text-xs font-medium text-gray-600">
                       Webhook Secret Env Var <span className="text-gray-400">(optional — env var name holding HMAC key)</span>
                     </label>
                     <input
+                      id="trigger_webhook_secret"
                       value={triggerForm.webhook_secret}
                       onChange={(e) => setTriggerForm((f) => ({ ...f, webhook_secret: e.target.value }))}
                       placeholder="e.g. MY_PROCEDURE_WEBHOOK_SECRET"
@@ -1000,7 +1180,7 @@ export default function ProcedureVersionDetailPage() {
                   <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700">
                     <strong>Webhook URL:</strong>{" "}
                     <code className="font-mono select-all">
-                      {typeof window !== "undefined" ? window.location.origin : ""}/api/triggers/webhook/{encodeURIComponent(procedureId)}
+                      {`${typeof window !== "undefined" ? window.location.origin : ""}/api/triggers/webhook/${encodeURIComponent(procedureId)}`}
                     </code>
                     <p className="mt-1 text-blue-600">
                       Send a POST to this URL. Include{" "}
@@ -1013,8 +1193,9 @@ export default function ProcedureVersionDetailPage() {
               {/* Event source */}
               {triggerForm.trigger_type === "event" && (
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Event Source <span className="text-gray-400">(Kafka topic / SQS queue)</span></label>
+                  <label htmlFor="trigger_event_source" className="mb-1 block text-xs font-medium text-gray-600">Event Source <span className="text-gray-400">(Kafka topic / SQS queue)</span></label>
                   <input
+                    id="trigger_event_source"
                     value={triggerForm.event_source}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, event_source: e.target.value }))}
                     placeholder="e.g. orders.created"
@@ -1026,8 +1207,9 @@ export default function ProcedureVersionDetailPage() {
               {/* Dedupe window + concurrency */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Dedupe Window (seconds)</label>
+                  <label htmlFor="trigger_dedupe_window" className="mb-1 block text-xs font-medium text-gray-600">Dedupe Window (seconds)</label>
                   <input
+                    id="trigger_dedupe_window"
                     type="number"
                     min={0}
                     value={triggerForm.dedupe_window_seconds}
@@ -1037,8 +1219,9 @@ export default function ProcedureVersionDetailPage() {
                   <p className="mt-0.5 text-[10px] text-gray-400">0 = no dedupe</p>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Max Concurrent Runs</label>
+                  <label htmlFor="trigger_max_concurrent_runs" className="mb-1 block text-xs font-medium text-gray-600">Max Concurrent Runs</label>
                   <input
+                    id="trigger_max_concurrent_runs"
                     type="number"
                     min={1}
                     value={triggerForm.max_concurrent_runs}
@@ -1155,6 +1338,12 @@ export default function ProcedureVersionDetailPage() {
                 ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
                 : "All fields have default values. Override any before starting."}
             </p>
+            <input
+              value={runCaseId}
+              onChange={(e) => setRunCaseId(e.target.value)}
+              placeholder="Attach case_id (optional)"
+              className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+            />
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (
@@ -1213,6 +1402,51 @@ export default function ProcedureVersionDetailPage() {
               <button
                 onClick={() => setShowVarsModal(false)}
                 className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRollbackModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="mb-1 text-base font-semibold text-gray-900">Rollback Procedure Version</h3>
+            <p className="mb-4 text-xs text-gray-500">
+              Select the version to restore into {currentReleaseChannel.toUpperCase()}.
+            </p>
+            <div className="space-y-2">
+              <label htmlFor="rollback-target-version" className="block text-xs font-medium text-gray-700">
+                Target version
+              </label>
+              <select
+                id="rollback-target-version"
+                aria-label="Rollback target version"
+                value={rollbackTargetVersion}
+                onChange={(e) => setRollbackTargetVersion(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+              >
+                {rollbackCandidates.map((candidate) => (
+                  <option key={candidate.version} value={candidate.version}>
+                    v{candidate.version} ({(candidate.release_channel ?? "dev").toUpperCase()} · {candidate.status})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                onClick={() => void handleRollback()}
+                disabled={rollingBack || !rollbackTargetVersion}
+                className="flex-1 rounded-lg bg-orange-600 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+              >
+                {rollingBack ? "Rolling back..." : "Confirm Rollback"}
+              </button>
+              <button
+                onClick={() => setShowRollbackModal(false)}
+                disabled={rollingBack}
+                className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
               >
                 Cancel
               </button>

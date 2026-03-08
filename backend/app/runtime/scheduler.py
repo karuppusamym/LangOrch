@@ -173,18 +173,6 @@ async def _fire_scheduled_trigger(procedure_id: str, version: str) -> None:
             await db.commit()
             logger.info("Cron trigger created run %s for %s v%s", run.run_id, procedure_id, version)
 
-        # Launch execution asynchronously
-        asyncio.create_task(_execute_run(run.run_id, procedure_id, version))
+        # Run is enqueued by fire_trigger(); worker picks it up.
     except Exception:
         logger.exception("Cron trigger failed for %s v%s", procedure_id, version)
-
-
-async def _execute_run(run_id: str, procedure_id: str, version: str) -> None:
-    """Start the execution pipeline for a trigger-fired run."""
-    try:
-        from app.db.engine import async_session
-        from app.services.execution_service import execute_run
-
-        await execute_run(run_id, async_session)
-    except Exception:
-        logger.exception("Execution failed for trigger run %s", run_id)

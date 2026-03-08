@@ -1,0 +1,590 @@
+{
+  "missing_backend": [
+    {
+      "path": "/api/procedures${qs ? ",
+      "method": "GET",
+      "raw": "request(`/procedures${qs ? `"
+    },
+    {
+      "path": "/api/procedures/{id}/versions",
+      "method": "POST",
+      "raw": "request(`/procedures/${id}/versions`"
+    },
+    {
+      "path": "/api/procedures/{id}/{version}/promote",
+      "method": "GET",
+      "raw": "request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/promote`"
+    },
+    {
+      "path": "/api/procedures/{id}/{version}/rollback",
+      "method": "GET",
+      "raw": "request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/rollback`"
+    },
+    {
+      "path": "/api/procedures/{id}/{version}",
+      "method": "POST",
+      "raw": "request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}`"
+    },
+    {
+      "path": "/api/runs${qs ? ",
+      "method": "GET",
+      "raw": "request(`/runs${qs ? `"
+    },
+    {
+      "path": "/api/runs/{id}/cancel",
+      "method": "GET",
+      "raw": "request(`/runs/${id}/cancel`"
+    },
+    {
+      "path": "/api/runs/{id}",
+      "method": "POST",
+      "raw": "request(`/runs/${id}`"
+    },
+    {
+      "path": "/api/runs/cleanup/history?{q.toString()}",
+      "method": "GET",
+      "raw": "request(`/runs/cleanup/history?${q.toString()}`"
+    },
+    {
+      "path": "/api/runs/{runId}/events",
+      "method": "DELETE",
+      "raw": "request(`/runs/${runId}/events`"
+    },
+    {
+      "path": "/api/approvals/{id}/decision",
+      "method": "GET",
+      "raw": "request(`/approvals/${id}/decision`"
+    },
+    {
+      "path": "/api/agents/{agentId}/sync-capabilities",
+      "method": "DELETE",
+      "raw": "request(`/agents/${encodeURIComponent(agentId)}/sync-capabilities`"
+    },
+    {
+      "path": "/api/agents/probe-capabilities?base_url={baseUrl}",
+      "method": "POST",
+      "raw": "request(`/agents/probe-capabilities?base_url=${encodeURIComponent(baseUrl)}`"
+    },
+    {
+      "path": "/api/projects/{projectId}",
+      "method": "POST",
+      "raw": "request(`/projects/${encodeURIComponent(projectId)}`"
+    },
+    {
+      "path": "/api/cases${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases${qs ? `"
+    },
+    {
+      "path": "/api/cases/{caseId}",
+      "method": "POST",
+      "raw": "request(`/cases/${encodeURIComponent(caseId)}`"
+    },
+    {
+      "path": "/api/cases/{caseId}/events?limit={limit}",
+      "method": "DELETE",
+      "raw": "request(`/cases/${encodeURIComponent(caseId)}/events?limit=${limit}`"
+    },
+    {
+      "path": "/api/cases/queue${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/queue${qs ? `"
+    },
+    {
+      "path": "/api/cases/queue/analytics${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/queue/analytics${qs ? `"
+    },
+    {
+      "path": "/api/cases/{caseId}/claim",
+      "method": "GET",
+      "raw": "request(`/cases/${encodeURIComponent(caseId)}/claim`"
+    },
+    {
+      "path": "/api/cases/{caseId}/release",
+      "method": "GET",
+      "raw": "request(`/cases/${encodeURIComponent(caseId)}/release`"
+    },
+    {
+      "path": "/api/cases/sla-policies${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/sla-policies${qs ? `"
+    },
+    {
+      "path": "/api/cases/sla-policies/{policyId}",
+      "method": "POST",
+      "raw": "request(`/cases/sla-policies/${encodeURIComponent(policyId)}`"
+    },
+    {
+      "path": "/api/cases/webhooks${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks${qs ? `"
+    },
+    {
+      "path": "/api/cases/webhooks/{subscriptionId}",
+      "method": "POST",
+      "raw": "request(`/cases/webhooks/${encodeURIComponent(subscriptionId)}`"
+    },
+    {
+      "path": "/api/cases/webhooks/deliveries${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/deliveries${qs ? `"
+    },
+    {
+      "path": "/api/cases/webhooks/dlq${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/dlq${qs ? `"
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/count${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/dlq/count${qs ? `"
+    },
+    {
+      "path": "/api/cases/webhooks/deliveries/summary${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/deliveries/summary${qs ? `"
+    },
+    {
+      "path": "/api/cases/webhooks/deliveries/{deliveryId}/replay",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/deliveries/${encodeURIComponent(deliveryId)}/replay`"
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/replay${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/dlq/replay${qs ? `"
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/purge${qs ? ",
+      "method": "GET",
+      "raw": "request(`/cases/webhooks/dlq/purge${qs ? `"
+    },
+    {
+      "path": "/api/leases{q}",
+      "method": "GET",
+      "raw": "request(`/leases${q}`"
+    },
+    {
+      "path": "/api/leases/{leaseId}",
+      "method": "GET",
+      "raw": "request(`/leases/${leaseId}`"
+    },
+    {
+      "path": "/api/runs/{runId}/checkpoints",
+      "method": "DELETE",
+      "raw": "request(`/runs/${runId}/checkpoints`"
+    },
+    {
+      "path": "/api/audit${query ? ",
+      "method": "GET",
+      "raw": "request(`/audit${query ? `"
+    }
+  ],
+  "unused_backend": [
+    {
+      "path": "/api/procedures/{procedure_id}/{version}/graph",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/procedures/{procedure_id}/{version}/explain",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/procedures/{procedure_id}/{version}/status",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/runs/queue",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/runs/cleanup/history",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/runs/{run_id}/callback",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/approvals/stream",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/runs/{run_id}/stream",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/agents/probe-capabilities",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/agents/bootstrap/{channel}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/agents/heartbeat",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/leases",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/projects/{project_id}/cost-summary",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/queue",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/queue/analytics",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/deliveries",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/dlq",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/count",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/deliveries/summary",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/deliveries/replay-failed",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/replay",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/purge",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/cases/{case_id}/events",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/triggers/webhook/{procedure_id}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/triggers/{procedure_id}/{version}/fire",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/artifacts-admin/cleanup",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/artifacts-admin/stats",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/auth/token",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/auth/sso/status",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/auth/sso/login",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/auth/sso/callback",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/audit",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/agent-credentials/{secret_name}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/health",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/metrics",
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "method_mismatch": [
+    {
+      "path": "/api/triggers/sync",
+      "frontend_method": "DELETE",
+      "backend_methods": [
+        "POST"
+      ],
+      "raw": "request(\"/triggers/sync\""
+    },
+    {
+      "path": "/api/auth/login",
+      "frontend_method": "GET",
+      "backend_methods": [
+        "POST"
+      ],
+      "raw": "request(\"/auth/login\""
+    },
+    {
+      "path": "/api/secrets",
+      "frontend_method": "DELETE",
+      "backend_methods": [
+        "GET",
+        "POST"
+      ],
+      "raw": "request(\"/secrets\""
+    },
+    {
+      "path": "/api/config",
+      "frontend_method": "DELETE",
+      "backend_methods": [
+        "GET",
+        "PATCH"
+      ],
+      "raw": "request(\"/config\""
+    },
+    {
+      "path": "/api/config/test-llm",
+      "frontend_method": "PATCH",
+      "backend_methods": [
+        "POST"
+      ],
+      "raw": "request(\"/config/test-llm\""
+    }
+  ],
+  "matched": [
+    {
+      "path": "/api/procedures/{id}/{version} (matches /api/procedures/{procedure_id}/{version})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/procedures",
+      "method": "GET"
+    },
+    {
+      "path": "/api/runs/{id} (matches /api/runs/{run_id})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/runs",
+      "method": "GET"
+    },
+    {
+      "path": "/api/runs/{id}/retry (matches /api/runs/{run_id}/retry)",
+      "method": "POST"
+    },
+    {
+      "path": "/api/runs/{runId}/artifacts (matches /api/runs/{run_id}/artifacts)",
+      "method": "GET"
+    },
+    {
+      "path": "/api/approvals",
+      "method": "GET"
+    },
+    {
+      "path": "/api/approvals/{id} (matches /api/approvals/{approval_id})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/agents",
+      "method": "GET"
+    },
+    {
+      "path": "/api/agents/{agentId} (matches /api/agents/{agent_id})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/agents/{agentId} (matches /api/agents/{agent_id})",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/actions",
+      "method": "GET"
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET"
+    },
+    {
+      "path": "/api/projects/{projectId} (matches /api/projects/{project_id})",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/cases/{caseId} (matches /api/cases/{case_id})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/cases",
+      "method": "GET"
+    },
+    {
+      "path": "/api/cases/{caseId} (matches /api/cases/{case_id})",
+      "method": "PATCH"
+    },
+    {
+      "path": "/api/cases/sla-policies",
+      "method": "GET"
+    },
+    {
+      "path": "/api/cases/sla-policies/{policyId} (matches /api/cases/sla-policies/{policy_id})",
+      "method": "PATCH"
+    },
+    {
+      "path": "/api/cases/webhooks",
+      "method": "GET"
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/replay-selected",
+      "method": "POST"
+    },
+    {
+      "path": "/api/cases/webhooks/dlq/purge-selected",
+      "method": "POST"
+    },
+    {
+      "path": "/api/runs/{runId}/diagnostics (matches /api/runs/{run_id}/diagnostics)",
+      "method": "GET"
+    },
+    {
+      "path": "/api/runs/metrics/summary",
+      "method": "GET"
+    },
+    {
+      "path": "/api/runs/{runId}/checkpoints/{checkpointId} (matches /api/runs/{run_id}/checkpoints/{checkpoint_id})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/triggers",
+      "method": "GET"
+    },
+    {
+      "path": "/api/triggers/{procedureId}/{version} (matches /api/triggers/{procedure_id}/{version})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/auth/me",
+      "method": "GET"
+    },
+    {
+      "path": "/api/users",
+      "method": "GET"
+    },
+    {
+      "path": "/api/users/{userId} (matches /api/users/{user_id})",
+      "method": "GET"
+    },
+    {
+      "path": "/api/users/{userId} (matches /api/users/{user_id})",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/secrets",
+      "method": "GET"
+    },
+    {
+      "path": "/api/secrets/{name}",
+      "method": "GET"
+    },
+    {
+      "path": "/api/secrets/{name}",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/config",
+      "method": "GET"
+    },
+    {
+      "path": "/api/orchestrators",
+      "method": "GET"
+    },
+    {
+      "path": "/api/agents/pools",
+      "method": "GET"
+    }
+  ]
+}

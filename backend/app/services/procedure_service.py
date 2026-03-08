@@ -3,12 +3,38 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Procedure
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+_VALID_RELEASE_CHANNELS = ("dev", "qa", "prod")
+_RELEASE_CHANNEL_ORDER = {"dev": 1, "qa": 2, "prod": 3}
+
+
+def _sync_release_to_ckp(proc: Procedure) -> None:
+    """Mirror release metadata into stored CKP JSON for consistency."""
+    try:
+        ckp = json.loads(proc.ckp_json) if proc.ckp_json else {}
+        ckp["status"] = proc.status
+        release = ckp.get("release") or {}
+        release["channel"] = proc.release_channel
+        release["promoted_from_version"] = proc.promoted_from_version
+        release["promoted_at"] = proc.promoted_at.isoformat() if proc.promoted_at else None
+        release["promoted_by"] = proc.promoted_by
+        ckp["release"] = release
+        proc.ckp_json = json.dumps(ckp)
+    except Exception:
+        # Keep relational columns authoritative if legacy/malformed JSON is encountered.
+        return
 
 
 async def import_procedure(db: AsyncSession, ckp: dict[str, Any], project_id: str | None = None) -> Procedure:
@@ -29,6 +55,9 @@ async def import_procedure(db: AsyncSession, ckp: dict[str, Any], project_id: st
         provenance_json=json.dumps(ckp["provenance"]) if ckp.get("provenance") else None,
         retrieval_metadata_json=json.dumps(ckp["retrieval_metadata"]) if ckp.get("retrieval_metadata") else None,
         trigger_config_json=json.dumps(ckp["trigger"]) if ckp.get("trigger") else None,
+        release_channel=((ckp.get("release") or {}).get("channel") or "dev"),
+        promoted_from_version=(ckp.get("release") or {}).get("promoted_from_version"),
+        promoted_by=(ckp.get("release") or {}).get("promoted_by"),
         project_id=project_id,
     )
     db.add(proc)
@@ -211,3 +240,167 @@ async def patch_procedure_status(
     await db.flush()
     await db.refresh(proc)
     return proc
+
+
+async def promote_procedure(
+    db: AsyncSession,
+    procedure_id: str,
+    version: str,
+    target_channel: str,
+    promoted_by: str,
+) -> tuple[Procedure | None, str | None]:
+    """Promote a procedure version into a release channel.
+
+    Returns ``(promoted_procedure, previous_channel_version)``.
+    """
+    if target_channel not in _VALID_RELEASE_CHANNELS:
+        raise ValueError(
+            f"Invalid target_channel {target_channel!r}. Must be one of: {_VALID_RELEASE_CHANNELS}"
+        )
+
+    proc = await get_procedure(db, procedure_id, version)
+    if not proc:
+        return None, None
+
+    source_channel = proc.release_channel or "dev"
+    if source_channel not in _RELEASE_CHANNEL_ORDER:
+        source_channel = "dev"
+    if _RELEASE_CHANNEL_ORDER[target_channel] < _RELEASE_CHANNEL_ORDER[source_channel]:
+        raise ValueError(
+            f"Cannot promote from {source_channel} to {target_channel}. Use forward channels only."
+        )
+
+    current_in_target_stmt = (
+        select(Procedure)
+        .where(
+            Procedure.procedure_id == procedure_id,
+            Procedure.release_channel == target_channel,
+            Procedure.status == "active",
+            Procedure.version != proc.version,
+        )
+        .order_by(Procedure.promoted_at.desc(), Procedure.created_at.desc())
+    )
+    existing_active = (await db.execute(current_in_target_stmt)).scalars().first()
+    previous_channel_version = existing_active.version if existing_active else None
+
+    if existing_active:
+        existing_active.status = "deprecated"
+        _sync_release_to_ckp(existing_active)
+
+    proc.release_channel = target_channel
+    proc.promoted_from_version = previous_channel_version
+    proc.promoted_at = _utcnow()
+    proc.promoted_by = promoted_by
+    proc.status = "active"
+    _sync_release_to_ckp(proc)
+
+    # Record deployment history for audit trail
+    from app.db.models import ProcedureDeploymentHistory
+    deployment_record = ProcedureDeploymentHistory(
+        procedure_id=procedure_id,
+        action="promote",
+        target_channel=target_channel,
+        deployed_version=version,
+        replaced_version=previous_channel_version,
+        deployed_by=promoted_by,
+        deployed_at=_utcnow(),
+        status="success",
+    )
+    db.add(deployment_record)
+
+    await db.flush()
+    await db.refresh(proc)
+    return proc, previous_channel_version
+
+
+async def rollback_procedure(
+    db: AsyncSession,
+    procedure_id: str,
+    version: str,
+    target_channel: str,
+    rolled_back_by: str,
+    rollback_to_version: str | None = None,
+) -> tuple[Procedure | None, str]:
+    """Rollback a promoted procedure to a prior version within a release channel.
+
+    Returns ``(restored_procedure, replaced_version)`` where ``replaced_version``
+    is the currently active version being replaced by rollback.
+    """
+    if target_channel not in _VALID_RELEASE_CHANNELS:
+        raise ValueError(
+            f"Invalid target_channel {target_channel!r}. Must be one of: {_VALID_RELEASE_CHANNELS}"
+        )
+
+    current_proc = await get_procedure(db, procedure_id, version)
+    if not current_proc:
+        return None, ""
+
+    resolved_current_channel = current_proc.release_channel or "dev"
+    if resolved_current_channel not in _VALID_RELEASE_CHANNELS:
+        resolved_current_channel = "dev"
+    if resolved_current_channel != target_channel:
+        raise ValueError(
+            f"Cannot rollback {procedure_id}:{version} in channel {target_channel}; current version is in {resolved_current_channel}."
+        )
+    if current_proc.status != "active":
+        raise ValueError(
+            f"Rollback can only be performed from an active version. {procedure_id}:{version} is {current_proc.status}."
+        )
+
+    desired_rollback_version = rollback_to_version or current_proc.promoted_from_version
+    if not desired_rollback_version:
+        raise ValueError(
+            "rollback_to_version is required when promoted_from_version is not available on current version."
+        )
+    if desired_rollback_version == current_proc.version:
+        raise ValueError("rollback_to_version must differ from current version.")
+
+    rollback_proc = await get_procedure(db, procedure_id, desired_rollback_version)
+    if not rollback_proc:
+        raise ValueError(
+            f"Rollback target version {desired_rollback_version} not found for procedure {procedure_id}."
+        )
+
+    rollback_channel = rollback_proc.release_channel or "dev"
+    if rollback_channel not in _VALID_RELEASE_CHANNELS:
+        rollback_channel = "dev"
+    if rollback_channel != target_channel:
+        raise ValueError(
+            f"Rollback target version {desired_rollback_version} is in {rollback_channel}, not {target_channel}."
+        )
+    if rollback_proc.status == "archived":
+        raise ValueError(
+            f"Rollback target version {desired_rollback_version} is archived and cannot be restored."
+        )
+    if rollback_proc.status == "draft":
+        raise ValueError(
+            f"Rollback target version {desired_rollback_version} is draft and cannot be restored."
+        )
+
+    current_proc.status = "deprecated"
+    _sync_release_to_ckp(current_proc)
+
+    rollback_proc.release_channel = target_channel
+    rollback_proc.status = "active"
+    rollback_proc.promoted_from_version = current_proc.version
+    rollback_proc.promoted_at = _utcnow()
+    rollback_proc.promoted_by = rolled_back_by
+    _sync_release_to_ckp(rollback_proc)
+
+    # Record rollback in deployment history for audit trail
+    from app.db.models import ProcedureDeploymentHistory
+    deployment_record = ProcedureDeploymentHistory(
+        procedure_id=procedure_id,
+        action="rollback",
+        target_channel=target_channel,
+        deployed_version=desired_rollback_version,
+        replaced_version=current_proc.version,
+        deployed_by=rolled_back_by,
+        deployed_at=_utcnow(),
+        status="success",
+    )
+    db.add(deployment_record)
+
+    await db.flush()
+    await db.refresh(rollback_proc)
+    return rollback_proc, current_proc.version

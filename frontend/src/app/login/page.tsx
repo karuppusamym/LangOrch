@@ -34,7 +34,7 @@ function LoginContent() {
     }
 
     // Check if SSO is enabled
-    fetch("http://localhost:8000/api/auth/sso/status")
+    fetch("/api/auth/sso/status")
       .then(r => r.json())
       .then(d => setSsoEnabled(d.sso_enabled))
       .catch(() => setSsoEnabled(false));
@@ -163,7 +163,7 @@ function LoginContent() {
           {ssoEnabled && (
             <div className="pt-4 border-t border-neutral-200 dark:border-neutral-800">
               <a
-                href="http://localhost:8000/api/auth/sso/login"
+                href="/api/auth/sso/login"
                 className="w-full flex items-center justify-center gap-3 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 py-2.5 text-sm font-semibold text-neutral-900 dark:text-neutral-100 hover:bg-neutral-50 dark:hover:bg-neutral-700 transition-colors"
               >
                 <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">

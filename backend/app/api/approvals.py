@@ -105,7 +105,7 @@ async def submit_decision(
                 RunEvent.event_type == "approval_requested",
                 RunEvent.node_id == approval.node_id,
             )
-            .order_by(desc(RunEvent.created_at))
+            .order_by(desc(RunEvent.ts))
             .limit(1)
         )
         _node_name_json = _node_name_row.scalar()

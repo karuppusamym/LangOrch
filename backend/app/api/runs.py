@@ -9,9 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db, async_session
-from app.db.models import RunJob
+from app.db.models import RunJob, RunEvent
 from app.schemas.runs import ArtifactOut, RunCreate, RunDiagnostics, RunOut, CheckpointMetadata, CheckpointState
-from app.services import procedure_service, run_service
+from app.services import case_service, procedure_service, run_service
 from app.services import checkpoint_service
 from app.utils.metrics import get_metrics_summary
 from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled, mark_cancelled_db as _mark_run_cancelled_db
@@ -41,6 +41,10 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _princ
                 status_code=422,
                 detail={"message": "Invalid input_vars", "errors": _errors},
             )
+    if body.case_id:
+        case = await case_service.get_case(db, body.case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
 
     run = await run_service.create_run(
         db,
@@ -49,6 +53,7 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _princ
         input_vars=body.input_vars,
         # inherit project from procedure if caller didn't specify
         project_id=body.project_id or proc.project_id,
+        case_id=body.case_id,
     )
 
     # Atomically enqueue a durable RunJob in the same transaction as the Run.
@@ -61,6 +66,7 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _princ
 async def list_runs(
     procedure_id: str | None = None,
     project_id: str | None = None,
+    case_id: str | None = None,
     status: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
@@ -73,6 +79,7 @@ async def list_runs(
         db,
         procedure_id=procedure_id,
         project_id=project_id,
+        case_id=case_id,
         status=status,
         created_from=created_from,
         created_to=created_to,
@@ -271,12 +278,6 @@ async def workflow_callback(
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    if run.status != "paused":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run {run_id} is not paused (status={run.status}). Callback ignored.",
-        )
-
     callback_status = body.get("status", "success")
     output_vars = body.get("output_vars") or body.get("output") or {}
     error_msg = body.get("error")
@@ -285,12 +286,97 @@ async def workflow_callback(
 
     import logging as _logging
     _log = _logging.getLogger("langorch.api.runs.callback")
+
+    # ── Idempotency check: reject duplicate callbacks ───────────────────────
+    # Check if we already processed a callback for this node/step combination
+    from sqlalchemy import select, desc
+    existing_callback = await db.execute(
+        select(RunEvent)
+        .where(
+            RunEvent.run_id == run_id,
+            RunEvent.event_type == "workflow_callback_received",
+            RunEvent.node_id == resume_node,
+            RunEvent.step_id == resume_step,
+        )
+        .order_by(desc(RunEvent.ts))
+        .limit(1)
+    )
+    if existing_callback.scalar_one_or_none():
+        _log.warning(
+            "Duplicate callback ignored: run=%s node=%s step=%s",
+            run_id, resume_node, resume_step,
+        )
+        return {
+            "resumed": False,
+            "status": "duplicate",
+            "run_id": run_id,
+            "message": "Callback already processed for this step"
+        }
+
+    # ── State validation ─────────────────────────────────────────────────────
+    if run.status != "paused":
+        # If run is already completed/failed, this is a late callback - acknowledge but ignore
+        if run.status in ("completed", "failed", "cancelled"):
+            _log.warning(
+                "Late callback for terminal run: run=%s status=%s",
+                run_id, run.status,
+            )
+            return {
+                "resumed": False,
+                "status": run.status,
+                "run_id": run_id,
+                "message": f"Run already in terminal state: {run.status}"
+            }
+        # For other states (queued, running), reject as conflict
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is not paused (status={run.status}). Callback ignored.",
+        )
+
+    # ── Node/Step validation ─────────────────────────────────────────────────
+    # Verify the callback's node/step match the paused workflow delegation event
+    delegation_event = await db.execute(
+        select(RunEvent.payload_json)
+        .where(
+            RunEvent.run_id == run_id,
+            RunEvent.event_type == "workflow_delegated",
+        )
+        .order_by(desc(RunEvent.ts))
+        .limit(1)
+    )
+    delegation_payload_json = delegation_event.scalar_one_or_none()
+    if delegation_payload_json:
+        import json as _json
+        delegation_payload = _json.loads(delegation_payload_json) if isinstance(delegation_payload_json, str) else delegation_payload_json
+        expected_node = delegation_payload.get("resume_node_id")
+        expected_step = delegation_payload.get("resume_step_id")
+        
+        if resume_node and expected_node and resume_node != expected_node:
+            _log.warning(
+                "Callback node_id mismatch: run=%s expected=%s got=%s",
+                run_id, expected_node, resume_node,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Callback node_id '{resume_node}' does not match expected '{expected_node}'"
+            )
+        
+        if resume_step and expected_step and resume_step != expected_step:
+            _log.warning(
+                "Callback step_id mismatch: run=%s expected=%s got=%s",
+                run_id, expected_step, resume_step,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Callback step_id '{resume_step}' does not match expected '{expected_step}'"
+            )
+
     _log.info(
         "Workflow callback received: run=%s status=%s node=%s step=%s",
         run_id, callback_status, resume_node, resume_step,
     )
 
-    # Record the callback event
+    # Record the callback event (this acts as idempotency marker)
     await run_service.emit_event(
         db, run_id, "workflow_callback_received",
         node_id=resume_node, step_id=resume_step,

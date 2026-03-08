@@ -14,6 +14,7 @@ class RunCreate(BaseModel):
     procedure_version: str | None = None
     input_vars: dict[str, Any] | None = None
     project_id: str | None = None
+    case_id: str | None = None
 
 
 class RunOut(BaseModel):
@@ -37,6 +38,7 @@ class RunOut(BaseModel):
     trigger_type: str | None = None
     triggered_by: str | None = None
     project_id: str | None = None
+    case_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -62,6 +64,7 @@ class RunOut(BaseModel):
                 "trigger_type": getattr(data, "trigger_type", None),
                 "triggered_by": getattr(data, "triggered_by", None),
                 "project_id": data.project_id,
+                "case_id": getattr(data, "case_id", None),
                 "created_at": data.created_at,
                 "updated_at": data.updated_at,
             }

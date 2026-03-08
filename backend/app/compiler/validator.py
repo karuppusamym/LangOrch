@@ -111,6 +111,8 @@ def validate_ir(ir: IRProcedure) -> list[str]:
         errors.append("trigger.type 'scheduled' requires a 'schedule' (cron expression).")
     if ir.trigger and ir.trigger.type == "webhook" and not ir.trigger.webhook_secret:
         errors.append("trigger.type 'webhook' requires 'webhook_secret' for HMAC verification.")
+    if ir.trigger and ir.trigger.type == "event" and not ir.trigger.event_source:
+        errors.append("trigger.type 'event' requires 'event.source' or 'event_source'.")
 
     _global_wf_mode = (ir.global_config or {}).get("workflow_dispatch_mode")
     if _global_wf_mode is not None:
@@ -121,6 +123,17 @@ def validate_ir(ir: IRProcedure) -> list[str]:
                 f"'{_global_wf_mode}' is invalid. Must be one of: "
                 f"{sorted(_VALID_WORKFLOW_DISPATCH_MODES)}."
             )
+
+    # Node-level workflow dispatch mode override validation
+    for nid, node in ir.nodes.items():
+        _node_dispatch_mode = getattr(node, "dispatch_mode", None)
+        if _node_dispatch_mode is not None:
+            _node_dispatch_mode_str = str(_node_dispatch_mode).strip().lower()
+            if _node_dispatch_mode_str not in _VALID_WORKFLOW_DISPATCH_MODES:
+                errors.append(
+                    f"Node '{nid}': dispatch_mode '{_node_dispatch_mode}' is invalid. "
+                    f"Must be one of: {sorted(_VALID_WORKFLOW_DISPATCH_MODES)}."
+                )
 
     # ── Unreachable node detection ──────────────────────────────
     if ir.start_node_id and ir.start_node_id in all_node_ids:

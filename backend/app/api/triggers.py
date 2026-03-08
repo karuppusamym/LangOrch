@@ -6,10 +6,10 @@ import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import async_session, get_db
+from app.db.engine import get_db
 from app.schemas.triggers import (
     TriggerFireOut,
     TriggerRegistrationCreate,
@@ -17,7 +17,6 @@ from app.schemas.triggers import (
     WebhookFireOut,
 )
 from app.services import trigger_service
-from app.services.execution_service import execute_run
 
 logger = logging.getLogger("langorch.api.triggers")
 
@@ -36,7 +35,6 @@ router = APIRouter()
 async def receive_webhook(
     procedure_id: str,
     request: Request,
-    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     x_langorch_signature: Annotated[str | None, Header()] = None,
 ):
@@ -116,9 +114,6 @@ async def receive_webhook(
 
     await db.commit()
 
-    # Launch execution in background
-    background.add_task(execute_run, run.run_id, async_session)
-
     return WebhookFireOut(
         run_id=run.run_id,
         procedure_id=procedure_id,
@@ -138,7 +133,6 @@ async def receive_webhook(
 async def fire_trigger_manual(
     procedure_id: str,
     version: str,
-    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a run via the trigger system, tagged as trigger_type=manual."""
@@ -156,7 +150,6 @@ async def fire_trigger_manual(
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
 
     await db.commit()
-    background.add_task(execute_run, run.run_id, async_session)
 
     return TriggerFireOut(
         run_id=run.run_id,

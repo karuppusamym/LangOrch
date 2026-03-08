@@ -10,7 +10,16 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
-from app.schemas.procedures import ProcedureCreate, ProcedureDetail, ProcedureOut, ProcedureUpdate
+from app.schemas.procedures import (
+    ProcedureCreate,
+    ProcedureDetail,
+    ProcedureOut,
+    ProcedurePromoteRequest,
+    ProcedurePromoteResponse,
+    ProcedureRollbackRequest,
+    ProcedureRollbackResponse,
+    ProcedureUpdate,
+)
 from app.services import procedure_service
 from app.services.graph_service import extract_graph
 from app.services.explain_service import explain_procedure
@@ -19,6 +28,7 @@ from app.compiler.validator import validate_ir
 from app.compiler.binder import bind_executors
 from app.auth import require_role
 from app.auth.deps import Principal
+from app.api.audit import emit_audit
 
 router = APIRouter()
 
@@ -154,3 +164,100 @@ async def patch_procedure_status(
     if not proc:
         raise HTTPException(status_code=404, detail="Procedure not found")
     return proc
+
+
+@router.post("/{procedure_id}/{version}/promote", response_model=ProcedurePromoteResponse)
+async def promote_procedure(
+    procedure_id: str,
+    version: str,
+    body: ProcedurePromoteRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("operator")),
+):
+    """Promote a procedure version across release channels (dev -> qa -> prod)."""
+    try:
+        promoted, previous_version = await procedure_service.promote_procedure(
+            db,
+            procedure_id,
+            version,
+            target_channel=body.target_channel,
+            promoted_by=principal.identity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if not promoted:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+
+    await emit_audit(
+        db,
+        category="procedure_release",
+        action="promote",
+        actor=principal.identity,
+        description=f"Promoted procedure {procedure_id}:{version} to {body.target_channel}",
+        resource_type="procedure",
+        resource_id=f"{procedure_id}:{version}",
+        meta={
+            "procedure_id": procedure_id,
+            "version": version,
+            "target_channel": body.target_channel,
+            "previous_channel_version": previous_version,
+        },
+    )
+    await db.commit()
+
+    return ProcedurePromoteResponse(
+        promoted=promoted,
+        previous_channel_version=previous_version,
+    )
+
+
+@router.post("/{procedure_id}/{version}/rollback", response_model=ProcedureRollbackResponse)
+async def rollback_procedure(
+    procedure_id: str,
+    version: str,
+    body: ProcedureRollbackRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("operator")),
+):
+    """Rollback a promoted procedure version in a release channel."""
+    try:
+        restored, replaced_version = await procedure_service.rollback_procedure(
+            db,
+            procedure_id,
+            version,
+            target_channel=body.target_channel,
+            rolled_back_by=principal.identity,
+            rollback_to_version=body.rollback_to_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if not restored:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+
+    await emit_audit(
+        db,
+        category="procedure_release",
+        action="rollback",
+        actor=principal.identity,
+        description=(
+            f"Rolled back procedure {procedure_id}:{version} "
+            f"to {restored.version} in {body.target_channel}"
+        ),
+        resource_type="procedure",
+        resource_id=f"{procedure_id}:{version}",
+        meta={
+            "procedure_id": procedure_id,
+            "from_version": version,
+            "restored_version": restored.version,
+            "target_channel": body.target_channel,
+            "replaced_version": replaced_version,
+        },
+    )
+    await db.commit()
+
+    return ProcedureRollbackResponse(
+        restored=restored,
+        replaced_version=replaced_version,
+    )

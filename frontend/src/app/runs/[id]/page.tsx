@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { getRun, listRunEvents, listRunArtifacts, cancelRun, retryRun, createRun, getRunDiagnostics, getGraph, listRunCheckpoints, getCheckpointState, getProcedure, listApprovals, submitApprovalDecision } from "@/lib/api";
+import { getRun, listRunEvents, listRunArtifacts, cancelRun, retryRun, createRun, getRunDiagnostics, getGraph, listRunCheckpoints, getCheckpointState, getProcedure, listApprovals, submitApprovalDecision, isNotFoundError } from "@/lib/api";
 import { subscribeToRunEvents } from "@/lib/sse";
 import { useToast } from "@/components/Toast";
 import { redactInputVars, isFieldSensitive, REDACTION_PLACEHOLDER, flattenVariablesSchema } from "@/lib/redact";
@@ -242,11 +242,13 @@ export default function RunDetailPage() {
   const [retryVarsErrors, setRetryVarsErrors] = useState<Record<string, string>>({});
   const [retryCreating, setRetryCreating] = useState(false);
   const [procedureDetail, setProcedureDetail] = useState<ProcedureDetail | null>(null);
+  const [procedureLoadIssue, setProcedureLoadIssue] = useState<string | null>(null);
 
   // Load run + events
   useEffect(() => {
     async function load() {
       try {
+        setProcedureLoadIssue(null);
         const [r, evts, arts] = await Promise.all([
           getRun(runId),
           listRunEvents(runId),
@@ -256,10 +258,31 @@ export default function RunDetailPage() {
         setEvents(evts);
         setArtifacts(arts);
         getRunDiagnostics(runId).then(setDiagnostics).catch(() => null);
-        getGraph(r.procedure_id, r.procedure_version).then((d) => setGraphData(d as { nodes: unknown[]; edges: unknown[] })).catch(() => null);
         listRunCheckpoints(runId).then(setCheckpoints).catch(() => null);
-        // Load procedure detail for schema-based sensitive-field detection
-        getProcedure(r.procedure_id, r.procedure_version).then(setProcedureDetail).catch(() => null);
+        // Load procedure detail for schema-based sensitive-field detection.
+        // Only request graph if the procedure version exists.
+        getProcedure(r.procedure_id, r.procedure_version)
+          .then((detail) => {
+            setProcedureDetail(detail);
+            return getGraph(r.procedure_id, r.procedure_version)
+              .then((d) => setGraphData(d as { nodes: unknown[]; edges: unknown[] }))
+              .catch((err) => {
+                if (isNotFoundError(err)) {
+                  setGraphData(null);
+                  setProcedureLoadIssue("Referenced procedure graph is no longer available.");
+                }
+                return null;
+              });
+          })
+          .catch((err) => {
+            if (isNotFoundError(err)) {
+              setProcedureDetail(null);
+              setGraphData(null);
+              setProcedureLoadIssue("Referenced procedure version is no longer available.");
+              return null;
+            }
+            return null;
+          });
         // Load pending approval if run is waiting
         if (r.status === "waiting_approval") {
           listApprovals()
@@ -365,7 +388,19 @@ export default function RunDetailPage() {
       setRetryVarsForm(defaults);
       setRetryVarsErrors({});
       setShowRetryModal(true);
-    } catch {
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        toast("Referenced procedure version is no longer available. Retrying without schema.", "warning");
+        // Fallback: allow direct retry without schema
+        try {
+          const newRun = await retryRun(run.run_id);
+          toast("Run retried", "success");
+          window.location.href = `/runs/${newRun.run_id}`;
+        } catch {
+          toast("Failed to retry run", "error");
+        }
+        return;
+      }
       // Fallback: cannot load procedure, do simple retry
       try {
         const newRun = await retryRun(run.run_id);
@@ -415,7 +450,12 @@ export default function RunDetailPage() {
     if (!run) return;
     setRetryCreating(true);
     try {
-      const newRun = await createRun(run.procedure_id, run.procedure_version, vars);
+      const newRun = await createRun(
+        run.procedure_id,
+        run.procedure_version,
+        vars,
+        { case_id: run.case_id ?? undefined, project_id: run.project_id ?? undefined }
+      );
       toast("Retry run created with modified inputs", "success");
       window.location.href = `/runs/${newRun.run_id}`;
     } catch {
@@ -537,6 +577,16 @@ export default function RunDetailPage() {
         <div className="rounded-xl border border-red-200 bg-red-50 p-4">
           <p className="mb-1 text-sm font-semibold text-red-700">Failure reason</p>
           <pre className="whitespace-pre-wrap break-words font-mono text-xs text-red-600">{run.error_message}</pre>
+        </div>
+      )}
+
+      {/* Procedure reference warning */}
+      {procedureLoadIssue && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm font-semibold text-amber-800">Procedure Version Unavailable</p>
+          <p className="mt-1 text-sm text-amber-700">
+            {procedureLoadIssue} Historical run data is still available.
+          </p>
         </div>
       )}
 

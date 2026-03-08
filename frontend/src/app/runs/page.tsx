@@ -217,6 +217,7 @@ export default function RunsPage() {
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+            aria-label="Filter runs by status"
             className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none"
           >
             <option value="all">All Status</option>
@@ -230,6 +231,7 @@ export default function RunsPage() {
           <select
             value={order}
             onChange={(e) => setOrder(e.target.value as "asc" | "desc")}
+            aria-label="Sort runs by created date"
             className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none"
           >
             <option value="desc">Newest first</option>
