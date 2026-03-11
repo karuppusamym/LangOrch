@@ -36,6 +36,7 @@ class OrchestratorState(TypedDict, total=False):
     loop_index: int
     loop_item: Any
     loop_results: list[Any] | None
+    events: list[dict[str, Any]]
 
     # HITL
     approval_id: str | None
@@ -50,6 +51,10 @@ class OrchestratorState(TypedDict, total=False):
 
     # Terminal status
     terminal_status: str | None
+
+    # Internal orchestration markers
+    _workflow_pending: bool | None
+    _subflow_stack: list[str]
 
     # Selective checkpointing — set by graph_builder when node.is_checkpoint=True
     # execution_service reads this to force-save a checkpoint snapshot after the node

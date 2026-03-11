@@ -1,275 +1,510 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { listProcedures, listVersions, getGraph } from "@/lib/api";
-import type { Procedure } from "@/lib/types";
+import { useRouter, useSearchParams } from "next/navigation";
 
-const WorkflowGraph = dynamic(
-  () => import("@/components/WorkflowGraphWrapper"),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-      </div>
-    ),
+import type { CkpWorkflowGraph } from "@/builder-v2/reference-contract";
+import WorkflowBuilderV2Wrapper from "@/components/WorkflowBuilderV2Wrapper";
+import { useToast } from "@/components/Toast";
+import { getProcedure, listProcedures, listVersions, updateProcedure } from "@/lib/api";
+import type { Procedure, ProcedureDetail } from "@/lib/types";
+
+const PROCEDURE_PAGE_SIZE = 9;
+const RECENT_PROCEDURES_STORAGE_KEY = "langorch.builder.recent-procedures";
+const LAST_BUILDER_SESSION_STORAGE_KEY = "langorch.builder.last-session";
+const MAX_RECENT_PROCEDURES = 6;
+
+type RecentProcedureEntry = {
+  procedureId: string;
+  version: string;
+  name: string;
+  description: string;
+  status: string;
+  openedAt: string;
+};
+
+function statusClass(status: string | null | undefined): string {
+  if (status === "active") return "bg-emerald-100 text-emerald-700";
+  if (status === "draft") return "bg-amber-100 text-amber-700";
+  return "bg-neutral-100 text-neutral-600";
+}
+
+function readRecentProcedures(): RecentProcedureEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_PROCEDURES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as RecentProcedureEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
-);
+}
 
-export default function BuilderPage() {
+function writeRecentProcedures(entries: RecentProcedureEntry[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(RECENT_PROCEDURES_STORAGE_KEY, JSON.stringify(entries));
+}
+
+function writeLastBuilderSession(entry: RecentProcedureEntry) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LAST_BUILDER_SESSION_STORAGE_KEY, JSON.stringify(entry));
+}
+
+function readLastBuilderSession(): RecentProcedureEntry | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_BUILDER_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as RecentProcedureEntry;
+    return parsed?.procedureId ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function BuilderPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { toast } = useToast();
+
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selectedVersion, setSelectedVersion] = useState("latest");
-  const [graphData, setGraphData] = useState<{ nodes: unknown[]; edges: unknown[] } | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [selectedProcedure, setSelectedProcedure] = useState<ProcedureDetail | null>(null);
+  const [loadingProcedures, setLoadingProcedures] = useState(true);
+  const [loadingBuilder, setLoadingBuilder] = useState(false);
+  const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [error, setError] = useState("");
-  const [selectedProc, setSelectedProc] = useState<Procedure | null>(null);
-  const [refreshed, setRefreshed] = useState(false);
-  // Pagination for quick-access grid
   const [procPage, setProcPage] = useState(0);
-  const PROC_PAGE_SIZE = 9;
+  const [recentProcedures, setRecentProcedures] = useState<RecentProcedureEntry[]>([]);
+  const [lastSession, setLastSession] = useState<RecentProcedureEntry | null>(null);
+
+  const procedureQuery = searchParams.get("procedure") ?? "";
+  const versionQuery = searchParams.get("version") ?? "latest";
 
   useEffect(() => {
-    listProcedures()
-      .then(setProcedures)
-      .catch(() => setError("Could not load procedures"));
+    setRecentProcedures(readRecentProcedures());
+    setLastSession(readLastBuilderSession());
   }, []);
 
-  async function loadVersionsForProc(id: string) {
-    try {
-      const vers = await listVersions(id);
-      setVersions(vers);
-      return vers;
-    } catch {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProcedures() {
+      setLoadingProcedures(true);
+      try {
+        const items = await listProcedures();
+        if (!cancelled) {
+          setProcedures(items);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Could not load procedures");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingProcedures(false);
+        }
+      }
+    }
+
+    void loadProcedures();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!procedureQuery) {
+      setSelectedId("");
+      setSelectedVersion("latest");
+      setSelectedProcedure(null);
       setVersions([]);
-      return [];
+      return;
     }
+
+    let cancelled = false;
+
+    async function loadSelection() {
+      setLoadingBuilder(true);
+      setError("");
+      try {
+        const [detail, versionList] = await Promise.all([
+          getProcedure(procedureQuery, versionQuery === "latest" ? undefined : versionQuery),
+          listVersions(procedureQuery),
+        ]);
+        if (!cancelled) {
+          setSelectedId(procedureQuery);
+          setSelectedVersion(versionQuery);
+          setSelectedProcedure(detail);
+          setVersions(versionList);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSelectedProcedure(null);
+          setVersions([]);
+          setError(err instanceof Error ? err.message : "Could not load selected procedure");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingBuilder(false);
+        }
+      }
+    }
+
+    void loadSelection();
+    return () => {
+      cancelled = true;
+    };
+  }, [procedureQuery, versionQuery]);
+
+  useEffect(() => {
+    if (!selectedProcedure) return;
+
+    const entry: RecentProcedureEntry = {
+      procedureId: selectedProcedure.procedure_id,
+      version: selectedProcedure.version,
+      name: selectedProcedure.name,
+      description: selectedProcedure.description ?? "",
+      status: selectedProcedure.status ?? "unknown",
+      openedAt: new Date().toISOString(),
+    };
+
+    setRecentProcedures((current) => {
+      const next = [
+        entry,
+        ...current.filter(
+          (item) => !(item.procedureId === entry.procedureId && item.version === entry.version),
+        ),
+      ].slice(0, MAX_RECENT_PROCEDURES);
+      writeRecentProcedures(next);
+      return next;
+    });
+    setLastSession(entry);
+    writeLastBuilderSession(entry);
+  }, [selectedProcedure]);
+
+  const pagedProcedures = useMemo(
+    () => procedures.slice(procPage * PROCEDURE_PAGE_SIZE, (procPage + 1) * PROCEDURE_PAGE_SIZE),
+    [procedures, procPage],
+  );
+
+  function syncQuery(id: string, version: string) {
+    const next = new URLSearchParams();
+    if (id) {
+      next.set("procedure", id);
+      next.set("version", version);
+    }
+    const query = next.toString();
+    router.replace(query ? `/builder?${query}` : "/builder");
   }
 
-  async function doLoadGraph(id: string, version: string, { clearFirst = false } = {}) {
-    if (!id) return;
-    setLoading(true);
-    setError("");
-    if (clearFirst) setGraphData(null);
-    try {
-      const data = await getGraph(id, version);
-      setGraphData(data as { nodes: unknown[]; edges: unknown[] });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load graph");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function onProcedureChange(id: string) {
-    setSelectedId(id);
-    setSelectedVersion("latest");
-    setGraphData(null);
-    setVersions([]);
+  function handleProcedureChange(id: string) {
     setProcPage(0);
-    const proc = procedures.find((p) => p.procedure_id === id) ?? null;
-    setSelectedProc(proc);
-    if (!id) return;
-    await loadVersionsForProc(id);
-    await doLoadGraph(id, "latest", { clearFirst: true });
+    if (!id) {
+      syncQuery("", "latest");
+      return;
+    }
+    syncQuery(id, "latest");
   }
 
-  async function onVersionChange(v: string) {
-    setSelectedVersion(v);
-    await doLoadGraph(selectedId, v, { clearFirst: true });
+  function handleVersionChange(version: string) {
+    if (!selectedId) return;
+    syncQuery(selectedId, version);
   }
 
-  // Resolve version string to actual version number (for editor link)
-  const resolvedVersion =
-    selectedVersion === "latest"
-      ? (versions[0]?.version ?? null)
-      : selectedVersion;
+  function handleOpenRecent(entry: RecentProcedureEntry) {
+    syncQuery(entry.procedureId, entry.version || "latest");
+  }
+
+  async function handleSaveWorkflow(workflowGraph: CkpWorkflowGraph) {
+    if (!selectedProcedure) return;
+
+    setSavingWorkflow(true);
+    try {
+      const updatedCkp = {
+        ...(selectedProcedure.ckp_json as Record<string, unknown>),
+        workflow_graph: workflowGraph,
+      };
+      await updateProcedure(selectedProcedure.procedure_id, selectedProcedure.version, updatedCkp);
+      const [refreshed, versionList] = await Promise.all([
+        getProcedure(selectedProcedure.procedure_id, selectedProcedure.version),
+        listVersions(selectedProcedure.procedure_id),
+      ]);
+      setSelectedProcedure(refreshed);
+      setVersions(versionList);
+      toast("Workflow saved successfully", "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to save workflow", "error");
+    } finally {
+      setSavingWorkflow(false);
+    }
+  }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
-      {/* ── Toolbar ──────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-4 px-6 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shrink-0">
-        <div className="min-w-0">
-          <h1 className="text-lg font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
-            Visual Workflow Builder
-          </h1>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            Inspect and explore procedure graphs — select a procedure to begin
-          </p>
-        </div>
+    <div className="flex min-h-[calc(100vh-4rem)] flex-col bg-neutral-50">
+      <div className="px-6 pt-6">
+        <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="flex flex-wrap items-start gap-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Automation Workspace</p>
+            <h1 className="mt-1 text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Visual Builder</h1>
+            <p className="mt-1 max-w-3xl text-sm text-neutral-500 dark:text-neutral-400">
+              This is the single workflow editing surface now. Procedures launch here instead of embedding a cramped builder inside the detail page.
+            </p>
+          </div>
+          {selectedProcedure && (
+            <Link
+              href={`/procedures/${encodeURIComponent(selectedProcedure.procedure_id)}/${encodeURIComponent(selectedProcedure.version)}`}
+              className="inline-flex items-center rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 transition hover:border-neutral-400 hover:bg-neutral-50"
+            >
+              Back to Procedure
+            </Link>
+          )}
+          </div>
 
-        <div className="flex flex-wrap items-center gap-2 ml-auto">
-          {/* Procedure selector */}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
           <select
             value={selectedId}
-            onChange={(e) => { void onProcedureChange(e.target.value); }}
+            onChange={(e) => handleProcedureChange(e.target.value)}
             aria-label="Select procedure"
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none min-w-52"
+            className="min-w-60 rounded-2xl border border-neutral-300 bg-white px-4 py-2 text-sm text-neutral-800 shadow-sm outline-none transition focus:border-sky-500"
           >
-            <option value="">— Select procedure —</option>
-            {procedures.map((p) => (
-              <option key={p.procedure_id} value={p.procedure_id}>
-                {p.name}
+            <option value="">Select a procedure...</option>
+            {procedures.map((procedure) => (
+              <option key={procedure.procedure_id} value={procedure.procedure_id}>
+                {procedure.name}
               </option>
             ))}
           </select>
 
-          {/* Version selector */}
-          {selectedId && (
-            <select
-              value={selectedVersion}
-              onChange={(e) => { void onVersionChange(e.target.value); }}
-              aria-label="Select procedure version"
-              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-            >
-              <option value="latest">latest</option>
-              {versions.map((v) => (
-                <option key={v.version} value={v.version}>
-                  v{v.version}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            value={selectedVersion}
+            onChange={(e) => handleVersionChange(e.target.value)}
+            aria-label="Select version"
+            disabled={!selectedId}
+            className="min-w-40 rounded-2xl border border-neutral-300 bg-white px-4 py-2 text-sm text-neutral-800 shadow-sm outline-none transition focus:border-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <option value="latest">Latest version</option>
+            {versions.map((version) => (
+              <option key={version.version} value={version.version}>
+                v{version.version}
+              </option>
+            ))}
+          </select>
 
-          {/* Refresh */}
           {selectedId && (
             <button
-              onClick={() => {
-                setRefreshed(false);
-                void doLoadGraph(selectedId, selectedVersion).then(() => {
-                  setRefreshed(true);
-                  setTimeout(() => setRefreshed(false), 2000);
-                });
-              }}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 transition-colors"
+              onClick={() => syncQuery(selectedId, selectedVersion)}
+              className="rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 transition hover:border-neutral-400 hover:bg-neutral-50"
             >
-              <svg className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              {refreshed ? <span className="text-emerald-600">Refreshed ✓</span> : "Refresh"}
+              Refresh
             </button>
           )}
-
-          {/* Open in Editor */}
-          {selectedId && resolvedVersion && (
-            <Link
-              href={`/procedures/${encodeURIComponent(selectedId)}/${encodeURIComponent(resolvedVersion)}?tab=builder`}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-              Open in Editor
-            </Link>
-          )}
-        </div>
+          </div>
+        </section>
       </div>
 
-      {/* ── Procedure meta badge ─────────────────────────────── */}
-      {selectedProc && (
-        <div className="px-6 py-2 border-b border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/60 flex flex-wrap items-center gap-3 text-xs text-neutral-500 dark:text-neutral-400 shrink-0">
-          <span className="font-medium text-neutral-700 dark:text-neutral-300">{selectedProc.name}</span>
-          <span className="font-mono">{selectedProc.procedure_id}</span>
-          {selectedProc.description && (
-            <span className="truncate max-w-md">{selectedProc.description}</span>
-          )}
-          <span className={`ml-auto rounded-full px-2 py-0.5 font-semibold ${
-            selectedProc.status === "active"
-              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
-              : selectedProc.status === "draft"
-              ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
-              : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800"
-          }`}>
-            {selectedProc.status ?? "unknown"}
-          </span>
-        </div>
-      )}
-
-      {/* ── Error ───────────────────────────────────────────── */}
       {error && (
-        <div className="mx-6 mt-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 px-4 py-2 text-sm text-red-600 dark:text-red-400 shrink-0">
+        <div className="mx-6 mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      {/* ── Canvas ──────────────────────────────────────────── */}
-      <div className="flex-1 overflow-hidden relative">
-        {loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 dark:bg-neutral-900/70">
-            <div className="flex flex-col items-center gap-3">
-              <div className="h-10 w-10 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-              <p className="text-sm text-neutral-500">Loading graph…</p>
-            </div>
-          </div>
-        )}
-
-        {!selectedId && !loading && (
-          <div className="h-full flex flex-col items-center justify-center text-neutral-400 gap-5 px-6">
-            <svg className="w-20 h-20 opacity-20" fill="none" stroke="currentColor" strokeWidth={0.8} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
-            </svg>
-            <div className="text-center space-y-1">
-              <p className="text-lg font-medium text-neutral-500 dark:text-neutral-400">Select a procedure to visualise its graph</p>
-              <p className="text-sm text-neutral-400 dark:text-neutral-500">
-                Use the dropdown above, then click <strong>Open in Editor</strong> to drag-and-drop edit the workflow
+      {!selectedProcedure && !loadingBuilder && (
+        <div className="flex flex-1 flex-col px-6 py-6">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-8 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="max-w-2xl">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-neutral-500 dark:text-neutral-400">Builder First</p>
+              <h2 className="mt-3 text-3xl font-semibold text-neutral-900 dark:text-neutral-100">Choose a procedure and edit it in the dedicated canvas workspace.</h2>
+              <p className="mt-3 text-sm leading-6 text-neutral-600 dark:text-neutral-400">
+                The old graph viewer has been retired from this route. This page now owns the full editing workflow, saving directly back into the procedure version you select.
               </p>
             </div>
-            {procedures.length > 0 && (
-              <div className="mt-4 w-full max-w-2xl">
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {procedures
-                    .slice(procPage * PROC_PAGE_SIZE, (procPage + 1) * PROC_PAGE_SIZE)
-                    .map((p) => (
-                      <button
-                        key={p.procedure_id}
-                        onClick={() => { void onProcedureChange(p.procedure_id); }}
-                        className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-blue-50 dark:hover:bg-neutral-700 hover:border-blue-200 transition-colors text-left truncate"
-                      >
-                        {p.name}
-                      </button>
-                    ))}
+
+            {(lastSession || recentProcedures.length > 0) && (
+              <div className="mt-8 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-800/40">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-500 dark:text-neutral-400">Resume</p>
+                  {lastSession ? (
+                    <>
+                      <h3 className="mt-2 text-lg font-semibold text-neutral-900 dark:text-neutral-100">Continue your last builder session</h3>
+                      <div className="mt-4 rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">{lastSession.name}</p>
+                            <p className="mt-1 truncate text-xs text-neutral-500 dark:text-neutral-400">{lastSession.procedureId}</p>
+                          </div>
+                          <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${statusClass(lastSession.status)}`}>
+                            {lastSession.status}
+                          </span>
+                        </div>
+                        <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500 dark:text-neutral-400">
+                          {lastSession.description || "No description provided."}
+                        </p>
+                        <div className="mt-4 flex items-center justify-between gap-3">
+                          <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                            Last opened {new Date(lastSession.openedAt).toLocaleString()}
+                          </span>
+                          <button
+                            onClick={() => handleOpenRecent(lastSession)}
+                            className="rounded-full bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700"
+                          >
+                            Resume
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
-                {Math.ceil(procedures.length / PROC_PAGE_SIZE) > 1 && (
-                  <div className="flex items-center justify-center gap-3 mt-3">
-                    <button
-                      onClick={() => setProcPage((p) => Math.max(0, p - 1))}
-                      disabled={procPage === 0}
-                      className="rounded-lg border border-neutral-200 px-3 py-1 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40 transition-colors"
-                    >
-                      ‹ Prev
-                    </button>
-                    <span className="text-sm text-neutral-500">
-                      {procPage + 1} / {Math.ceil(procedures.length / PROC_PAGE_SIZE)}
-                    </span>
-                    <button
-                      onClick={() => setProcPage((p) => Math.min(Math.ceil(procedures.length / PROC_PAGE_SIZE) - 1, p + 1))}
-                      disabled={procPage >= Math.ceil(procedures.length / PROC_PAGE_SIZE) - 1}
-                      className="rounded-lg border border-neutral-200 px-3 py-1 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40 transition-colors"
-                    >
-                      Next ›
-                    </button>
+
+                <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-500 dark:text-neutral-400">Recent Procedures</p>
+                  <div className="mt-4 space-y-3">
+                    {recentProcedures.length > 0 ? (
+                      recentProcedures.map((entry) => (
+                        <button
+                          key={`${entry.procedureId}-${entry.version}`}
+                          onClick={() => handleOpenRecent(entry)}
+                          className="flex w-full items-start justify-between gap-3 rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-left transition hover:border-sky-300 hover:bg-sky-50/50 dark:border-neutral-800 dark:bg-neutral-900"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">{entry.name}</p>
+                            <p className="mt-1 truncate text-xs text-neutral-500 dark:text-neutral-400">{entry.procedureId} · v{entry.version}</p>
+                          </div>
+                          <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${statusClass(entry.status)}`}>
+                            {entry.status}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="text-sm text-neutral-500 dark:text-neutral-400">Your recent builder sessions will appear here.</p>
+                    )}
                   </div>
-                )}
+                </div>
               </div>
             )}
-          </div>
-        )}
 
-        {graphData && !loading && (
-          <WorkflowGraph graph={graphData as { nodes: never[]; edges: never[] }} />
-        )}
+            <div className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {pagedProcedures.map((procedure) => (
+                <button
+                  key={procedure.procedure_id}
+                  onClick={() => handleProcedureChange(procedure.procedure_id)}
+                  className="rounded-2xl border border-neutral-200 bg-white px-4 py-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-900"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">{procedure.name}</p>
+                      <p className="mt-1 truncate text-xs text-neutral-500 dark:text-neutral-400">{procedure.procedure_id}</p>
+                    </div>
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${statusClass(procedure.status)}`}>
+                      {procedure.status ?? "unknown"}
+                    </span>
+                  </div>
+                  {procedure.description && (
+                    <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500 dark:text-neutral-400">{procedure.description}</p>
+                  )}
+                </button>
+              ))}
+            </div>
 
-        {selectedId && !loading && !graphData && !error && (
-          <div className="h-full flex items-center justify-center">
-            <p className="text-neutral-400 text-sm">No graph data for this procedure.</p>
+            {procedures.length > PROCEDURE_PAGE_SIZE && (
+              <div className="mt-5 flex items-center justify-center gap-3">
+                <button
+                  onClick={() => setProcPage((page) => Math.max(0, page - 1))}
+                  disabled={procPage === 0}
+                  className="rounded-full border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-600 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300"
+                >
+                  Previous
+                </button>
+                <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Page {procPage + 1} of {Math.ceil(procedures.length / PROCEDURE_PAGE_SIZE)}
+                </span>
+                <button
+                  onClick={() => setProcPage((page) => page + 1)}
+                  disabled={(procPage + 1) * PROCEDURE_PAGE_SIZE >= procedures.length}
+                  className="rounded-full border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-600 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+
+            {loadingProcedures && (
+              <p className="mt-4 text-sm text-neutral-500 dark:text-neutral-400">Loading procedures...</p>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {loadingBuilder && (
+        <div className="flex flex-1 items-center justify-center px-6 py-10">
+          <div className="flex items-center gap-3 rounded-full border border-neutral-200 bg-white px-5 py-3 text-sm text-neutral-600 shadow-sm dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-600 border-t-transparent" />
+            Loading builder workspace...
+          </div>
+        </div>
+      )}
+
+      {selectedProcedure && !loadingBuilder && (
+        <div className="flex flex-1 flex-col px-6 py-6">
+          <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{selectedProcedure.name}</h2>
+                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${statusClass(selectedProcedure.status)}`}>
+                  {selectedProcedure.status ?? "unknown"}
+                </span>
+                <span className="rounded-full bg-neutral-100 px-2 py-1 text-[10px] font-semibold uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                  v{selectedProcedure.version}
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">{selectedProcedure.description || "No procedure description provided."}</p>
+            </div>
+            <Link
+              href={`/procedures/${encodeURIComponent(selectedProcedure.procedure_id)}/${encodeURIComponent(selectedProcedure.version)}?tab=graph`}
+              className="rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 transition hover:border-neutral-400 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              View Procedure Detail
+            </Link>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <WorkflowBuilderV2Wrapper
+              key={`${selectedProcedure.procedure_id}-${selectedProcedure.version}`}
+              procedureId={selectedProcedure.procedure_id}
+              procedureVersion={selectedProcedure.version}
+              baseCkpJson={selectedProcedure.ckp_json as Record<string, unknown>}
+              initialWorkflowGraph={((selectedProcedure.ckp_json as Record<string, unknown>)?.workflow_graph as Record<string, unknown> | null) ?? null}
+              initialBuilderDraft={selectedProcedure.builder_draft}
+              initialBuilderDraftUpdatedAt={selectedProcedure.builder_draft_updated_at}
+              onSaveWorkflow={handleSaveWorkflow}
+              savingWorkflow={savingWorkflow}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+export default function BuilderPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[calc(100vh-4rem)] items-center justify-center bg-neutral-50 px-6 py-10">
+          <div className="flex items-center gap-3 rounded-full border border-neutral-200 bg-white px-5 py-3 text-sm text-neutral-600 shadow-sm dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-600 border-t-transparent" />
+            Loading builder workspace...
+          </div>
+        </div>
+      }
+    >
+      <BuilderPageContent />
+    </Suspense>
   );
 }
 

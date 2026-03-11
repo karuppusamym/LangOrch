@@ -399,6 +399,7 @@ async def worker_loop(
     )
 
     active_tasks: set[asyncio.Task] = set()
+    idle_cycles = 0
 
     while True:
         try:
@@ -427,28 +428,37 @@ async def worker_loop(
             if available_slots > 0:
                 try:
                     jobs = await poll_and_claim(_worker_id, available_slots)
+                    claimed_job_count = len(jobs)
                     for job in jobs:
                         task = asyncio.create_task(
                             execute_job(job, _worker_id),
                             name=f"job-{job.job_id}",
                         )
                         active_tasks.add(task)
-                    
-                    # Track queue depth for SLO monitoring
-                    try:
-                        async with async_session() as db:
-                            from sqlalchemy import func, select
-                            from app.db.models import RunJob
-                            result = await db.execute(
-                                select(func.count()).select_from(RunJob).where(
-                                    RunJob.status.in_(["queued", "retrying"])
+                    if claimed_job_count > 0:
+                        idle_cycles = 0
+                    else:
+                        idle_cycles += 1
+
+                    # Track queue depth periodically instead of every idle poll cycle.
+                    if claimed_job_count > 0 or idle_cycles >= 6:
+                        try:
+                            async with async_session() as db:
+                                from sqlalchemy import func, select
+                                from app.db.models import RunJob
+                                result = await db.execute(
+                                    select(func.count()).select_from(RunJob).where(
+                                        RunJob.status.in_(["queued", "retrying"])
+                                    )
                                 )
-                            )
-                            queue_depth = result.scalar() or 0
-                            from app.utils.metrics import record_queue_depth
-                            record_queue_depth("run_queue", queue_depth)
-                    except Exception:
-                        pass  # Don't fail worker loop if metrics fail
+                                queue_depth = result.scalar() or 0
+                                from app.utils.metrics import record_queue_depth
+                                record_queue_depth("run_queue", queue_depth)
+                        except Exception:
+                            pass  # Don't fail worker loop if metrics fail
+                        finally:
+                            if claimed_job_count == 0:
+                                idle_cycles = 0
                         
                 except Exception:
                     logger.exception("Error claiming jobs")

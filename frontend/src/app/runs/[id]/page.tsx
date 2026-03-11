@@ -12,7 +12,7 @@ import type { Run, RunEvent, Artifact, RunDiagnostics, CheckpointMetadata, Check
 
 const WorkflowGraph = dynamic(
   () => import("@/components/WorkflowGraphWrapper"),
-  { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading graph…</p> },
+  { ssr: false, loading: () => <p className="text-sm text-neutral-400">Loading graph…</p> },
 );
 
 /* ── helpers ─────────────────────────────────────────────────── */
@@ -720,8 +720,8 @@ export default function RunDetailPage() {
     }
   }
 
-  if (loading) return <p className="text-gray-500">Loading run…</p>;
-  if (!run) return <p className="text-red-500">Run not found</p>;
+  if (loading) return <p className="p-6 text-neutral-500">Loading run…</p>;
+  if (!run) return <p className="p-6 text-red-500">Run not found</p>;
 
   const isError = (t: string) =>
     ["error", "run_failed", "node_error", "step_timeout", "sla_breached", "step_error_notification"].includes(t);
@@ -740,43 +740,45 @@ export default function RunDetailPage() {
   const pausedNodes = nodeSummaries.filter((node) => node.status === "paused").length;
 
   return (
-    <div className="space-y-6">
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <Link href="/runs" className="text-sm text-primary-600 hover:underline">← Runs</Link>
-          <div className="mt-2 flex items-center gap-3">
-            <h2 className="text-xl font-bold text-gray-900 font-mono">
-              {run.run_id.slice(0, 12)}…
-            </h2>
-            <button title="Copy run ID" onClick={() => void copyText(run.run_id, toast)} className="text-gray-400 hover:text-gray-700">
-              <ClipboardIcon />
-            </button>
-            <RunStatusBadge status={run.status} />
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Link href="/runs" className="text-sm text-sky-600 hover:underline">← Runs</Link>
+            <div className="mt-2 flex items-center gap-3">
+              <h2 className="font-mono text-2xl font-semibold text-neutral-900 dark:text-neutral-100">
+                {run.run_id.slice(0, 12)}…
+              </h2>
+              <button title="Copy run ID" onClick={() => void copyText(run.run_id, toast)} className="shrink-0 text-neutral-400 hover:text-neutral-700">
+                <ClipboardIcon />
+              </button>
+              <RunStatusBadge status={run.status} />
+            </div>
+            <p className="mt-1 text-sm text-neutral-500">
+              Procedure:{" "}
+              <Link
+                href={`/procedures/${encodeURIComponent(run.procedure_id)}/${encodeURIComponent(run.procedure_version)}`}
+                className="text-sky-600 hover:underline"
+              >
+                {run.procedure_id} v{run.procedure_version}
+              </Link>
+            </p>
           </div>
-          <p className="mt-1 text-sm text-gray-500">
-            Procedure:{" "}
-            <Link
-              href={`/procedures/${encodeURIComponent(run.procedure_id)}/${encodeURIComponent(run.procedure_version)}`}
-              className="text-primary-600 hover:underline"
-            >
-              {run.procedure_id} v{run.procedure_version}
-            </Link>
-          </p>
+          <div className="shrink-0 flex gap-2">
+            {(["running", "created", "waiting_approval"].includes(run.status)) && (
+              <button onClick={handleCancel} className="rounded-full border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/20">Cancel</button>
+            )}
+            {run.status === "failed" && (
+              <button onClick={handleRetry} className="rounded-full bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700">Retry</button>
+            )}
+          </div>
         </div>
-        <div className="flex gap-2">
-          {(["running", "created", "waiting_approval"].includes(run.status)) && (
-            <button onClick={handleCancel} className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50">Cancel</button>
-          )}
-          {run.status === "failed" && (
-            <button onClick={handleRetry} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">Retry</button>
-          )}
-        </div>
-      </div>
+      </section>
 
       {/* Approval action banner */}
       {run.status === "waiting_approval" && pendingApproval && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">
+        <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:bg-amber-950/20">
           <div className="flex items-start gap-3">
             <span className="text-2xl">✋</span>
             <div className="flex-1">
@@ -789,7 +791,7 @@ export default function RunDetailPage() {
                 {pendingApproval.context_data ? <span className="rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-900/40">Context fields: {Object.keys(pendingApproval.context_data).length}</span> : null}
               </div>
             </div>
-            <Link href="/approvals" className="text-xs text-amber-600 hover:underline whitespace-nowrap">View all approvals →</Link>
+            <Link href="/approvals" className="whitespace-nowrap text-xs text-amber-600 hover:underline">View all approvals →</Link>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <input
@@ -799,19 +801,19 @@ export default function RunDetailPage() {
                 localStorage.setItem("approver_name", e.target.value);
               }}
               placeholder="Your name (optional)"
-              className="rounded-lg border border-amber-300 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm w-44"
+              className="w-44 rounded-2xl border border-amber-300 bg-white px-3 py-1.5 text-sm dark:bg-neutral-800"
             />
             <button
               disabled={approvalDeciding}
               onClick={() => void handleApprovalDecision("approved")}
-              className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+              className="rounded-full bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
             >
               ✓ Approve
             </button>
             <button
               disabled={approvalDeciding}
               onClick={() => void handleApprovalDecision("rejected")}
-              className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
+              className="rounded-full bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
             >
               ✕ Reject
             </button>
@@ -821,7 +823,7 @@ export default function RunDetailPage() {
 
       {/* Error banner */}
       {run.status === "failed" && run.error_message && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
           <p className="mb-1 text-sm font-semibold text-red-700">Failure reason</p>
           <pre className="whitespace-pre-wrap break-words font-mono text-xs text-red-600">{run.error_message}</pre>
         </div>
@@ -829,7 +831,7 @@ export default function RunDetailPage() {
 
       {/* Procedure reference warning */}
       {procedureLoadIssue && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm font-semibold text-amber-800">Procedure Version Unavailable</p>
           <p className="mt-1 text-sm text-amber-700">
             {procedureLoadIssue} Historical run data is still available.
@@ -853,7 +855,7 @@ export default function RunDetailPage() {
 
       {/* LLM token usage */}
       {(run.total_prompt_tokens != null || run.total_completion_tokens != null) && (
-        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2.5 text-xs text-blue-800">
+        <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-2.5 text-xs text-sky-800">
           <span className="font-semibold">LLM tokens this run:</span>
           <span>Prompt: <strong>{run.total_prompt_tokens ?? 0}</strong></span>
           <span>Completion: <strong>{run.total_completion_tokens ?? 0}</strong></span>
@@ -866,12 +868,12 @@ export default function RunDetailPage() {
 
       {/* Input variables — filter out __ system-internal keys before displaying */}
       {run.input_vars && Object.keys(run.input_vars).filter(k => !k.startsWith('__')).length > 0 && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
           <div className="mb-3 flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-gray-900">Input Variables</h3>
-            <span className="text-[10px] text-gray-400">(sensitive fields redacted)</span>
+            <h3 className="text-sm font-semibold text-neutral-900">Input Variables</h3>
+            <span className="text-[10px] text-neutral-400">(sensitive fields redacted)</span>
           </div>
-          <pre className="rounded-lg bg-gray-50 p-3 font-mono text-xs">
+          <pre className="rounded-2xl bg-neutral-50 p-3 font-mono text-xs text-neutral-700">
             {JSON.stringify(
               redactInputVars(
                 Object.fromEntries(Object.entries(run.input_vars).filter(([k]) => !k.startsWith('__'))),
@@ -885,10 +887,10 @@ export default function RunDetailPage() {
       )}
 
       {/* Tabs */}
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="flex border-b border-gray-200">
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm">
+        <div className="flex border-b border-neutral-200">
           {(["timeline", "graph", "artifacts", "checkpoints", "diagnostics"] as const).map((tab) => (
-            <button key={tab} onClick={() => setActiveTab(tab)} className={`px-5 py-3 text-sm font-medium capitalize transition ${activeTab === tab ? "border-b-2 border-primary-600 text-primary-600" : "text-gray-500 hover:text-gray-700"}`}>
+            <button key={tab} onClick={() => setActiveTab(tab)} className={`px-5 py-3 text-sm font-medium capitalize transition ${activeTab === tab ? "border-b-2 border-sky-600 text-sky-600" : "text-neutral-500 hover:text-neutral-700"}`}>
               {tab === "artifacts" ? `Artifacts (${artifacts.length})`
                 : tab === "timeline" ? `Timeline (${events.length}${errorCount ? ` · ${errorCount} err` : ""})`
                   : tab === "graph" ? "Live Graph"
@@ -904,11 +906,11 @@ export default function RunDetailPage() {
             <>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 {(["all", "errors", "steps", "nodes"] as TimelineFilter[]).map((f) => (
-                  <button key={f} onClick={() => setTimelineFilter(f)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${timelineFilter === f ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                  <button key={f} onClick={() => setTimelineFilter(f)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${timelineFilter === f ? "bg-sky-600 text-white" : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"}`}>
                     {f === "all" ? `All (${events.length})` : f === "errors" ? `Errors (${errorCount})` : f.charAt(0).toUpperCase() + f.slice(1)}
                   </button>
                 ))}
-                <label className="ml-auto flex items-center gap-2 text-sm text-gray-500">
+                <label className="ml-auto flex items-center gap-2 text-sm text-neutral-500">
                   <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} className="rounded" />
                   Live
                 </label>
@@ -922,8 +924,8 @@ export default function RunDetailPage() {
               {nodeSummaries.length > 0 && (
                 <div className="mb-5 space-y-3">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-semibold text-gray-900">Node Execution Report</h4>
-                    <p className="text-xs text-gray-500">Per-node summary of starts, completions, pauses, and failures.</p>
+                    <h4 className="text-sm font-semibold text-neutral-900">Node Execution Report</h4>
+                    <p className="text-xs text-neutral-500">Per-node summary of starts, completions, pauses, and failures.</p>
                   </div>
                   <div className="space-y-3">
                     {nodeSummaries.map((summary) => (
@@ -934,7 +936,7 @@ export default function RunDetailPage() {
               )}
               <div ref={timelineRef} className="max-h-[500px] space-y-1.5 overflow-y-auto">
                 {filteredEvents.length === 0 ? (
-                  <p className="text-sm text-gray-400">No events match this filter</p>
+                  <p className="text-sm text-neutral-400">No events match this filter</p>
                 ) : (
                   filteredEvents.map((event) => {
                     const hasPayload = event.payload && Object.keys(event.payload).length > 0;
@@ -955,16 +957,16 @@ export default function RunDetailPage() {
                             ? "border-blue-100 bg-blue-50/40"
                             : isNodeEvent
                               ? "border-purple-100 bg-purple-50/30"
-                              : "border-gray-100 bg-white"
+                              : "border-neutral-100 bg-white"
                           } ${isStepEvent ? "ml-4" : ""}`}
                       >
                         <div className="flex items-center gap-2">
                           <EventDot type={event.event_type} />
-                          <span className={`text-xs font-semibold ${errStyle ? "text-red-700" : isRunEvent ? "text-blue-800" : isNodeEvent ? "text-purple-700" : "text-gray-800"}`}>
+                          <span className={`text-xs font-semibold ${errStyle ? "text-red-700" : isRunEvent ? "text-blue-800" : isNodeEvent ? "text-purple-700" : "text-neutral-800"}`}>
                             {eventLabel(event.event_type)}
                           </span>
                           {/* raw type as a subtle hint */}
-                          <span className="text-[9px] text-gray-300 font-mono hidden sm:inline">{event.event_type}</span>
+                          <span className="text-[9px] text-neutral-300 font-mono hidden sm:inline">{event.event_type}</span>
                           {event.node_id && (() => {
                             const payloadNodeName = (event.payload as Record<string, unknown> | null)?.node_name;
                             const nodeName = typeof payloadNodeName === "string" ? payloadNodeName : null;
@@ -972,7 +974,7 @@ export default function RunDetailPage() {
                             return (
                               <>
                                 {/* Always show node_id as a grey mono badge */}
-                                <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-500">
+                                <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] text-neutral-500">
                                   {event.node_id}
                                 </span>
                                 {/* Show node_name as a readable purple badge when it differs from node_id */}
@@ -1023,7 +1025,7 @@ export default function RunDetailPage() {
                               🤖 {String((event.payload as Record<string, unknown>).agent)}
                             </span>
                           )}
-                          <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
+                          <span className="ml-auto text-[10px] text-neutral-300 flex-shrink-0">
                             {new Date(event.created_at).toLocaleTimeString()}
                           </span>
                           {hasPayload && !errStyle && (
@@ -1037,7 +1039,7 @@ export default function RunDetailPage() {
                                   return n;
                                 })
                               }
-                              className="text-[10px] text-gray-400 hover:text-gray-700 flex-shrink-0"
+                              className="text-[10px] text-neutral-400 hover:text-neutral-700 flex-shrink-0"
                             >
                               {expandedEvents.has(String(event.event_id)) ? "▲" : "▼"}
                             </button>
@@ -1050,7 +1052,7 @@ export default function RunDetailPage() {
                         {!inlineErr && highlights.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {highlights.map((highlight, index) => (
-                              <span key={`${event.event_id}-${index}`} className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">
+                              <span key={`${event.event_id}-${index}`} className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-600">
                                 {highlight}
                               </span>
                             ))}
@@ -1061,7 +1063,7 @@ export default function RunDetailPage() {
                           event.event_type === "llm_usage" ? (
                             <LlmUsageDetail payload={event.payload} />
                           ) : (
-                            <pre className="mt-2 max-h-48 overflow-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-600">
+                            <pre className="mt-2 max-h-48 overflow-auto rounded-2xl bg-neutral-50 p-2 font-mono text-xs text-neutral-600">
                               {JSON.stringify(event.payload, null, 2)}
                             </pre>
                           )
@@ -1089,11 +1091,11 @@ export default function RunDetailPage() {
           {activeTab === "graph" && (
             <>
               {!graphData ? (
-                <p className="text-sm text-gray-400">Loading graph…</p>
+                <p className="text-sm text-neutral-400">Loading graph…</p>
               ) : (
                 <>
-                  <div className="mb-3 flex flex-wrap gap-3 text-xs text-gray-500">
-                    {([["in_progress", "bg-blue-500"], ["completed", "bg-green-500"], ["pending", "bg-gray-400"], ["failed", "bg-red-500"], ["sla_breached", "bg-orange-400"]] as const).map(([s, bg]) => (
+                  <div className="mb-3 flex flex-wrap gap-3 text-xs text-neutral-500">
+                    {([["in_progress", "bg-blue-500"], ["completed", "bg-green-500"], ["pending", "bg-neutral-400"], ["failed", "bg-red-500"], ["sla_breached", "bg-orange-400"]] as const).map(([s, bg]) => (
                       <span key={s} className="flex items-center gap-1"><span className={`h-3 w-3 rounded-full ${bg}`} />{s.replace("_", " ")}</span>
                     ))}
                   </div>
@@ -1108,27 +1110,27 @@ export default function RunDetailPage() {
             <>
               {artifactNotice && <span className="mb-3 inline-block rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700">New artifact received</span>}
               {artifacts.length === 0 ? (
-                <p className="text-sm text-gray-400">No artifacts captured</p>
+                <p className="text-sm text-neutral-400">No artifacts captured</p>
               ) : (
                 <div className="space-y-2">
                   {artifacts.map((a) => {
                     const isPreviewable = /\.(json|txt|log|md|csv|xml|yaml|yml)$/i.test(a.uri) || a.kind === "json" || a.kind === "text" || a.kind === "log";
                     const isImage = /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(a.uri) || a.kind === "screenshot" || a.kind === "image";
                     return (
-                      <div key={a.artifact_id} className="rounded-lg border border-gray-100 p-3">
+                      <div key={a.artifact_id} className="rounded-2xl border border-neutral-100 p-3">
                         <div className="flex items-center justify-between">
                           <div className="min-w-0">
-                            <p className="text-xs font-medium text-gray-900">{a.kind}</p>
-                            <p className="truncate text-xs text-gray-500">{a.node_id ? `node: ${a.node_id}` : "—"}{a.step_id ? ` | step: ${a.step_id}` : ""}</p>
+                            <p className="text-xs font-medium text-neutral-900">{a.kind}</p>
+                            <p className="truncate text-xs text-neutral-500">{a.node_id ? `node: ${a.node_id}` : "—"}{a.step_id ? ` | step: ${a.step_id}` : ""}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <a href={a.uri} target="_blank" rel="noreferrer" className="text-xs text-primary-600 hover:underline">Open</a>
-                            <a href={a.uri} download className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50">↓ Download</a>
+                            <a href={a.uri} target="_blank" rel="noreferrer" className="text-xs text-sky-600 hover:underline">Open</a>
+                            <a href={a.uri} download className="rounded-full border border-neutral-200 px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-100">↓ Download</a>
                           </div>
                         </div>
                         {/* Inline preview */}
                         {isImage && (
-                          <div className="mt-2 rounded-lg border border-gray-100 bg-gray-50 p-2">
+                          <div className="mt-2 rounded-2xl border border-neutral-100 bg-neutral-50 p-2">
                             <img src={a.uri} alt={a.kind} className="max-h-48 rounded" />
                           </div>
                         )}
@@ -1145,13 +1147,13 @@ export default function RunDetailPage() {
           {activeTab === "checkpoints" && (
             <>
               {checkpoints.length === 0 ? (
-                <p className="text-sm text-gray-400">No checkpoints captured for this run</p>
+                <p className="text-sm text-neutral-400">No checkpoints captured for this run</p>
               ) : (
                 <div className="space-y-3">
                   <div className="overflow-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b text-left text-gray-500 text-xs">
+                        <tr className="border-b text-left text-neutral-500 text-xs">
                           <th className="pb-2 pr-4">Step</th>
                           <th className="pb-2 pr-4">Checkpoint ID</th>
                           <th className="pb-2 pr-4">Parent</th>
@@ -1161,11 +1163,11 @@ export default function RunDetailPage() {
                       </thead>
                       <tbody>
                         {checkpoints.map((ckpt, idx) => (
-                          <tr key={ckpt.checkpoint_id ?? idx} className="border-b last:border-0 hover:bg-gray-50">
+                          <tr key={ckpt.checkpoint_id ?? idx} className="border-b last:border-0 hover:bg-neutral-50">
                             <td className="py-2 pr-4 font-mono text-xs">{ckpt.step}</td>
                             <td className="py-2 pr-4 font-mono text-xs">{ckpt.checkpoint_id ? ckpt.checkpoint_id.slice(0, 12) + "…" : "—"}</td>
-                            <td className="py-2 pr-4 font-mono text-xs text-gray-400">{ckpt.parent_checkpoint_id ? ckpt.parent_checkpoint_id.slice(0, 12) + "…" : "—"}</td>
-                            <td className="py-2 pr-4 text-xs text-gray-500">{ckpt.created_at ? new Date(ckpt.created_at).toLocaleString() : "—"}</td>
+                            <td className="py-2 pr-4 font-mono text-xs text-neutral-400">{ckpt.parent_checkpoint_id ? ckpt.parent_checkpoint_id.slice(0, 12) + "…" : "—"}</td>
+                            <td className="py-2 pr-4 text-xs text-neutral-500">{ckpt.created_at ? new Date(ckpt.created_at).toLocaleString() : "—"}</td>
                             <td className="py-2">
                               <button
                                 onClick={async () => {
@@ -1178,7 +1180,7 @@ export default function RunDetailPage() {
                                   finally { setLoadingCkpt(false); }
                                 }}
                                 disabled={!ckpt.checkpoint_id || loadingCkpt}
-                                className="rounded border border-primary-300 px-2 py-0.5 text-xs text-primary-600 hover:bg-primary-50 disabled:opacity-40"
+                                className="rounded-full border border-sky-300 px-2 py-0.5 text-xs text-sky-600 hover:bg-sky-50 disabled:opacity-40"
                               >
                                 Inspect
                               </button>
@@ -1190,7 +1192,7 @@ export default function RunDetailPage() {
                   </div>
                   {/* Checkpoint state detail */}
                   {selectedCkpt && (
-                    <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                    <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
                       <div className="mb-3 flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-blue-800">Checkpoint State — {selectedCkpt.checkpoint_id?.slice(0, 16)}…</h4>
                         <button onClick={() => setSelectedCkpt(null)} className="text-xs text-blue-500 hover:text-blue-700">Close</button>
@@ -1198,18 +1200,18 @@ export default function RunDetailPage() {
                       <div className="space-y-3">
                         <div>
                           <p className="mb-1 text-xs font-semibold text-blue-700">Channel Values</p>
-                          <pre className="max-h-64 overflow-auto rounded-lg bg-white p-3 font-mono text-xs text-gray-700">{JSON.stringify(selectedCkpt.channel_values, null, 2)}</pre>
+                          <pre className="max-h-64 overflow-auto rounded-2xl bg-white p-3 font-mono text-xs text-neutral-700">{JSON.stringify(selectedCkpt.channel_values, null, 2)}</pre>
                         </div>
                         {selectedCkpt.pending_writes.length > 0 && (
                           <div>
                             <p className="mb-1 text-xs font-semibold text-blue-700">Pending Writes</p>
-                            <pre className="max-h-48 overflow-auto rounded-lg bg-white p-3 font-mono text-xs text-gray-700">{JSON.stringify(selectedCkpt.pending_writes, null, 2)}</pre>
+                            <pre className="max-h-48 overflow-auto rounded-2xl bg-white p-3 font-mono text-xs text-neutral-700">{JSON.stringify(selectedCkpt.pending_writes, null, 2)}</pre>
                           </div>
                         )}
                         {Object.keys(selectedCkpt.metadata).length > 0 && (
                           <div>
                             <p className="mb-1 text-xs font-semibold text-blue-700">Metadata</p>
-                            <pre className="max-h-48 overflow-auto rounded-lg bg-white p-3 font-mono text-xs text-gray-700">{JSON.stringify(selectedCkpt.metadata, null, 2)}</pre>
+                            <pre className="max-h-48 overflow-auto rounded-2xl bg-white p-3 font-mono text-xs text-neutral-700">{JSON.stringify(selectedCkpt.metadata, null, 2)}</pre>
                           </div>
                         )}
                       </div>
@@ -1224,7 +1226,7 @@ export default function RunDetailPage() {
           {activeTab === "diagnostics" && (
             <>
               {!diagnostics ? (
-                <p className="text-sm text-gray-400">Loading diagnostics…</p>
+                <p className="text-sm text-neutral-400">Loading diagnostics…</p>
               ) : (
                 <div className="space-y-5">
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -1235,7 +1237,7 @@ export default function RunDetailPage() {
                   </div>
                   {diagnostics.active_leases.length > 0 && (
                     <div>
-                      <h4 className="mb-2 text-xs font-semibold text-gray-700">Active Leases</h4>
+                      <h4 className="mb-2 text-xs font-semibold text-neutral-700">Active Leases</h4>
                       <div className="space-y-1">
                         {diagnostics.active_leases.map((l) => (
                           <div key={l.lease_id} className="rounded bg-yellow-50 px-3 py-2 text-xs text-yellow-800">
@@ -1249,19 +1251,19 @@ export default function RunDetailPage() {
                   )}
                   {diagnostics.idempotency_entries.length > 0 && (
                     <div>
-                      <h4 className="mb-2 text-xs font-semibold text-gray-700">Idempotency Cache</h4>
+                      <h4 className="mb-2 text-xs font-semibold text-neutral-700">Idempotency Cache</h4>
                       <div className="overflow-auto">
                         <table className="w-full text-xs">
-                          <thead><tr className="border-b text-left text-gray-500"><th className="pb-1 pr-3">Node</th><th className="pb-1 pr-3">Step</th><th className="pb-1 pr-3">Key</th><th className="pb-1 pr-3">Status</th><th className="pb-1 pr-3">Cached</th><th className="pb-1">Updated</th></tr></thead>
+                          <thead><tr className="border-b text-left text-neutral-500"><th className="pb-1 pr-3">Node</th><th className="pb-1 pr-3">Step</th><th className="pb-1 pr-3">Key</th><th className="pb-1 pr-3">Status</th><th className="pb-1 pr-3">Cached</th><th className="pb-1">Updated</th></tr></thead>
                           <tbody>
                             {diagnostics.idempotency_entries.map((e) => (
                               <tr key={`${e.node_id}:${e.step_id}`} className="border-b last:border-0">
                                 <td className="py-1 pr-3 font-mono">{e.node_id}</td>
                                 <td className="py-1 pr-3 font-mono">{e.step_id}</td>
-                                <td className="py-1 pr-3 font-mono text-gray-400 max-w-[120px] truncate" title={e.idempotency_key ?? undefined}>{e.idempotency_key ?? "—"}</td>
+                                <td className="max-w-[120px] truncate py-1 pr-3 font-mono text-neutral-400" title={e.idempotency_key ?? undefined}>{e.idempotency_key ?? "—"}</td>
                                 <td className="py-1 pr-3">{e.status}</td>
-                                <td className="py-1 pr-3">{e.has_cached_result ? <span className="rounded bg-green-50 px-1 text-green-600">cached</span> : <span className="text-gray-400">—</span>}</td>
-                                <td className="py-1 text-gray-400">{e.updated_at ? new Date(e.updated_at).toLocaleTimeString() : "—"}</td>
+                                <td className="py-1 pr-3">{e.has_cached_result ? <span className="rounded bg-green-50 px-1 text-green-600">cached</span> : <span className="text-neutral-400">—</span>}</td>
+                                <td className="py-1 text-neutral-400">{e.updated_at ? new Date(e.updated_at).toLocaleTimeString() : "—"}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -1284,9 +1286,9 @@ export default function RunDetailPage() {
         const extraKeys = Object.keys(retryVarsForm).filter((k) => !schema[k]);
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-            <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-              <h3 className="mb-1 text-base font-semibold text-gray-900">Retry with Modified Inputs</h3>
-              <p className="mb-4 text-xs text-gray-500">Edit input variables before creating a new run from this failed run.</p>
+            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+              <h3 className="mb-1 text-base font-semibold text-neutral-900">Retry with Modified Inputs</h3>
+              <p className="mb-4 text-xs text-neutral-500">Edit input variables before creating a new run from this failed run.</p>
               <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
                 {schemaEntries.map(([key, meta]) => {
                   const validation = (meta?.validation ?? {}) as Record<string, any>;
@@ -1294,16 +1296,16 @@ export default function RunDetailPage() {
                   const isRequired = !!meta?.required;
                   const isSensitive = isFieldSensitive(meta as Record<string, unknown>);
                   const fieldErr = retryVarsErrors[key];
-                  const borderCls = fieldErr ? "border-red-400 focus:border-red-500" : "border-gray-300 focus:border-primary-500";
+                      const borderCls = fieldErr ? "border-red-400 focus:border-red-500" : "border-neutral-300 focus:border-sky-500";
                   return (
                     <div key={key}>
-                      <label className="mb-1 block text-xs font-medium text-gray-600">
+                      <label className="mb-1 block text-xs font-medium text-neutral-600">
                         {key}
-                        {meta?.type && <span className="ml-1 text-gray-400">({meta.type})</span>}
+                        {meta?.type && <span className="ml-1 text-neutral-400">({meta.type})</span>}
                         {isRequired && <span className="ml-1 text-red-500">*</span>}
                         {isSensitive && <span className="ml-1 text-yellow-600">🔒</span>}
                       </label>
-                      {meta?.description && <p className="mb-1 text-xs text-gray-400">{meta.description}</p>}
+                      {meta?.description && <p className="mb-1 text-xs text-neutral-400">{meta.description}</p>}
                       {allowed ? (
                         <select
                           value={retryVarsForm[key] ?? ""}
@@ -1340,19 +1342,19 @@ export default function RunDetailPage() {
                 {/* Extra fields from original run not in schema */}
                 {extraKeys.map((key) => (
                   <div key={key}>
-                    <label className="mb-1 block text-xs font-medium text-gray-600">{key} <span className="text-gray-400">(extra)</span></label>
+                    <label className="mb-1 block text-xs font-medium text-neutral-600">{key} <span className="text-neutral-400">(extra)</span></label>
                     <input
                       type="text"
                       value={retryVarsForm[key] ?? ""}
                       onChange={(e) => setRetryVarsForm((prev) => ({ ...prev, [key]: e.target.value }))}
                       aria-label={key}
                       placeholder={key}
-                      className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:border-primary-500 focus:outline-none"
+                      className="w-full rounded-2xl border border-neutral-300 p-2 text-sm focus:border-sky-500 focus:outline-none"
                     />
                   </div>
                 ))}
                 {schemaEntries.length === 0 && extraKeys.length === 0 && (
-                  <p className="text-sm text-gray-400">No input variables defined for this procedure.</p>
+                  <p className="text-sm text-neutral-400">No input variables defined for this procedure.</p>
                 )}
               </div>
               <div className="mt-5 flex gap-2">
@@ -1390,13 +1392,13 @@ export default function RunDetailPage() {
                     void doRetryRun(parsed);
                   }}
                   disabled={retryCreating || Object.keys(retryVarsErrors).length > 0}
-                  className="flex-1 rounded-lg bg-primary-600 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+                  className="flex-1 rounded-full bg-sky-600 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50"
                 >
                   {retryCreating ? "Creating…" : "Retry with Changes"}
                 </button>
                 <button
                   onClick={() => setShowRetryModal(false)}
-                  className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="flex-1 rounded-full border border-neutral-300 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100"
                 >
                   Cancel
                 </button>
@@ -1424,21 +1426,21 @@ function RunStatusBadge({ status }: { status: string }) {
     completed: "bg-green-100 text-green-700",
     failed: "bg-red-100 text-red-700",
     running: "bg-blue-100 text-blue-700",
-    created: "bg-gray-100 text-gray-600",
+    created: "bg-neutral-100 text-neutral-600",
     waiting_approval: "bg-yellow-100 text-yellow-700",
-    canceled: "bg-gray-200 text-gray-500",
-    cancelled: "bg-gray-200 text-gray-500",
+    canceled: "bg-neutral-200 text-neutral-500",
+    cancelled: "bg-neutral-200 text-neutral-500",
   };
-  return <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${map[status] ?? "bg-gray-100 text-gray-600"}`}>{status}</span>;
+  return <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${map[status] ?? "bg-neutral-100 text-neutral-600"}`}>{status}</span>;
 }
 
 function InfoCard({ label, value, onCopy }: { label: string; value: string; onCopy?: () => void }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <p className="text-xs text-gray-500">{label}</p>
+    <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+      <p className="text-xs text-neutral-500">{label}</p>
       <div className="mt-1 flex items-center gap-1">
-        <p className="text-sm font-medium text-gray-900 truncate">{value}</p>
-        {onCopy && <button onClick={onCopy} className="flex-shrink-0 text-gray-300 hover:text-gray-600" title="Copy"><ClipboardIcon /></button>}
+        <p className="truncate text-sm font-medium text-neutral-900">{value}</p>
+        {onCopy && <button onClick={onCopy} className="flex-shrink-0 text-neutral-300 hover:text-neutral-600" title="Copy"><ClipboardIcon /></button>}
       </div>
     </div>
   );
@@ -1448,22 +1450,22 @@ function EventDot({ type }: { type: string }) {
   const colors: Record<string, string> = {
     run_created: "bg-blue-400", execution_started: "bg-blue-300", execution_resumed: "bg-blue-400",
     node_started: "bg-yellow-400", node_paused: "bg-orange-300",
-    node_completed: "bg-green-400", step_started: "bg-gray-300", step_completed: "bg-green-300",
+    node_completed: "bg-green-400", step_started: "bg-neutral-300", step_completed: "bg-green-300",
     error: "bg-red-400", approval_requested: "bg-orange-400", approval_decided: "bg-purple-400",
     approval_decide_received: "bg-purple-300", approval_decision_received: "bg-purple-300",
     run_completed: "bg-green-600", run_failed: "bg-red-600", step_timeout: "bg-orange-500",
-    sla_breached: "bg-red-300", node_error: "bg-red-500", approval_expired: "bg-gray-500",
-    run_retry_requested: "bg-indigo-400", dry_run_step_skipped: "bg-gray-400", checkpoint_saved: "bg-teal-400",
+    sla_breached: "bg-red-300", node_error: "bg-red-500", approval_expired: "bg-neutral-500",
+    run_retry_requested: "bg-indigo-400", dry_run_step_skipped: "bg-neutral-400", checkpoint_saved: "bg-teal-400",
     llm_usage: "bg-purple-300", loop_iteration: "bg-indigo-300", step_error_notification: "bg-red-400",
   };
-  return <div className={`mt-0.5 h-2 w-2 flex-shrink-0 rounded-full ${colors[type] ?? "bg-gray-300"}`} />;
+  return <div className={`mt-0.5 h-2 w-2 flex-shrink-0 rounded-full ${colors[type] ?? "bg-neutral-300"}`} />;
 }
 
 function DiagCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-      <p className="text-[10px] text-gray-500">{label}</p>
-      <p className="mt-0.5 text-sm font-semibold text-gray-800">{value}</p>
+    <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+      <p className="text-[10px] text-neutral-500">{label}</p>
+      <p className="mt-0.5 text-sm font-semibold text-neutral-800">{value}</p>
     </div>
   );
 }
@@ -1477,17 +1479,17 @@ function NodeExecutionCard({ summary }: { summary: NodeExecutionSummary }) {
     failed: "bg-red-50 text-red-700 border-red-200",
     sla_breached: "bg-orange-50 text-orange-700 border-orange-200",
     current: "bg-blue-50 text-blue-700 border-blue-200",
-    pending: "bg-gray-50 text-gray-600 border-gray-200",
+    pending: "bg-neutral-50 text-neutral-600 border-neutral-200",
     paused: "bg-amber-50 text-amber-700 border-amber-200",
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-gray-900">{summary.nodeName ?? summary.nodeId}</p>
-            <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-[11px] text-gray-600">{summary.nodeId}</span>
+            <p className="text-sm font-semibold text-neutral-900">{summary.nodeName ?? summary.nodeId}</p>
+            <span className="rounded bg-neutral-100 px-2 py-0.5 font-mono text-[11px] text-neutral-600">{summary.nodeId}</span>
             <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${stateTone[summary.status]}`}>{summary.status.replace(/_/g, " ")}</span>
             {summary.approvalId && <span className="rounded-full bg-purple-50 px-2 py-0.5 text-[11px] text-purple-700">approval {summary.approvalId.slice(0, 12)}...</span>}
           </div>
@@ -1505,7 +1507,7 @@ function NodeExecutionCard({ summary }: { summary: NodeExecutionSummary }) {
         <div className="mt-4 overflow-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b text-gray-500">
+              <tr className="border-b text-neutral-500">
                 <th className="pb-2 pr-3">Step</th>
                 <th className="pb-2 pr-3">Action</th>
                 <th className="pb-2 pr-3">Status</th>
@@ -1518,15 +1520,15 @@ function NodeExecutionCard({ summary }: { summary: NodeExecutionSummary }) {
             <tbody>
               {summary.steps.map((step) => (
                 <tr key={`${summary.nodeId}-${step.stepId}`} className="border-b last:border-0 align-top">
-                  <td className="py-2 pr-3 font-mono text-gray-700">{step.stepId}</td>
-                  <td className="py-2 pr-3 text-gray-600">{step.action ?? "-"}</td>
+                  <td className="py-2 pr-3 font-mono text-neutral-700">{step.stepId}</td>
+                  <td className="py-2 pr-3 text-neutral-600">{step.action ?? "-"}</td>
                   <td className="py-2 pr-3">
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-700">{step.status}</span>
+                    <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-700">{step.status}</span>
                   </td>
-                  <td className="py-2 pr-3 text-gray-500">{formatTimestamp(step.startedAt)}</td>
-                  <td className="py-2 pr-3 text-gray-500">{formatTimestamp(step.completedAt)}</td>
-                  <td className="py-2 pr-3 text-gray-500">{formatMilliseconds(step.durationMs)}</td>
-                  <td className="py-2 text-gray-500">
+                  <td className="py-2 pr-3 text-neutral-500">{formatTimestamp(step.startedAt)}</td>
+                  <td className="py-2 pr-3 text-neutral-500">{formatTimestamp(step.completedAt)}</td>
+                  <td className="py-2 pr-3 text-neutral-500">{formatMilliseconds(step.durationMs)}</td>
+                  <td className="py-2 text-neutral-500">
                     {step.retryCount > 0 ? `retries ${step.retryCount}` : step.error ?? "-"}
                   </td>
                 </tr>
@@ -1558,7 +1560,7 @@ function LlmUsageDetail({ payload }: { payload: Record<string, unknown> }) {
         </span>
       )}
       {payload.total_tokens != null && (
-        <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-[10px] font-medium text-gray-600">
+        <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 text-[10px] font-medium text-neutral-600">
           total: <strong>{String(payload.total_tokens)}</strong> tok
         </span>
       )}
@@ -1599,12 +1601,12 @@ function ArtifactPreview({ uri }: { uri: string }) {
       <button
         onClick={loadPreview}
         disabled={loading}
-        className="text-[10px] text-gray-400 hover:text-gray-700"
+        className="text-[10px] text-neutral-400 hover:text-neutral-700"
       >
         {loading ? "Loading…" : expanded ? "▲ Hide preview" : "▼ Preview"}
       </button>
       {expanded && content !== null && (
-        <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-gray-50 p-2 font-mono text-xs text-gray-600">{content}</pre>
+        <pre className="mt-1 max-h-48 overflow-auto rounded-2xl bg-neutral-50 p-2 font-mono text-xs text-neutral-600">{content}</pre>
       )}
     </div>
   );

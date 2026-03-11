@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -13,6 +13,12 @@ import { isFieldSensitive } from "@/lib/redact";
 
 const RELEASE_CHANNELS = ["dev", "qa", "prod"] as const;
 type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
+
+type ReleaseReadinessState = {
+  status: "idle" | "checking" | "ready" | "blocked";
+  issues: string[];
+  checkedVersion: string | null;
+};
 
 function getNextReleaseChannel(channel: string | null | undefined): ReleaseChannel | null {
   const normalized = (channel ?? "dev") as ReleaseChannel;
@@ -72,12 +78,7 @@ function computeLineDiff(a: string, b: string): DiffHunk[] {
 
 const WorkflowGraph = dynamic(
   () => import("@/components/WorkflowGraphWrapper"),
-  { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading graph...</p> }
-);
-
-const WorkflowBuilder = dynamic(
-  () => import("@/components/WorkflowBuilderWrapper"),
-  { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading builder...</p> }
+  { ssr: false, loading: () => <p className="text-sm text-neutral-400">Loading graph...</p> }
 );
 
 export default function ProcedureVersionDetailPage() {
@@ -90,13 +91,12 @@ export default function ProcedureVersionDetailPage() {
   const [procedure, setProcedure] = useState<ProcedureDetail | null>(null);
   const [versions, setVersions] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "builder" | "ckp" | "versions" | "explain" | "runs" | "trigger">(
+  const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "explain" | "runs" | "trigger">(
     () => {
       const t = searchParams.get("tab");
-      return (t === "graph" || t === "builder" || t === "ckp" || t === "versions" || t === "explain" || t === "runs" || t === "trigger") ? t : "overview";
+      return (t === "graph" || t === "ckp" || t === "versions" || t === "explain" || t === "runs" || t === "trigger") ? t : "overview";
     }
   );
-  const [builderSaving, setBuilderSaving] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [explainResult, setExplainResult] = useState<ExplainReport | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
@@ -104,6 +104,7 @@ export default function ProcedureVersionDetailPage() {
   const [ckpText, setCkpText] = useState("");
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState("");
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
 
@@ -118,7 +119,7 @@ export default function ProcedureVersionDetailPage() {
     logic: "bg-amber-500",
     verification: "bg-amber-600",
     human_approval: "bg-red-500",
-    terminate: "bg-gray-500",
+    terminate: "bg-neutral-500",
   };
 
   // Trigger state
@@ -150,7 +151,20 @@ export default function ProcedureVersionDetailPage() {
   const [rollingBack, setRollingBack] = useState(false);
   const [showRollbackModal, setShowRollbackModal] = useState(false);
   const [rollbackTargetVersion, setRollbackTargetVersion] = useState("");
+  const [releaseReadiness, setReleaseReadiness] = useState<ReleaseReadinessState>({
+    status: "idle",
+    issues: [],
+    checkedVersion: null,
+  });
   const { toast } = useToast();
+
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    if (t === "builder" || t === "builder-legacy") {
+      const next = new URLSearchParams({ procedure: procedureId, version });
+      router.replace(`/builder?${next.toString()}`);
+    }
+  }, [procedureId, router, searchParams, version]);
 
   useEffect(() => {
     async function load() {
@@ -171,14 +185,61 @@ export default function ProcedureVersionDetailPage() {
     load();
   }, [procedureId, version]);
 
+  async function refreshReleaseReadiness(procOverride?: ProcedureDetail | null) {
+    const target = procOverride ?? procedure;
+    if (!target) {
+      const idleState: ReleaseReadinessState = { status: "idle", issues: [], checkedVersion: null };
+      setReleaseReadiness(idleState);
+      return idleState;
+    }
+
+    setReleaseReadiness({ status: "checking", issues: [], checkedVersion: target.version });
+    try {
+      const report = await explainProcedure(target.procedure_id, target.version);
+      const issues: string[] = [];
+      if (report.nodes.length === 0) {
+        issues.push("Workflow does not compile into any executable nodes.");
+      }
+      if (report.variables.missing_inputs.length > 0) {
+        issues.push(`Missing required inputs: ${report.variables.missing_inputs.join(", ")}`);
+      }
+
+      const nextState: ReleaseReadinessState = {
+        status: issues.length > 0 ? "blocked" : "ready",
+        issues,
+        checkedVersion: target.version,
+      };
+      setReleaseReadiness(nextState);
+      return nextState;
+    } catch (err) {
+      const nextState: ReleaseReadinessState = {
+        status: "blocked",
+        issues: [err instanceof Error ? err.message : "Compiler preview failed"],
+        checkedVersion: target.version,
+      };
+      setReleaseReadiness(nextState);
+      return nextState;
+    }
+  }
+
+  useEffect(() => {
+    if (!procedure) return;
+    void refreshReleaseReadiness(procedure);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [procedure?.procedure_id, procedure?.version, ckpText]);
+
   // Auto-load graph/explain data when landing directly via ?tab=graph or ?tab=explain
   useEffect(() => {
     if (!procedure) return;
     if (activeTab === "graph" && !graphData && !graphLoading) {
       setGraphLoading(true);
+      setGraphError("");
       getGraph(procedure.procedure_id, procedure.version)
         .then((data) => setGraphData(data as any))
-        .catch((err) => console.error("Failed to load graph:", err))
+        .catch((err) => {
+          console.error("Failed to load graph:", err);
+          setGraphError(err instanceof Error ? err.message : "Failed to load graph");
+        })
         .finally(() => setGraphLoading(false));
     }
     if (activeTab === "explain" && !explainResult && !explainLoading) {
@@ -225,26 +286,26 @@ export default function ProcedureVersionDetailPage() {
     const borderCls = fieldErr
       ? "border-red-400 focus:border-red-500"
       : showDefault && isUsingDefault
-        ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
-        : "border-gray-300 focus:border-primary-500";
+        ? "border-neutral-200 bg-neutral-50 focus:border-sky-500 focus:bg-white"
+        : "border-neutral-300 focus:border-sky-500";
     return (
       <div key={key}>
         <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
-          <label className="text-xs font-semibold text-gray-700">
+          <label className="text-xs font-semibold text-neutral-700">
             {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
           </label>
-          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
+          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-neutral-400">{meta.type as string}</span>}
           {isSensitive && <span className="text-[10px] text-yellow-600 font-medium">🔒 sensitive</span>}
           {showDefault && hasDefault && !isSensitive && (
-            <span className="ml-auto text-[10px] text-gray-400">
+            <span className="ml-auto text-[10px] text-neutral-400">
               default: <code className="font-mono">{String(meta.default)}</code>
               {!isUsingDefault && (
-                <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-primary-600 hover:underline">restore</button>
+                <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-sky-700 hover:underline">restore</button>
               )}
             </span>
           )}
         </div>
-        {meta?.description && <p className="mb-1.5 text-xs text-gray-400">{meta.description as string}</p>}
+        {meta?.description && <p className="mb-1.5 text-xs text-neutral-400">{meta.description as string}</p>}
         {allowed ? (
           <select aria-label={key} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}>
             <option value="">— select —</option>
@@ -266,9 +327,9 @@ export default function ProcedureVersionDetailPage() {
           <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
         ) : (
           <span className="mt-1 inline-flex gap-3">
-            {validation.regex && <span className="text-xs text-gray-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
-            {validation.min !== undefined && <span className="text-xs text-gray-400">Min: {validation.min as number}</span>}
-            {validation.max !== undefined && <span className="text-xs text-gray-400">Max: {validation.max as number}</span>}
+            {validation.regex && <span className="text-xs text-neutral-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
+            {validation.min !== undefined && <span className="text-xs text-neutral-400">Min: {validation.min as number}</span>}
+            {validation.max !== undefined && <span className="text-xs text-neutral-400">Max: {validation.max as number}</span>}
           </span>
         )}
       </div>
@@ -368,31 +429,10 @@ export default function ProcedureVersionDetailPage() {
       const refreshed = await getProcedure(procedure.procedure_id, procedure.version);
       setProcedure(refreshed);
       setEditMode(false);
+      await refreshReleaseReadiness(refreshed);
     } catch (err) {
       console.error(err);
       toast(err instanceof Error ? err.message : "Failed to save workflow", "error");
-    }
-  }
-
-  async function handleBuilderSave(workflowGraph: Record<string, unknown>) {
-    if (!procedure) return;
-    setBuilderSaving(true);
-    try {
-      const updatedCkp = {
-        ...(procedure.ckp_json as Record<string, unknown>),
-        workflow_graph: workflowGraph,
-      };
-      await updateProcedure(procedure.procedure_id, procedure.version, updatedCkp);
-      const refreshed = await getProcedure(procedure.procedure_id, procedure.version);
-      setProcedure(refreshed);
-      setCkpText(JSON.stringify(refreshed.ckp_json, null, 2));
-      setGraphData(null); // invalidate cached graph so graph tab reloads
-      toast("Workflow saved successfully", "success");
-    } catch (err) {
-      console.error(err);
-      toast(err instanceof Error ? err.message : "Failed to save workflow", "error");
-    } finally {
-      setBuilderSaving(false);
     }
   }
 
@@ -415,6 +455,20 @@ export default function ProcedureVersionDetailPage() {
 
   async function handlePromote(targetChannel: ReleaseChannel) {
     if (!procedure) return;
+    const readiness =
+      releaseReadiness.checkedVersion === procedure.version && releaseReadiness.status !== "idle"
+        ? releaseReadiness
+        : await refreshReleaseReadiness(procedure);
+
+    if (readiness.status === "blocked") {
+      toast(
+        readiness.issues[0] ?? "Procedure is not ready for promotion.",
+        "error"
+      );
+      setActiveTab("explain");
+      return;
+    }
+
     setPromotingTo(targetChannel);
     try {
       const result = await promoteProcedure(procedure.procedure_id, procedure.version, targetChannel);
@@ -485,7 +539,7 @@ export default function ProcedureVersionDetailPage() {
     }
   }
 
-  if (loading) return <p className="text-gray-500">Loading procedure...</p>;
+  if (loading) return <p className="text-neutral-500">Loading procedure...</p>;
   if (!procedure) return <p className="text-red-500">Procedure not found</p>;
 
   const currentReleaseChannel = (procedure.release_channel ?? "dev") as ReleaseChannel;
@@ -505,24 +559,27 @@ export default function ProcedureVersionDetailPage() {
   async function loadGraph() {
     if (graphData || graphLoading || !procedure) return;
     setGraphLoading(true);
+    setGraphError("");
     try {
       const data = await getGraph(procedure.procedure_id, procedure.version);
       setGraphData(data as any);
     } catch (err) {
       console.error("Failed to load graph:", err);
+      setGraphError(err instanceof Error ? err.message : "Failed to load graph");
     } finally {
       setGraphLoading(false);
     }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex items-start justify-between">
         <div>
-          <Link href="/procedures" className="text-sm text-primary-600 hover:underline">
+          <Link href="/procedures" className="text-sm text-sky-700 hover:underline">
             ← Procedures
           </Link>
-          <h2 className="mt-2 text-xl font-bold text-gray-900">{procedure.name}</h2>
+          <h2 className="mt-2 text-2xl font-semibold text-neutral-900">{procedure.name}</h2>
           <div className="mt-1 flex items-center gap-2">
             <StatusBadge status={procedure.status ?? "draft"} />
             <span
@@ -531,15 +588,15 @@ export default function ProcedureVersionDetailPage() {
               {currentReleaseChannel}
             </span>
             {procedure.effective_date && (
-              <span className="text-xs text-gray-400">Effective: {procedure.effective_date}</span>
+              <span className="text-xs text-neutral-400">Effective: {procedure.effective_date}</span>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-500">{procedure.description}</p>
-          <p className="mt-1 text-xs text-gray-400">
+          <p className="mt-1 text-sm text-neutral-500">{procedure.description}</p>
+          <p className="mt-1 text-xs text-neutral-400">
             ID: {procedure.procedure_id} · Version: {procedure.version}
           </p>
           {(procedure.promoted_at || procedure.promoted_by || procedure.promoted_from_version) && (
-            <p className="mt-1 text-xs text-gray-400">
+            <p className="mt-1 text-xs text-neutral-400">
               {procedure.promoted_at ? `Promoted ${new Date(procedure.promoted_at).toLocaleString()}` : "Promoted"}
               {procedure.promoted_by ? ` by ${procedure.promoted_by}` : ""}
               {procedure.promoted_from_version ? ` from v${procedure.promoted_from_version}` : ""}
@@ -547,25 +604,40 @@ export default function ProcedureVersionDetailPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {releaseReadiness.status === "checking" ? (
+            <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+              checking release readiness
+            </span>
+          ) : null}
+          {releaseReadiness.status === "ready" ? (
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+              release ready
+            </span>
+          ) : null}
+          {releaseReadiness.status === "blocked" ? (
+            <span className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-700">
+              promotion blocked
+            </span>
+          ) : null}
           {canRollback && (
             <button
               onClick={openRollbackModal}
               disabled={rollingBack || promotingTo !== null}
-              className="rounded-lg border border-orange-300 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-60"
+              className="rounded-full border border-orange-300 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-60"
             >
               {rollingBack ? "Rolling back..." : "Rollback..."}
             </button>
           )}
           {!canRollback && (
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-neutral-400">
               No same-channel rollback targets available
             </span>
           )}
           {nextReleaseChannel && (
             <button
               onClick={() => handlePromote(nextReleaseChannel)}
-              disabled={promotingTo !== null || rollingBack}
-              className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+              disabled={promotingTo !== null || rollingBack || releaseReadiness.status === "checking"}
+              className="rounded-full border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
             >
               {promotingTo === nextReleaseChannel
                 ? `Promoting to ${nextReleaseChannel.toUpperCase()}...`
@@ -573,10 +645,19 @@ export default function ProcedureVersionDetailPage() {
             </button>
           )}
           <button
+            onClick={() => {
+              const next = new URLSearchParams({ procedure: procedure.procedure_id, version: procedure.version });
+              router.push(`/builder?${next.toString()}`);
+            }}
+            className="rounded-full border border-sky-300 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50"
+          >
+            Open Builder
+          </button>
+          <button
             onClick={openStartRun}
             disabled={runCreating}
             title={procedure.status === "draft" ? "This procedure is in DRAFT status" : undefined}
-            className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${procedure.status === "draft"
+            className={`rounded-full px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${procedure.status === "draft"
                 ? "bg-green-600 hover:bg-green-700 ring-2 ring-amber-400 ring-offset-1"
                 : "bg-green-600 hover:bg-green-700"
               }`}
@@ -585,21 +666,30 @@ export default function ProcedureVersionDetailPage() {
           </button>
           <button
             onClick={() => setEditMode((prev) => !prev)}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
           >
             {editMode ? "Cancel Edit" : "Edit CKP"}
           </button>
           <button
             onClick={handleDeleteVersion}
-            className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+            className="rounded-full border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
           >
             Delete Version
           </button>
         </div>
       </div>
+      </section>
 
-      <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "graph", "builder", "explain", "ckp", "versions", "runs", "trigger"] as const).map((tab) => (
+      {releaseReadiness.status === "blocked" && releaseReadiness.issues.length > 0 ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <p className="font-semibold">Promotion is blocked until compiler readiness issues are resolved.</p>
+          <p className="mt-1">{releaseReadiness.issues[0]}</p>
+        </div>
+      ) : null}
+
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="flex border-b border-neutral-200">
+        {(["overview", "graph", "explain", "ckp", "versions", "runs", "trigger"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => {
@@ -656,27 +746,27 @@ export default function ProcedureVersionDetailPage() {
                   .finally(() => setTriggerLoading(false));
               }
             }}
-            className={`px-4 py-2 text-sm font-medium ${activeTab === tab
-                ? "border-b-2 border-primary-600 text-primary-600"
-                : "text-gray-500 hover:text-gray-700"
+            className={`px-5 py-3 text-sm font-medium transition ${activeTab === tab
+                ? "border-b-2 border-sky-600 text-sky-600"
+                : "text-neutral-500 hover:text-neutral-700"
               }`}
           >
-            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "builder" ? "Builder ✏" : tab === "explain" ? "Explain" : tab === "trigger" ? "Trigger" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab === "explain" ? "Explain" : tab === "trigger" ? "Trigger" : tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
         ))}
       </div>
 
       {activeTab === "overview" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-sm font-semibold text-gray-900">Workflow Nodes ({nodeEntries.length})</h3>
+        <div className="p-6">
+          <h3 className="mb-4 text-sm font-semibold text-neutral-900">Workflow Nodes ({nodeEntries.length})</h3>
           <div className="space-y-3">
             {nodeEntries.map(([nodeId, node]: [string, any]) => (
-              <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
-                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${NODE_TYPE_BADGE_CLASS[node.type as string] ?? "bg-gray-500"}`}>{node.type}</span>
+              <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-neutral-100 p-3">
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${NODE_TYPE_BADGE_CLASS[node.type as string] ?? "bg-neutral-500"}`}>{node.type}</span>
                 <div>
                   <p className="text-sm font-medium">{nodeId}</p>
-                  {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
-                  {node.agent && <p className="text-xs text-gray-400">Agent: {node.agent}</p>}
+                  {node.description && <p className="text-xs text-neutral-400">{node.description}</p>}
+                  {node.agent && <p className="text-xs text-neutral-400">Agent: {node.agent}</p>}
                 </div>
               </div>
             ))}
@@ -684,8 +774,8 @@ export default function ProcedureVersionDetailPage() {
           {/* Provenance */}
           {procedure.provenance && (
             <div className="mt-6">
-              <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Provenance</h4>
-              <pre className="rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto">
+              <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Provenance</h4>
+              <pre className="rounded-lg bg-neutral-50 p-3 text-xs font-mono overflow-auto">
                 {JSON.stringify(procedure.provenance, null, 2)}
               </pre>
             </div>
@@ -693,7 +783,7 @@ export default function ProcedureVersionDetailPage() {
           {/* Retrieval Metadata */}
           {procedure.retrieval_metadata && (
             <div className="mt-4">
-              <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Retrieval Metadata</h4>
+              <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Retrieval Metadata</h4>
               {Array.isArray((procedure.retrieval_metadata as any)?.tags) && (
                 <div className="mb-2 flex flex-wrap gap-1">
                   {((procedure.retrieval_metadata as any).tags as string[]).map((tag: string) => (
@@ -701,7 +791,7 @@ export default function ProcedureVersionDetailPage() {
                   ))}
                 </div>
               )}
-              <pre className="rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto">
+              <pre className="rounded-lg bg-neutral-50 p-3 text-xs font-mono overflow-auto">
                 {JSON.stringify(procedure.retrieval_metadata, null, 2)}
               </pre>
             </div>
@@ -710,34 +800,35 @@ export default function ProcedureVersionDetailPage() {
       )}
 
       {activeTab === "graph" && (
-        <div>
-          {graphLoading && <p className="text-sm text-gray-400">Loading graph...</p>}
+        <div className="p-6 space-y-3">
+          <div className="flex items-center justify-between rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3">
+            <div>
+              <p className="text-sm font-semibold text-sky-900">Graph preview only</p>
+              <p className="text-xs text-sky-700">
+                Editing now happens in the dedicated Visual Builder workspace so the canvas has full room and cleaner navigation.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                const next = new URLSearchParams({ procedure: procedure.procedure_id, version: procedure.version });
+                router.push(`/builder?${next.toString()}`);
+              }}
+              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700"
+            >
+              Open Builder
+            </button>
+          </div>
+          {graphLoading && <p className="text-sm text-neutral-400">Loading graph...</p>}
+          {graphError && <p className="text-sm text-red-500">{graphError}</p>}
           {graphData && <WorkflowGraph graph={graphData} />}
-          {!graphLoading && !graphData && (
-            <p className="text-sm text-gray-400">No graph data available.</p>
+          {!graphLoading && !graphData && !graphError && (
+            <p className="text-sm text-neutral-400">No graph data available.</p>
           )}
         </div>
       )}
 
-      {activeTab === "builder" && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-gray-500">
-              Visual workflow editor — drag nodes from the palette, connect them, click to inspect and edit properties.
-              Saving overwrites the <code className="font-mono text-xs">workflow_graph</code> field of the CKP document.
-            </p>
-          </div>
-          <WorkflowBuilder
-            key={`${procedure.procedure_id}-v${procedure.version}`}
-            initialWorkflowGraph={(procedure.ckp_json as any)?.workflow_graph ?? null}
-            onSave={handleBuilderSave}
-            saving={builderSaving}
-          />
-        </div>
-      )}
-
       {activeTab === "ckp" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="p-6">
           {editMode ? (
             <div className="space-y-3">
               <textarea
@@ -745,17 +836,17 @@ export default function ProcedureVersionDetailPage() {
                 onChange={(e) => setCkpText(e.target.value)}
                 title="CKP JSON editor"
                 placeholder="Paste CKP JSON"
-                className="h-[600px] w-full rounded-lg border border-gray-300 p-3 font-mono text-xs"
+                className="h-[600px] w-full rounded-lg border border-neutral-300 p-3 font-mono text-xs"
               />
               <button
                 onClick={handleSaveCkp}
-                className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700"
               >
                 Save CKP
               </button>
             </div>
           ) : (
-            <pre className="max-h-[600px] overflow-auto rounded-lg bg-gray-50 p-4 font-mono text-xs leading-relaxed">
+            <pre className="max-h-[600px] overflow-auto rounded-lg bg-neutral-50 p-4 font-mono text-xs leading-relaxed">
               {JSON.stringify(ckp, null, 2)}
             </pre>
           )}
@@ -763,9 +854,9 @@ export default function ProcedureVersionDetailPage() {
       )}
 
       {activeTab === "explain" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="p-6">
           {explainLoading ? (
-            <div className="flex items-center gap-2 text-sm text-gray-400">
+            <div className="flex items-center gap-2 text-sm text-neutral-400">
               <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
@@ -791,17 +882,17 @@ export default function ProcedureVersionDetailPage() {
               </button>
             </div>
           ) : !explainResult ? (
-            <p className="text-sm text-gray-400">Click the Explain tab to analyse this procedure.</p>
+            <p className="text-sm text-neutral-400">Click the Explain tab to analyse this procedure.</p>
           ) : (
             <div className="space-y-6">
               {/* Route Trace */}
               <div>
-                <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Execution Route</h4>
+                <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Execution Route</h4>
                 <div className="flex flex-wrap items-center gap-1">
                   {explainResult.route_trace.map((entry, i) => (
                     <span key={i} className="flex items-center gap-1">
-                      {i > 0 && <span className="text-gray-300">→</span>}
-                      <span className={`rounded px-2 py-0.5 text-xs font-mono ${entry.is_terminal ? "bg-gray-100 text-gray-500" : "bg-primary-50 text-primary-700"
+                      {i > 0 && <span className="text-neutral-300">→</span>}
+                      <span className={`rounded px-2 py-0.5 text-xs font-mono ${entry.is_terminal ? "bg-neutral-100 text-neutral-500" : "bg-sky-50 text-sky-800"
                         }`}>
                         {entry.node_id}
                         <span className="ml-1 text-[10px] opacity-60">({entry.type})</span>
@@ -813,27 +904,27 @@ export default function ProcedureVersionDetailPage() {
 
               {/* Variables */}
               <div>
-                <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Variables</h4>
+                <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Variables</h4>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <div className="rounded-lg border border-gray-100 p-3">
-                    <p className="text-[10px] text-gray-500">Required</p>
+                  <div className="rounded-lg border border-neutral-100 p-3">
+                    <p className="text-[10px] text-neutral-500">Required</p>
                     <div className="mt-1 flex flex-wrap gap-1">
-                      {explainResult.variables.required.length === 0 ? <span className="text-xs text-gray-400">None</span> : explainResult.variables.required.map((v) => (
+                      {explainResult.variables.required.length === 0 ? <span className="text-xs text-neutral-400">None</span> : explainResult.variables.required.map((v) => (
                         <span key={v} className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${explainResult.variables.provided.includes(v) ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
                           }`}>{v}</span>
                       ))}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-gray-100 p-3">
-                    <p className="text-[10px] text-gray-500">Produced</p>
+                  <div className="rounded-lg border border-neutral-100 p-3">
+                    <p className="text-[10px] text-neutral-500">Produced</p>
                     <div className="mt-1 flex flex-wrap gap-1">
-                      {explainResult.variables.produced.length === 0 ? <span className="text-xs text-gray-400">None</span> : explainResult.variables.produced.map((v) => (
+                      {explainResult.variables.produced.length === 0 ? <span className="text-xs text-neutral-400">None</span> : explainResult.variables.produced.map((v) => (
                         <span key={v} className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-700">{v}</span>
                       ))}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-gray-100 p-3">
-                    <p className="text-[10px] text-gray-500">Missing</p>
+                  <div className="rounded-lg border border-neutral-100 p-3">
+                    <p className="text-[10px] text-neutral-500">Missing</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {(explainResult.variables.missing_inputs ?? []).length === 0 ? <span className="text-xs text-green-500">All satisfied</span> : (explainResult.variables.missing_inputs ?? []).map((v) => (
                         <span key={v} className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700">{v}</span>
@@ -845,26 +936,26 @@ export default function ProcedureVersionDetailPage() {
 
               {/* Nodes */}
               <div>
-                <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Nodes ({explainResult.nodes.length})</h4>
+                <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Nodes ({explainResult.nodes.length})</h4>
                 <div className="space-y-2">
                   {explainResult.nodes.map((node) => (
-                    <div key={node.id} className="rounded-lg border border-gray-100 p-3">
+                    <div key={node.id} className="rounded-lg border border-neutral-100 p-3">
                       <div className="flex items-center gap-2">
-                        <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-600">{node.type}</span>
-                        <span className="font-mono text-sm font-medium text-gray-900">{node.id}</span>
-                        {node.agent && <span className="text-xs text-gray-400">agent: {node.agent}</span>}
+                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600">{node.type}</span>
+                        <span className="font-mono text-sm font-medium text-neutral-900">{node.id}</span>
+                        {node.agent && <span className="text-xs text-neutral-400">agent: {node.agent}</span>}
                         {node.has_side_effects && <span className="rounded bg-yellow-50 px-1.5 py-0.5 text-[10px] text-yellow-600">side-effects</span>}
                         {node.is_checkpoint && <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] text-teal-600">checkpoint</span>}
-                        {node.timeout_ms && <span className="text-[10px] text-gray-400">timeout: {node.timeout_ms}ms</span>}
+                        {node.timeout_ms && <span className="text-[10px] text-neutral-400">timeout: {node.timeout_ms}ms</span>}
                       </div>
-                      {node.description && <p className="mt-1 text-xs text-gray-500">{node.description}</p>}
+                      {node.description && <p className="mt-1 text-xs text-neutral-500">{node.description}</p>}
                       {node.sla && <p className="mt-1 text-[10px] text-orange-500">SLA: {JSON.stringify(node.sla)}</p>}
                       {node.steps.length > 0 && (
-                        <div className="mt-2 border-t border-gray-50 pt-2">
-                          <p className="text-[10px] text-gray-400 mb-1">Steps:</p>
+                        <div className="mt-2 border-t border-neutral-50 pt-2">
+                          <p className="text-[10px] text-neutral-400 mb-1">Steps:</p>
                           <div className="flex flex-wrap gap-1">
                             {node.steps.map((s) => (
-                              <span key={s.step_id} className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">{s.step_id}: {s.action}{s.binding_kind ? ` [${s.binding_kind}]` : ""}</span>
+                              <span key={s.step_id} className="rounded bg-neutral-50 px-1.5 py-0.5 text-[10px] text-neutral-600">{s.step_id}: {s.action}{s.binding_kind ? ` [${s.binding_kind}]` : ""}</span>
                             ))}
                           </div>
                         </div>
@@ -882,10 +973,10 @@ export default function ProcedureVersionDetailPage() {
               {/* External Calls */}
               {explainResult.external_calls.length > 0 && (
                 <div>
-                  <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">External Calls ({explainResult.external_calls.length})</h4>
+                  <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">External Calls ({explainResult.external_calls.length})</h4>
                   <div className="overflow-auto">
                     <table className="w-full text-xs">
-                      <thead><tr className="border-b text-left text-gray-500"><th className="pb-1 pr-3">Node</th><th className="pb-1 pr-3">Step</th><th className="pb-1 pr-3">Action</th><th className="pb-1 pr-3">Binding</th><th className="pb-1">Ref</th></tr></thead>
+                      <thead><tr className="border-b text-left text-neutral-500"><th className="pb-1 pr-3">Node</th><th className="pb-1 pr-3">Step</th><th className="pb-1 pr-3">Action</th><th className="pb-1 pr-3">Binding</th><th className="pb-1">Ref</th></tr></thead>
                       <tbody>
                         {explainResult.external_calls.map((call, i) => (
                           <tr key={i} className="border-b last:border-0">
@@ -893,7 +984,7 @@ export default function ProcedureVersionDetailPage() {
                             <td className="py-1 pr-3 font-mono">{call.step_id ?? "—"}</td>
                             <td className="py-1 pr-3">{call.action}</td>
                             <td className="py-1 pr-3"><span className="rounded bg-blue-50 px-1 text-blue-600">{call.binding_kind}</span></td>
-                            <td className="py-1 font-mono text-gray-500">{call.binding_ref ?? "—"}</td>
+                            <td className="py-1 font-mono text-neutral-500">{call.binding_ref ?? "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -904,10 +995,10 @@ export default function ProcedureVersionDetailPage() {
 
               {/* Edges */}
               <div>
-                <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Edges ({explainResult.edges.length})</h4>
+                <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Edges ({explainResult.edges.length})</h4>
                 <div className="flex flex-wrap gap-1">
                   {explainResult.edges.map((edge, i) => (
-                    <span key={i} className="rounded bg-gray-50 px-2 py-0.5 text-[10px] text-gray-600">
+                    <span key={i} className="rounded bg-neutral-50 px-2 py-0.5 text-[10px] text-neutral-600">
                       {edge.from} → {edge.to}{edge.condition ? ` [${edge.condition}]` : ""}
                     </span>
                   ))}
@@ -917,8 +1008,8 @@ export default function ProcedureVersionDetailPage() {
               {/* Policy Summary */}
               {Object.keys(explainResult.policy_summary).length > 0 && (
                 <div>
-                  <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Policy Summary</h4>
-                  <pre className="rounded-lg bg-gray-50 p-3 font-mono text-xs">{JSON.stringify(explainResult.policy_summary, null, 2)}</pre>
+                  <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Policy Summary</h4>
+                  <pre className="rounded-lg bg-neutral-50 p-3 font-mono text-xs">{JSON.stringify(explainResult.policy_summary, null, 2)}</pre>
                 </div>
               )}
             </div>
@@ -927,19 +1018,19 @@ export default function ProcedureVersionDetailPage() {
       )}
 
       {activeTab === "versions" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="p-6">
           {versions.length === 0 ? (
-            <p className="text-sm text-gray-400">No other versions</p>
+            <p className="text-sm text-neutral-400">No other versions</p>
           ) : (
             <div className="space-y-4">
               {/* Version list */}
               <div className="space-y-2">
                 {versions.map((v) => (
-                  <div key={v.version} className="flex items-center justify-between rounded-lg border border-gray-100 p-3">
+                  <div key={v.version} className="flex items-center justify-between rounded-lg border border-neutral-100 p-3">
                     <div className="flex items-center gap-2">
                       <Link
                         href={`/procedures/${encodeURIComponent(v.procedure_id)}/${encodeURIComponent(v.version)}`}
-                        className={`text-sm font-medium ${v.version === version ? "text-primary-600 font-bold" : "text-gray-700 hover:text-primary-600"}`}
+                        className={`text-sm font-medium ${v.version === version ? "text-sky-700 font-bold" : "text-neutral-700 hover:text-sky-700"}`}
                       >
                         v{v.version} {v.version === version && "(current)"}
                       </Link>
@@ -949,34 +1040,34 @@ export default function ProcedureVersionDetailPage() {
                         {(v.release_channel ?? "dev").toUpperCase()}
                       </span>
                       {v.promoted_by && (
-                        <span className="text-xs text-gray-400">by {v.promoted_by}</span>
+                        <span className="text-xs text-neutral-400">by {v.promoted_by}</span>
                       )}
                     </div>
-                    <span className="text-xs text-gray-400">{new Date(v.created_at).toLocaleString()}</span>
+                    <span className="text-xs text-neutral-400">{new Date(v.created_at).toLocaleString()}</span>
                   </div>
                 ))}
               </div>
 
               {/* Diff Comparison */}
               {versions.length >= 2 && (
-                <div className="border-t border-gray-200 pt-4">
-                  <h4 className="mb-3 text-sm font-semibold text-gray-900">Compare Versions</h4>
+                <div className="border-t border-neutral-200 pt-4">
+                  <h4 className="mb-3 text-sm font-semibold text-neutral-900">Compare Versions</h4>
                   <div className="flex flex-wrap items-center gap-3 mb-3">
                     <select
                       value={diffVersionA}
                       onChange={(e) => setDiffVersionA(e.target.value)}
                       aria-label="Base version"
-                      className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                      className="rounded-md border border-neutral-300 px-2 py-1 text-xs"
                     >
                       <option value="">Base version…</option>
                       {versions.map((v) => (<option key={v.version} value={v.version}>v{v.version}</option>))}
                     </select>
-                    <span className="text-xs text-gray-400">vs</span>
+                    <span className="text-xs text-neutral-400">vs</span>
                     <select
                       value={diffVersionB}
                       onChange={(e) => setDiffVersionB(e.target.value)}
                       aria-label="Compare version"
-                      className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                      className="rounded-md border border-neutral-300 px-2 py-1 text-xs"
                     >
                       <option value="">Compare version…</option>
                       {versions.map((v) => (<option key={v.version} value={v.version}>v{v.version}</option>))}
@@ -1001,7 +1092,7 @@ export default function ProcedureVersionDetailPage() {
                           setDiffLoading(false);
                         }
                       }}
-                      className="rounded-md bg-primary-600 px-3 py-1 text-xs font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+                      className="rounded-md bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50"
                     >
                       {diffLoading ? "Loading…" : "Compare"}
                     </button>
@@ -1009,10 +1100,10 @@ export default function ProcedureVersionDetailPage() {
 
                   {/* Diff output */}
                   {diffResult && (
-                    <div className="rounded-lg border border-gray-200 overflow-auto max-h-[600px]">
+                    <div className="rounded-lg border border-neutral-200 overflow-auto max-h-[600px]">
                       <table className="w-full font-mono text-xs">
                         <thead>
-                          <tr className="border-b bg-gray-50 text-gray-500">
+                          <tr className="border-b bg-neutral-50 text-neutral-500">
                             <th className="px-2 py-1 text-right w-10">v{diffVersionA}</th>
                             <th className="px-2 py-1 text-right w-10">v{diffVersionB}</th>
                             <th className="px-3 py-1 text-left">Line</th>
@@ -1030,10 +1121,10 @@ export default function ProcedureVersionDetailPage() {
                                     : ""
                               }
                             >
-                              <td className="px-2 py-0.5 text-right text-gray-400 select-none border-r border-gray-100">
+                              <td className="px-2 py-0.5 text-right text-neutral-400 select-none border-r border-neutral-100">
                                 {h.lineA ?? ""}
                               </td>
-                              <td className="px-2 py-0.5 text-right text-gray-400 select-none border-r border-gray-100">
+                              <td className="px-2 py-0.5 text-right text-neutral-400 select-none border-r border-neutral-100">
                                 {h.lineB ?? ""}
                               </td>
                               <td className="px-3 py-0.5 whitespace-pre">
@@ -1042,7 +1133,7 @@ export default function ProcedureVersionDetailPage() {
                                     ? "text-green-700"
                                     : h.type === "removed"
                                       ? "text-red-700"
-                                      : "text-gray-700"
+                                      : "text-neutral-700"
                                 }>
                                   {h.type === "added" ? "+ " : h.type === "removed" ? "- " : "  "}{h.text}
                                 </span>
@@ -1051,7 +1142,7 @@ export default function ProcedureVersionDetailPage() {
                           ))}
                         </tbody>
                       </table>
-                      <div className="border-t border-gray-200 bg-gray-50 px-3 py-2 flex items-center gap-4 text-xs text-gray-500">
+                      <div className="border-t border-neutral-200 bg-neutral-50 px-3 py-2 flex items-center gap-4 text-xs text-neutral-500">
                         <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-red-100 border border-red-200" /> Removed</span>
                         <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-green-100 border border-green-200" /> Added</span>
                         <span className="ml-auto">{diffResult.hunks.filter(h => h.type !== "equal").length} change(s)</span>
@@ -1066,16 +1157,16 @@ export default function ProcedureVersionDetailPage() {
       )}
 
       {activeTab === "runs" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-sm font-semibold text-gray-900">Runs for this procedure</h3>
+        <div className="p-6">
+          <h3 className="mb-4 text-sm font-semibold text-neutral-900">Runs for this procedure</h3>
           {runsLoading ? (
-            <p className="text-sm text-gray-400">Loading runs…</p>
+            <p className="text-sm text-neutral-400">Loading runs…</p>
           ) : procedureRuns.length === 0 ? (
-            <p className="text-sm text-gray-400">No runs yet.</p>
+            <p className="text-sm text-neutral-400">No runs yet.</p>
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-100 text-xs text-gray-500">
+                <tr className="border-b border-neutral-100 text-xs text-neutral-500">
                   <th className="py-2 text-left font-medium">Run ID</th>
                   <th className="py-2 text-left font-medium">Status</th>
                   <th className="py-2 text-left font-medium">Started</th>
@@ -1084,9 +1175,9 @@ export default function ProcedureVersionDetailPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {procedureRuns.map((r) => (
-                  <tr key={r.run_id} className="hover:bg-gray-50">
+                  <tr key={r.run_id} className="hover:bg-neutral-50">
                     <td className="py-2">
-                      <Link href={`/runs/${r.run_id}`} className="font-mono text-xs text-primary-600 hover:underline">
+                      <Link href={`/runs/${r.run_id}`} className="font-mono text-xs text-sky-700 hover:underline">
                         {r.run_id.slice(0, 14)}…
                       </Link>
                     </td>
@@ -1094,11 +1185,11 @@ export default function ProcedureVersionDetailPage() {
                       <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${r.status === "completed" ? "bg-green-100 text-green-700" :
                           r.status === "failed" ? "bg-red-100 text-red-700" :
                             r.status === "running" ? "bg-blue-100 text-blue-700" :
-                              "bg-gray-100 text-gray-600"
+                              "bg-neutral-100 text-neutral-600"
                         }`}>{r.status}</span>
                     </td>
-                    <td className="py-2 text-xs text-gray-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
-                    <td className="py-2 text-xs text-gray-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
+                    <td className="py-2 text-xs text-neutral-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
+                    <td className="py-2 text-xs text-neutral-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1109,17 +1200,17 @@ export default function ProcedureVersionDetailPage() {
 
       {/* ── Trigger tab ───────────────────────────────────── */}
       {activeTab === "trigger" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm space-y-6">
+        <div className="p-6 space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-gray-900">Trigger Configuration</h3>
-              <p className="mt-0.5 text-xs text-gray-400">
+              <h3 className="text-sm font-semibold text-neutral-900">Trigger Configuration</h3>
+              <p className="mt-0.5 text-xs text-neutral-400">
                 Register an automated trigger for this procedure version. Scheduled triggers use cron
                 syntax; webhooks accept POST requests with optional HMAC-SHA256 signature verification.
               </p>
             </div>
             {triggerReg && (
-              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${triggerReg.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${triggerReg.enabled ? "bg-green-100 text-green-700" : "bg-neutral-100 text-neutral-500"
                 }`}>
                 {triggerReg.enabled ? "Active" : "Disabled"}
               </span>
@@ -1127,17 +1218,17 @@ export default function ProcedureVersionDetailPage() {
           </div>
 
           {triggerLoading ? (
-            <p className="text-sm text-gray-400">Loading trigger info…</p>
+            <p className="text-sm text-neutral-400">Loading trigger info…</p>
           ) : (
             <div className="space-y-4">
               {/* Type selector */}
               <div>
-                <label htmlFor="trigger_type" className="mb-1 block text-xs font-medium text-gray-600">Trigger Type</label>
+                <label htmlFor="trigger_type" className="mb-1 block text-xs font-medium text-neutral-600">Trigger Type</label>
                 <select
                   id="trigger_type"
                   value={triggerForm.trigger_type}
                   onChange={(e) => setTriggerForm((f) => ({ ...f, trigger_type: e.target.value }))}
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                  className="rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
                 >
                   <option value="webhook">Webhook (HTTP POST)</option>
                   <option value="scheduled">Scheduled (cron)</option>
@@ -1149,15 +1240,15 @@ export default function ProcedureVersionDetailPage() {
               {/* Schedule — shown only for scheduled */}
               {triggerForm.trigger_type === "scheduled" && (
                 <div>
-                  <label htmlFor="trigger_schedule" className="mb-1 block text-xs font-medium text-gray-600">
-                    Cron Expression <span className="text-gray-400">(UTC, 5-field)</span>
+                  <label htmlFor="trigger_schedule" className="mb-1 block text-xs font-medium text-neutral-600">
+                    Cron Expression <span className="text-neutral-400">(UTC, 5-field)</span>
                   </label>
                   <input
                     id="trigger_schedule"
                     value={triggerForm.schedule}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, schedule: e.target.value }))}
                     placeholder="e.g. 0 9 * * 1-5  (weekdays at 9am)"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-primary-500 focus:outline-none"
+                    className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-mono focus:border-sky-500 focus:outline-none"
                   />
                 </div>
               )}
@@ -1166,15 +1257,15 @@ export default function ProcedureVersionDetailPage() {
               {triggerForm.trigger_type === "webhook" && (
                 <>
                   <div>
-                    <label htmlFor="trigger_webhook_secret" className="mb-1 block text-xs font-medium text-gray-600">
-                      Webhook Secret Env Var <span className="text-gray-400">(optional — env var name holding HMAC key)</span>
+                    <label htmlFor="trigger_webhook_secret" className="mb-1 block text-xs font-medium text-neutral-600">
+                      Webhook Secret Env Var <span className="text-neutral-400">(optional — env var name holding HMAC key)</span>
                     </label>
                     <input
                       id="trigger_webhook_secret"
                       value={triggerForm.webhook_secret}
                       onChange={(e) => setTriggerForm((f) => ({ ...f, webhook_secret: e.target.value }))}
                       placeholder="e.g. MY_PROCEDURE_WEBHOOK_SECRET"
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-primary-500 focus:outline-none"
+                      className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-sm focus:border-sky-500 focus:outline-none"
                     />
                   </div>
                   <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700">
@@ -1193,13 +1284,13 @@ export default function ProcedureVersionDetailPage() {
               {/* Event source */}
               {triggerForm.trigger_type === "event" && (
                 <div>
-                  <label htmlFor="trigger_event_source" className="mb-1 block text-xs font-medium text-gray-600">Event Source <span className="text-gray-400">(Kafka topic / SQS queue)</span></label>
+                  <label htmlFor="trigger_event_source" className="mb-1 block text-xs font-medium text-neutral-600">Event Source <span className="text-neutral-400">(Kafka topic / SQS queue)</span></label>
                   <input
                     id="trigger_event_source"
                     value={triggerForm.event_source}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, event_source: e.target.value }))}
                     placeholder="e.g. orders.created"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                    className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
                   />
                 </div>
               )}
@@ -1207,19 +1298,19 @@ export default function ProcedureVersionDetailPage() {
               {/* Dedupe window + concurrency */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label htmlFor="trigger_dedupe_window" className="mb-1 block text-xs font-medium text-gray-600">Dedupe Window (seconds)</label>
+                  <label htmlFor="trigger_dedupe_window" className="mb-1 block text-xs font-medium text-neutral-600">Dedupe Window (seconds)</label>
                   <input
                     id="trigger_dedupe_window"
                     type="number"
                     min={0}
                     value={triggerForm.dedupe_window_seconds}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, dedupe_window_seconds: Number(e.target.value) }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                    className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
                   />
-                  <p className="mt-0.5 text-[10px] text-gray-400">0 = no dedupe</p>
+                  <p className="mt-0.5 text-[10px] text-neutral-400">0 = no dedupe</p>
                 </div>
                 <div>
-                  <label htmlFor="trigger_max_concurrent_runs" className="mb-1 block text-xs font-medium text-gray-600">Max Concurrent Runs</label>
+                  <label htmlFor="trigger_max_concurrent_runs" className="mb-1 block text-xs font-medium text-neutral-600">Max Concurrent Runs</label>
                   <input
                     id="trigger_max_concurrent_runs"
                     type="number"
@@ -1227,7 +1318,7 @@ export default function ProcedureVersionDetailPage() {
                     value={triggerForm.max_concurrent_runs}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, max_concurrent_runs: e.target.value }))}
                     placeholder="unlimited"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                    className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
                   />
                 </div>
               </div>
@@ -1240,11 +1331,11 @@ export default function ProcedureVersionDetailPage() {
                   onChange={(e) => setTriggerForm((f) => ({ ...f, enabled: e.target.checked }))}
                   className="rounded"
                 />
-                <label htmlFor="trigger_enabled" className="text-sm text-gray-700">Enabled</label>
+                <label htmlFor="trigger_enabled" className="text-sm text-neutral-700">Enabled</label>
               </div>
 
               {/* Action bar */}
-              <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-100">
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-neutral-100">
                 <button
                   onClick={async () => {
                     setTriggerSaving(true);
@@ -1267,7 +1358,7 @@ export default function ProcedureVersionDetailPage() {
                     }
                   }}
                   disabled={triggerSaving}
-                  className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+                  className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50"
                 >
                   {triggerSaving ? "Saving…" : triggerReg ? "Update Trigger" : "Register Trigger"}
                 </button>
@@ -1311,29 +1402,30 @@ export default function ProcedureVersionDetailPage() {
 
               {/* Registration info */}
               {triggerReg && (
-                <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-500 space-y-0.5">
-                  <p><span className="text-gray-400">Registered:</span> {new Date(triggerReg.created_at).toLocaleString()}</p>
-                  <p><span className="text-gray-400">Last updated:</span> {new Date(triggerReg.updated_at).toLocaleString()}</p>
-                  <p><span className="text-gray-400">Type:</span> {triggerReg.trigger_type}</p>
-                  {triggerReg.schedule && <p><span className="text-gray-400">Schedule:</span> <code className="font-mono">{triggerReg.schedule}</code></p>}
-                  {triggerReg.dedupe_window_seconds > 0 && <p><span className="text-gray-400">Dedupe window:</span> {triggerReg.dedupe_window_seconds}s</p>}
+                <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3 text-xs text-neutral-500 space-y-0.5">
+                  <p><span className="text-neutral-400">Registered:</span> {new Date(triggerReg.created_at).toLocaleString()}</p>
+                  <p><span className="text-neutral-400">Last updated:</span> {new Date(triggerReg.updated_at).toLocaleString()}</p>
+                  <p><span className="text-neutral-400">Type:</span> {triggerReg.trigger_type}</p>
+                  {triggerReg.schedule && <p><span className="text-neutral-400">Schedule:</span> <code className="font-mono">{triggerReg.schedule}</code></p>}
+                  {triggerReg.dedupe_window_seconds > 0 && <p><span className="text-neutral-400">Dedupe window:</span> {triggerReg.dedupe_window_seconds}s</p>}
                 </div>
               )}
             </div>
           )}
         </div>
       )}
+      </div>
 
       {/* Input Variables Modal */}
       {showVarsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-1 text-base font-semibold text-gray-900">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-1 text-base font-semibold text-neutral-900">
               {mustFillEntries.length > 0
                 ? `${mustFillEntries.length} required field${mustFillEntries.length !== 1 ? "s" : ""} need input`
                 : "Review Run Variables"}
             </h3>
-            <p className="mb-4 text-xs text-gray-400">
+            <p className="mb-4 text-xs text-neutral-400">
               {mustFillEntries.length > 0
                 ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
                 : "All fields have default values. Override any before starting."}
@@ -1342,14 +1434,14 @@ export default function ProcedureVersionDetailPage() {
               value={runCaseId}
               onChange={(e) => setRunCaseId(e.target.value)}
               placeholder="Attach case_id (optional)"
-              className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+              className="mb-3 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
             />
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (
                 mustFillEntries.length > 0 ? (
                   <details className="group">
-                    <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
+                    <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-neutral-500 hover:text-neutral-700">
                       <span className="inline-block transition-transform group-open:rotate-90">▶</span>
                       {`${overrideEntries.length} field${overrideEntries.length !== 1 ? "s" : ""} have defaults — expand to override`}
                     </summary>
@@ -1401,7 +1493,7 @@ export default function ProcedureVersionDetailPage() {
               </button>
               <button
                 onClick={() => setShowVarsModal(false)}
-                className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="flex-1 rounded-lg border border-neutral-300 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
               >
                 Cancel
               </button>
@@ -1412,13 +1504,13 @@ export default function ProcedureVersionDetailPage() {
 
       {showRollbackModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-1 text-base font-semibold text-gray-900">Rollback Procedure Version</h3>
-            <p className="mb-4 text-xs text-gray-500">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-1 text-base font-semibold text-neutral-900">Rollback Procedure Version</h3>
+            <p className="mb-4 text-xs text-neutral-500">
               Select the version to restore into {currentReleaseChannel.toUpperCase()}.
             </p>
             <div className="space-y-2">
-              <label htmlFor="rollback-target-version" className="block text-xs font-medium text-gray-700">
+              <label htmlFor="rollback-target-version" className="block text-xs font-medium text-neutral-700">
                 Target version
               </label>
               <select
@@ -1426,7 +1518,7 @@ export default function ProcedureVersionDetailPage() {
                 aria-label="Rollback target version"
                 value={rollbackTargetVersion}
                 onChange={(e) => setRollbackTargetVersion(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
               >
                 {rollbackCandidates.map((candidate) => (
                   <option key={candidate.version} value={candidate.version}>
@@ -1446,7 +1538,7 @@ export default function ProcedureVersionDetailPage() {
               <button
                 onClick={() => setShowRollbackModal(false)}
                 disabled={rollingBack}
-                className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                className="flex-1 rounded-lg border border-neutral-300 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
               >
                 Cancel
               </button>

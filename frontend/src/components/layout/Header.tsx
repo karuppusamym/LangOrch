@@ -34,7 +34,17 @@ const BellIcon = () => (
 interface Notification { id: string; title: string; desc: string; href: string; type: "warning" | "info" }
 interface SearchResult { kind: "procedure" | "run" | "agent" | "case"; label: string; sub: string; href: string; }
 
-export default function Header() {
+export default function Header({
+  isMobile,
+  sidebarCollapsed,
+  sidebarOpen,
+  onToggleSidebar,
+}: {
+  isMobile: boolean;
+  sidebarCollapsed: boolean;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const { theme, toggle } = useTheme();
@@ -144,10 +154,31 @@ export default function Header() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-20 flex h-[var(--header-height)] items-center gap-4 px-6 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800">
+    <header className="sticky top-0 z-20 flex min-h-[var(--header-height)] flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900 sm:px-6 lg:flex-nowrap lg:gap-4 lg:py-0">
+
+      <button
+        onClick={onToggleSidebar}
+        className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+        title={isMobile ? (sidebarOpen ? "Close navigation" : "Open navigation") : sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        aria-label={isMobile ? (sidebarOpen ? "Close navigation" : "Open navigation") : sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          {isMobile ? (
+            sidebarOpen ? (
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
+            ) : (
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h16" />
+            )
+          ) : sidebarCollapsed ? (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M4 5h5v14H4z" />
+          ) : (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7M20 5h-5v14h5z" />
+          )}
+        </svg>
+      </button>
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm shrink-0">
+      <div className="hidden shrink-0 items-center gap-2 text-sm sm:flex">
         <Link href="/" className="text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors">
           LangOrch
         </Link>
@@ -162,7 +193,7 @@ export default function Header() {
       </div>
 
       {/* Search bar */}
-      <div ref={searchRef} className="relative flex-1 max-w-lg mx-auto">
+      <div ref={searchRef} className="relative order-last basis-full lg:order-none lg:mx-auto lg:max-w-lg lg:flex-1 lg:basis-auto">
         <SearchIcon />
         <input
           type="text"
@@ -205,7 +236,7 @@ export default function Header() {
       </div>
 
       {/* Right actions */}
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         <button
           onClick={toggle}
           className="p-2 rounded-lg text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"

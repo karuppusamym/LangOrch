@@ -130,6 +130,17 @@ cd backend
 ..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+Backend runtime defaults:
+- `DEBUG=false` by default.
+- `WORKER_EMBEDDED=false` by default, so the API starts without the durable worker.
+- If you want the old single-process local behavior, set `WORKER_EMBEDDED=true` before starting the API.
+
+Run worker separately when you need queued run execution:
+```powershell
+cd backend
+..\.venv\Scripts\python.exe -m app.worker
+```
+
 Health check:
 ```powershell
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/health
@@ -201,6 +212,10 @@ This will register a dedicated `WEB` agent, import/reuse `demo_procedures/web_pl
 - **Product understanding**: [UNDERSTANDING.md](UNDERSTANDING.md) — Core requirements, CKP contract, architecture decisions
 - **Definitive spec**: [IMPLEMENTATION_SPEC.md](IMPLEMENTATION_SPEC.md) — Complete technical specification, architecture layers, repository layout
 - **Implementation status**: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) — CKP spec vs code matrix, gap analysis, quick wins
+- **Identity/RBAC + builder direction**: [IDENTITY_RBAC_AND_BUILDER_REBUILD_PLAN.md](IDENTITY_RBAC_AND_BUILDER_REBUILD_PLAN.md) — SSO onboarding, AD group strategy, RBAC evolution, API key model, and workflow builder rebuild plan
+- **Multi-tenancy + compliance direction**: [MULTI_TENANCY_AND_COMPLIANCE_PLAN.md](MULTI_TENANCY_AND_COMPLIANCE_PLAN.md) — Tenant isolation model, tenant-scoped auth/data/secrets, PII controls, retention, erase workflow, and policy gates
+- **AI product + ecosystem direction**: [AI_PRODUCT_AND_ECOSYSTEM_GAP_PLAN.md](AI_PRODUCT_AND_ECOSYSTEM_GAP_PLAN.md) — Assistant/chat surface, RAG, vector strategy, graph DB posture, prompt/eval ops, connectors, and template ecosystem plan
+- **Product strategy assessment**: [PRODUCT_ARCHITECTURE_AND_MARKET_WIN_STRATEGY.md](PRODUCT_ARCHITECTURE_AND_MARKET_WIN_STRATEGY.md) — Honest view of current architecture, what is already built, where the product lags, and what must be built next to win
 - **Future roadmap**: [FUTURE_PLAN.md](FUTURE_PLAN.md) — Code-aligned roadmap, domain-specific plans, sprint sequence
 - **CKP syntax reference**: [ckp_file-main/ckp_file_syntex.txt](ckp_file-main/ckp_file_syntex.txt) — Complete CKP JSON schema with all node types and policies
 - **Sample CKP workflows**: [ckp_file-main/*.json](ckp_file-main/) — Multi-agent workflow examples

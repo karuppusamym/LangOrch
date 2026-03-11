@@ -733,6 +733,8 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE agent_instances ADD COLUMN circuit_open_at DATETIME",
             "ALTER TABLE agent_instances ADD COLUMN last_heartbeat_at DATETIME",
             "ALTER TABLE agent_instances ADD COLUMN pool_id VARCHAR(128)",
+            "ALTER TABLE procedures ADD COLUMN builder_draft_json TEXT",
+            "ALTER TABLE procedures ADD COLUMN builder_draft_updated_at DATETIME",
             "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
             # Batch 34: artifact metadata columns
             "ALTER TABLE artifacts ADD COLUMN name VARCHAR(512)",

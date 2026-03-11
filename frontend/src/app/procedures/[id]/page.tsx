@@ -11,7 +11,7 @@ import type { ProcedureDetail, Procedure, Run } from "@/lib/types";
 
 const WorkflowGraph = dynamic(
   () => import("@/components/WorkflowGraphWrapper"),
-  { ssr: false, loading: () => <p className="text-sm text-gray-400">Loading graph...</p> }
+  { ssr: false, loading: () => <p className="text-sm text-neutral-400">Loading graph...</p> }
 );
 
 export default function ProcedureDetailPage() {
@@ -25,6 +25,7 @@ export default function ProcedureDetailPage() {
   const [activeTab, setActiveTab] = useState<"overview" | "graph" | "ckp" | "versions" | "runs">("overview");
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState<string>("");
   const [procedureRuns, setProcedureRuns] = useState<Run[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
 
@@ -39,7 +40,7 @@ export default function ProcedureDetailPage() {
     logic: "bg-amber-500",
     verification: "bg-amber-600",
     human_approval: "bg-red-500",
-    terminate: "bg-gray-500",
+    terminate: "bg-neutral-500",
   };
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
@@ -99,26 +100,26 @@ export default function ProcedureDetailPage() {
     const borderCls = fieldErr
       ? "border-red-400 focus:border-red-500"
       : showDefault && isUsingDefault
-      ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
-      : "border-gray-300 focus:border-primary-500";
+      ? "border-neutral-200 bg-neutral-50 focus:border-sky-500 focus:bg-white"
+      : "border-neutral-300 focus:border-sky-500";
     return (
       <div key={key}>
         <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
-          <label className="text-xs font-semibold text-gray-700">
+          <label className="text-xs font-semibold text-neutral-700">
             {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
           </label>
-          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
+          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-neutral-400">{meta.type as string}</span>}
           {isSensitive && <span className="text-[10px] text-yellow-600 font-medium">🔒 sensitive</span>}
           {showDefault && hasDefault && !isSensitive && (
-            <span className="ml-auto text-[10px] text-gray-400">
+            <span className="ml-auto text-[10px] text-neutral-400">
               default: <code className="font-mono">{String(meta.default)}</code>
               {!isUsingDefault && (
-                <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-primary-600 hover:underline">restore</button>
+                <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-sky-700 hover:underline">restore</button>
               )}
             </span>
           )}
         </div>
-        {meta?.description && <p className="mb-1.5 text-xs text-gray-400">{meta.description as string}</p>}
+        {meta?.description && <p className="mb-1.5 text-xs text-neutral-400">{meta.description as string}</p>}
         {allowed ? (
           <select aria-label={key} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}>
             <option value="">— select —</option>
@@ -140,9 +141,9 @@ export default function ProcedureDetailPage() {
           <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
         ) : (
           <span className="mt-1 inline-flex gap-3">
-            {validation.regex && <span className="text-xs text-gray-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
-            {validation.min !== undefined && <span className="text-xs text-gray-400">Min: {validation.min as number}</span>}
-            {validation.max !== undefined && <span className="text-xs text-gray-400">Max: {validation.max as number}</span>}
+            {validation.regex && <span className="text-xs text-neutral-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
+            {validation.min !== undefined && <span className="text-xs text-neutral-400">Min: {validation.min as number}</span>}
+            {validation.max !== undefined && <span className="text-xs text-neutral-400">Max: {validation.max as number}</span>}
           </span>
         )}
       </div>
@@ -234,7 +235,7 @@ export default function ProcedureDetailPage() {
     });
   }
 
-  if (loading) return <p className="text-gray-500">Loading procedure...</p>;
+  if (loading) return <p className="text-neutral-500">Loading procedure...</p>;
   if (!procedure) return <p className="text-red-500">Procedure not found</p>;
 
   const ckp = procedure.ckp_json;
@@ -244,89 +245,94 @@ export default function ProcedureDetailPage() {
   async function loadGraph() {
     if (graphData || graphLoading || !procedure) return;
     setGraphLoading(true);
+    setGraphError("");
     try {
       const data = await getGraph(procedure.procedure_id, procedure.version);
       setGraphData(data as any);
     } catch (err) {
       console.error("Failed to load graph:", err);
+      setGraphError(err instanceof Error ? err.message : "Failed to load graph");
     } finally {
       setGraphLoading(false);
     }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <Link href="/procedures" className="text-sm text-primary-600 hover:underline">
-            ← Procedures
-          </Link>
-          <h2 className="mt-2 text-xl font-bold text-gray-900">{procedure.name}</h2>
-          <div className="mt-1 flex items-center gap-2">
-            <StatusBadge status={procedure.status ?? "draft"} />
-            {procedure.effective_date && (
-              <span className="text-xs text-gray-400">Effective: {procedure.effective_date}</span>
-            )}
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Link href="/procedures" className="text-sm text-sky-600 hover:text-sky-700 hover:underline">
+              ← Procedures
+            </Link>
+            <h2 className="mt-2 text-2xl font-semibold text-neutral-900 dark:text-neutral-100">{procedure.name}</h2>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <StatusBadge status={procedure.status ?? "draft"} />
+              <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">v{procedure.version}</span>
+              {procedure.effective_date && (
+                <span className="text-xs text-neutral-400 dark:text-neutral-500">Effective: {procedure.effective_date}</span>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">{procedure.description}</p>
+            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+              ID: {procedure.procedure_id}
+            </p>
           </div>
-          <p className="mt-1 text-sm text-gray-500">{procedure.description}</p>
-          <p className="mt-1 text-xs text-gray-400">
-            ID: {procedure.procedure_id} · Version: {procedure.version}
-          </p>
-        </div>
-        <button
-          onClick={openStartRun}
-          disabled={runCreating}
-          title={procedure.status === "draft" ? "This procedure is in DRAFT status" : undefined}
-          className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
-            procedure.status === "draft"
-              ? "bg-green-600 hover:bg-green-700 ring-2 ring-amber-400 ring-offset-1"
-              : "bg-green-600 hover:bg-green-700"
-          }`}
-        >
-          {runCreating ? "Starting\u2026" : procedure.status === "draft" ? "Start Run (draft)" : "Start Run"}
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200">
-        {(["overview", "graph", "ckp", "versions", "runs"] as const).map((tab) => (
           <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab);
-              if (tab === "graph") loadGraph();
-              if (tab === "runs" && procedureRuns.length === 0 && !runsLoading) {
-                setRunsLoading(true);
-                listRuns({ procedure_id: procedureId })
-                  .then(setProcedureRuns)
-                  .catch(console.error)
-                  .finally(() => setRunsLoading(false));
-              }
-            }}
-            className={`px-4 py-2 text-sm font-medium ${
-              activeTab === tab
-                ? "border-b-2 border-primary-600 text-primary-600"
-                : "text-gray-500 hover:text-gray-700"
+            onClick={openStartRun}
+            disabled={runCreating}
+            title={procedure.status === "draft" ? "This procedure is in DRAFT status" : undefined}
+            className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+              procedure.status === "draft"
+                ? "bg-green-600 hover:bg-green-700 ring-2 ring-amber-400 ring-offset-2 dark:ring-offset-neutral-900"
+                : "bg-green-600 hover:bg-green-700"
             }`}
           >
-            {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {runCreating ? "Starting\u2026" : procedure.status === "draft" ? "Start Run (draft)" : "Start Run"}
           </button>
-        ))}
-      </div>
+        </div>
+      </section>
 
-      {/* Tab content */}
-      {activeTab === "overview" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-sm font-semibold text-gray-900">Workflow Nodes ({nodeEntries.length})</h3>
-          <div className="space-y-3">
+      {/* Tabs */}
+      <div className="rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex border-b border-neutral-200">
+          {(["overview", "graph", "ckp", "versions", "runs"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => {
+                setActiveTab(tab);
+                if (tab === "graph") loadGraph();
+                if (tab === "runs" && procedureRuns.length === 0 && !runsLoading) {
+                  setRunsLoading(true);
+                  listRuns({ procedure_id: procedureId })
+                    .then(setProcedureRuns)
+                    .catch(console.error)
+                    .finally(() => setRunsLoading(false));
+                }
+              }}
+              className={`px-5 py-3 text-sm font-medium transition ${
+                activeTab === tab
+                  ? "border-b-2 border-sky-600 text-sky-600"
+                  : "text-neutral-500 hover:text-neutral-700"
+              }`}
+            >
+              {tab === "ckp" ? "CKP Source" : tab === "graph" ? "Workflow Graph" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div>
+          {activeTab === "overview" && (
+            <div>
+              <h3 className="mb-4 text-sm font-semibold text-neutral-900">Workflow Nodes ({nodeEntries.length})</h3>
+              <div className="space-y-3">
             {nodeEntries.map(([nodeId, node]: [string, any]) => (
-              <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-gray-100 p-3">
-                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${NODE_TYPE_BADGE_CLASS[node.type as string] ?? "bg-gray-500"}`}>{node.type}</span>
+              <div key={nodeId} className="flex items-center gap-3 rounded-lg border border-neutral-100 p-3">
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${NODE_TYPE_BADGE_CLASS[node.type as string] ?? "bg-neutral-500"}`}>{node.type}</span>
                 <div>
                   <p className="text-sm font-medium">{nodeId}</p>
-                  {node.description && <p className="text-xs text-gray-400">{node.description}</p>}
-                  {node.agent && <p className="text-xs text-gray-400">Agent: {node.agent}</p>}
+                  {node.description && <p className="text-xs text-neutral-400">{node.description}</p>}
+                  {node.agent && <p className="text-xs text-neutral-400">Agent: {node.agent}</p>}
                 </div>
               </div>
             ))}
@@ -334,8 +340,8 @@ export default function ProcedureDetailPage() {
           {/* Provenance */}
           {procedure.provenance && (
             <div className="mt-6">
-              <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Provenance</h4>
-              <pre className="rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto">
+              <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Provenance</h4>
+              <pre className="rounded-lg bg-neutral-50 p-3 text-xs font-mono overflow-auto">
                 {JSON.stringify(procedure.provenance, null, 2)}
               </pre>
             </div>
@@ -343,7 +349,7 @@ export default function ProcedureDetailPage() {
           {/* Retrieval Metadata */}
           {procedure.retrieval_metadata && (
             <div className="mt-4">
-              <h4 className="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Retrieval Metadata</h4>
+              <h4 className="mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Retrieval Metadata</h4>
               {Array.isArray((procedure.retrieval_metadata as any)?.tags) && (
                 <div className="mb-2 flex flex-wrap gap-1">
                   {((procedure.retrieval_metadata as any).tags as string[]).map((tag: string) => (
@@ -351,105 +357,107 @@ export default function ProcedureDetailPage() {
                   ))}
                 </div>
               )}
-              <pre className="rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto">
+              <pre className="rounded-lg bg-neutral-50 p-3 text-xs font-mono overflow-auto">
                 {JSON.stringify(procedure.retrieval_metadata, null, 2)}
               </pre>
             </div>
           )}
-        </div>
-      )}
-
-      {activeTab === "graph" && (
-        <div>
-          {graphLoading && <p className="text-sm text-gray-400">Loading graph...</p>}
-          {graphData && <WorkflowGraph graph={graphData} />}
-          {!graphLoading && !graphData && (
-            <p className="text-sm text-gray-400">No graph data available.</p>
-          )}
-        </div>
-      )}
-
-      {activeTab === "ckp" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <pre className="max-h-[600px] overflow-auto rounded-lg bg-gray-50 p-4 font-mono text-xs leading-relaxed">
-            {JSON.stringify(ckp, null, 2)}
-          </pre>
-        </div>
-      )}
-
-      {activeTab === "versions" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          {versions.length === 0 ? (
-            <p className="text-sm text-gray-400">No other versions</p>
-          ) : (
-            <div className="space-y-2">
-              {versions.map((v) => (
-                <Link
-                  key={v.version}
-                  href={`/procedures/${encodeURIComponent(v.procedure_id)}/${encodeURIComponent(v.version)}`}
-                  className="flex items-center justify-between rounded-lg border border-gray-100 p-3"
-                >
-                  <span className="text-sm font-medium">v{v.version}</span>
-                  <span className="text-xs text-gray-400">{new Date(v.created_at).toLocaleString()}</span>
-                </Link>
-              ))}
             </div>
           )}
-        </div>
-      )}
-      {activeTab === "runs" && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-sm font-semibold text-gray-900">Runs for this procedure</h3>
-          {runsLoading ? (
-            <p className="text-sm text-gray-400">Loading runs…</p>
-          ) : procedureRuns.length === 0 ? (
-            <p className="text-sm text-gray-400">No runs yet.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 text-xs text-gray-500">
-                  <th className="py-2 text-left font-medium">Run ID</th>
-                  <th className="py-2 text-left font-medium">Status</th>
-                  <th className="py-2 text-left font-medium">Started</th>
-                  <th className="py-2 text-left font-medium">Duration</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {procedureRuns.map((r) => (
-                  <tr key={r.run_id} className="hover:bg-gray-50">
-                    <td className="py-2">
-                      <Link href={`/runs/${r.run_id}`} className="font-mono text-xs text-primary-600 hover:underline">
-                        {r.run_id.slice(0, 14)}…
-                      </Link>
-                    </td>
-                    <td className="py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                        r.status === "completed" ? "bg-green-100 text-green-700" :
-                        r.status === "failed" ? "bg-red-100 text-red-700" :
-                        r.status === "running" ? "bg-blue-100 text-blue-700" :
-                        "bg-gray-100 text-gray-600"
-                      }`}>{r.status}</span>
-                    </td>
-                    <td className="py-2 text-xs text-gray-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
-                    <td className="py-2 text-xs text-gray-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
 
-      {/* Input Variables Modal */}
+        {activeTab === "graph" && (
+          <div>
+            {graphLoading && <p className="text-sm text-neutral-400">Loading graph...</p>}
+            {graphError && <p className="text-sm text-red-500">{graphError}</p>}
+            {graphData && <WorkflowGraph graph={graphData} />}
+            {!graphLoading && !graphData && !graphError && (
+              <p className="text-sm text-neutral-400">No graph data available.</p>
+            )}
+          </div>
+        )}
+
+        {activeTab === "ckp" && (
+          <div>
+            <pre className="max-h-[600px] overflow-auto rounded-lg bg-neutral-50 p-4 font-mono text-xs leading-relaxed">
+              {JSON.stringify(ckp, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        {activeTab === "versions" && (
+          <div>
+            {versions.length === 0 ? (
+              <p className="text-sm text-neutral-400">No other versions</p>
+            ) : (
+              <div className="space-y-2">
+                {versions.map((v) => (
+                  <Link
+                    key={v.version}
+                    href={`/procedures/${encodeURIComponent(v.procedure_id)}/${encodeURIComponent(v.version)}`}
+                    className="flex items-center justify-between rounded-lg border border-neutral-100 p-3"
+                  >
+                    <span className="text-sm font-medium">v{v.version}</span>
+                    <span className="text-xs text-neutral-400">{new Date(v.created_at).toLocaleString()}</span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "runs" && (
+          <div>
+            <h3 className="mb-4 text-sm font-semibold text-neutral-900">Runs for this procedure</h3>
+            {runsLoading ? (
+              <p className="text-sm text-neutral-400">Loading runs…</p>
+            ) : procedureRuns.length === 0 ? (
+              <p className="text-sm text-neutral-400">No runs yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-neutral-100 text-xs text-neutral-500">
+                    <th className="py-2 text-left font-medium">Run ID</th>
+                    <th className="py-2 text-left font-medium">Status</th>
+                    <th className="py-2 text-left font-medium">Started</th>
+                    <th className="py-2 text-left font-medium">Duration</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {procedureRuns.map((r) => (
+                    <tr key={r.run_id} className="hover:bg-neutral-50">
+                      <td className="py-2">
+                        <Link href={`/runs/${r.run_id}`} className="font-mono text-xs text-sky-700 hover:underline">
+                          {r.run_id.slice(0, 14)}…
+                        </Link>
+                      </td>
+                      <td className="py-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          r.status === "completed" ? "bg-green-100 text-green-700" :
+                          r.status === "failed" ? "bg-red-100 text-red-700" :
+                          r.status === "running" ? "bg-blue-100 text-blue-700" :
+                          "bg-neutral-100 text-neutral-600"
+                        }`}>{r.status}</span>
+                      </td>
+                      <td className="py-2 text-xs text-neutral-400">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
+                      <td className="py-2 text-xs text-neutral-400">{r.duration_seconds != null ? `${r.duration_seconds.toFixed(1)}s` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
       {showVarsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-1 text-base font-semibold text-gray-900">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-1 text-base font-semibold text-neutral-900">
               {mustFillEntries.length > 0
                 ? `${mustFillEntries.length} required field${mustFillEntries.length !== 1 ? "s" : ""} need input`
                 : "Review Run Variables"}
             </h3>
-            <p className="mb-4 text-xs text-gray-400">
+            <p className="mb-4 text-xs text-neutral-400">
               {mustFillEntries.length > 0
                 ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
                 : "All fields have default values. Override any before starting."}
@@ -458,14 +466,14 @@ export default function ProcedureDetailPage() {
               value={runCaseId}
               onChange={(e) => setRunCaseId(e.target.value)}
               placeholder="Attach case_id (optional)"
-              className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+              className="mb-3 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
             />
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (
                 mustFillEntries.length > 0 ? (
                   <details className="group">
-                    <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
+                    <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-neutral-500 hover:text-neutral-700">
                       <span className="inline-block transition-transform group-open:rotate-90">▶</span>
                       {`${overrideEntries.length} field${overrideEntries.length !== 1 ? "s" : ""} have defaults — expand to override`}
                     </summary>
@@ -517,7 +525,7 @@ export default function ProcedureDetailPage() {
               </button>
               <button
                 onClick={() => setShowVarsModal(false)}
-                className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="flex-1 rounded-lg border border-neutral-300 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
               >
                 Cancel
               </button>

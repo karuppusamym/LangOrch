@@ -17,8 +17,8 @@ The worker will:
 3. Start the poll-and-execute loop
 4. Handle SIGINT/SIGTERM gracefully (drain active jobs, then exit)
 
-For single-process dev mode (SQLite), the worker is started automatically
-as an asyncio.Task inside the API process (WORKER_EMBEDDED=true default).
+For single-process dev mode (SQLite), the worker can be started inside the
+API process only when WORKER_EMBEDDED=true is explicitly set.
 """
 
 from __future__ import annotations

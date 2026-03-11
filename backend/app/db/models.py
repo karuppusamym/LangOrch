@@ -210,6 +210,8 @@ class Procedure(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     ckp_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON stored as TEXT
+    builder_draft_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    builder_draft_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     provenance_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # provenance block
     retrieval_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # retrieval_metadata block
     trigger_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # parsed trigger block

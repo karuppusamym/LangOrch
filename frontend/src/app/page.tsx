@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
@@ -102,11 +102,11 @@ function SkeletonDash() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {[...Array(4)].map((_, i) => <div key={i} className="h-28 rounded-xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />)}
+        {[...Array(4)].map((_, i) => <div key={i} className="h-28 rounded-2xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />)}
       </div>
-      <div className="h-64 rounded-xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />
+      <div className="h-64 rounded-2xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {[...Array(2)].map((_, i) => <div key={i} className="h-48 rounded-xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />)}
+        {[...Array(2)].map((_, i) => <div key={i} className="h-48 rounded-2xl bg-neutral-100 dark:bg-neutral-800 animate-pulse" />)}
       </div>
     </div>
   );
@@ -175,25 +175,33 @@ export default function DashboardPage() {
   const agentDots = ["bg-green-500", "bg-blue-500", "bg-amber-500", "bg-purple-500", "bg-red-500"];
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="min-h-[calc(100vh-4rem)] space-y-6 bg-neutral-50 p-6 animate-fade-in">
 
       {/* Page header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
-          <p className="mt-0.5 text-sm text-neutral-500 dark:text-neutral-400">Welcome back, Admin User</p>
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Operations Overview</p>
+            <h1 className="mt-1 text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Realtime platform health, workload activity, and case operations in one view.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Runs {stats.totalRuns}</span>
+            <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Open cases {stats.openCases}</span>
+            <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Pending approvals {stats.pendingApprovals}</span>
+            <button onClick={load}
+              className="flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800">
+              <Icon path="M4 4v5h.582M20 20v-5h-.581M5.077 9A8.004 8.004 0 0112 4c2.618 0 4.952 1.26 6.41 3.2M18.923 15A8.004 8.004 0 0112 20a8 8 0 01-6.41-3.2" cls="w-3.5 h-3.5" />
+              Refresh
+            </button>
+          </div>
         </div>
-        <button onClick={load}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
-          <Icon path="M4 4v5h.582M20 20v-5h-.581M5.077 9A8.004 8.004 0 0112 4c2.618 0 4.952 1.26 6.41 3.2M18.923 15A8.004 8.004 0 0112 20a8 8 0 01-6.41-3.2" cls="w-3.5 h-3.5" />
-          Refresh
-        </button>
-      </div>
+      </section>
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
         {/* Total Runs */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Total Runs</p>
             <Icon path="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" path2="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" cls="w-5 h-5 text-neutral-400" />
@@ -203,7 +211,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Active Runs */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Active Runs</p>
             <Icon path="M22 12h-4l-3 9L9 3l-3 9H2" cls="w-5 h-5 text-blue-500" />
@@ -213,7 +221,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Failed Runs */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Failed Runs</p>
             <Icon path="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" cls="w-5 h-5 text-red-500" />
@@ -223,7 +231,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Pending Approvals */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Pending Approvals</p>
             <Icon path="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" cls="w-5 h-5 text-amber-500" />
@@ -233,7 +241,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Open Cases */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Open Cases</p>
             <Icon path="M7 3h10a2 2 0 012 2v6.5a2 2 0 01-.586 1.414l-4.5 4.5A2 2 0 0112.5 18H7a2 2 0 01-2-2V5a2 2 0 012-2z" path2="M9 8h6M9 12h4" cls="w-5 h-5 text-blue-500" />
@@ -243,7 +251,7 @@ export default function DashboardPage() {
         </div>
 
         {/* SLA Breaches */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">SLA Breached</p>
             <Icon path="M12 9v4M12 17h.01" path2="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" cls="w-5 h-5 text-red-500" />
@@ -257,7 +265,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
         {/* Area chart */}
-        <div className="lg:col-span-2 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="lg:col-span-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Run Activity (Last 24 Hours)</h2>
           <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={stats.chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
@@ -277,7 +285,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Agent Capacity */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 flex flex-col">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 flex flex-col">
           <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Agent Capacity</h2>
           <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-4">{onlineAgents.length} of {totalAgents} online</p>
           {/* Progress bar */}
@@ -310,7 +318,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+      <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Case SLA Trend</h2>
           <div className="inline-flex rounded-lg border border-neutral-200 dark:border-neutral-700 p-0.5">
@@ -354,7 +362,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
         {/* Case Queue */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Case Queue</h2>
             <Link href="/cases" className="text-xs text-blue-600 hover:underline">Open queue </Link>
@@ -370,7 +378,7 @@ export default function DashboardPage() {
                       {item.title}
                     </Link>
                     <p className="text-xs text-neutral-400">
-                      {item.priority} {item.owner ? `· ${item.owner}` : "· unassigned"}
+                      {item.priority} {item.owner ? `� ${item.owner}` : "� unassigned"}
                     </p>
                   </div>
                   {item.is_sla_breached ? (
@@ -385,7 +393,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Recent Runs */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Recent Runs</h2>
             <Link href="/runs" className="text-xs text-blue-600 hover:underline">View all </Link>
@@ -412,7 +420,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Recent Events (derived from runs) */}
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Recent Events</h2>
           </div>

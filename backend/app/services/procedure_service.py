@@ -196,6 +196,41 @@ async def update_procedure(
     return proc
 
 
+async def get_builder_draft(
+    db: AsyncSession,
+    procedure_id: str,
+    version: str,
+) -> tuple[Procedure | None, dict[str, Any] | None]:
+    proc = await get_procedure(db, procedure_id, version)
+    if not proc:
+        return None, None
+
+    if not proc.builder_draft_json:
+        return proc, None
+
+    try:
+        return proc, json.loads(proc.builder_draft_json)
+    except Exception as exc:
+        raise ValueError(f"Stored builder draft is invalid JSON: {exc}") from exc
+
+
+async def update_builder_draft(
+    db: AsyncSession,
+    procedure_id: str,
+    version: str,
+    draft: dict[str, Any],
+) -> Procedure | None:
+    proc = await get_procedure(db, procedure_id, version)
+    if not proc:
+        return None
+
+    proc.builder_draft_json = json.dumps(draft)
+    proc.builder_draft_updated_at = _utcnow()
+    await db.flush()
+    await db.refresh(proc)
+    return proc
+
+
 async def delete_procedure_version(db: AsyncSession, procedure_id: str, version: str) -> bool:
     proc = await get_procedure(db, procedure_id, version)
     if not proc:

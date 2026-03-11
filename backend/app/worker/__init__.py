@@ -4,7 +4,7 @@ The worker processes jobs from the ``run_jobs`` table.
 
 Single-process (SQLite dev):
     Worker runs as an asyncio.Task inside the API process.
-    Enabled automatically when WORKER_EMBEDDED=true (default for SQLite).
+    Enabled only when WORKER_EMBEDDED=true.
 
 Multi-process (PostgreSQL production):
     Start the worker separately:

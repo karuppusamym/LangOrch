@@ -1,0 +1,60 @@
+{
+  "id": "demo_case_triage_with_swarm",
+  "description": "Demo: Intake, triage with swarm agent, and route based on result.",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "collect_context",
+      "type": "sequence",
+      "steps": [
+        {"action": "ticket.fetch", "params": {"ticket_id": "{{input.ticket_id}}"}},
+        {"action": "customer.lookup", "params": {"customer_id": "{{variables.ticket.customer_id}}"}}
+      ]
+    },
+    {
+      "id": "triage_swarm",
+      "type": "sequence",
+      "steps": [
+        {
+          "action": "swarm.case_triage",
+          "agent": "swarm-demo-agent",
+          "workflow_dispatch_mode": "async",
+          "params": {
+            "goal": "Classify and route this case",
+            "context": {
+              "ticket_text": "{{variables.ticket.body}}",
+              "customer": "{{variables.customer}}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "route_case",
+      "type": "logic",
+      "branches": [
+        {
+          "condition": "{{variables.swarm_result.recommended_route}} == 'finance_specialist_queue'",
+          "next": "finance_handler"
+        },
+        {
+          "condition": "{{variables.swarm_result.recommended_route}} == 'security_incident_queue'",
+          "next": "security_handler"
+        },
+        {
+          "condition": "{{variables.swarm_result.recommended_route}} == 'legal_review_queue'",
+          "next": "legal_handler"
+        },
+        {
+          "condition": "true",
+          "next": "support_handler"
+        }
+      ]
+    },
+    {"id": "finance_handler", "type": "sequence", "steps": [{"action": "notify.finance_team"}]},
+    {"id": "security_handler", "type": "sequence", "steps": [{"action": "notify.security_team"}]},
+    {"id": "legal_handler", "type": "sequence", "steps": [{"action": "notify.legal_team"}]},
+    {"id": "support_handler", "type": "sequence", "steps": [{"action": "notify.support_team"}]}
+  ],
+  "entry": "collect_context"
+}

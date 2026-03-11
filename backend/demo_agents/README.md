@@ -67,6 +67,32 @@ powershell -ExecutionPolicy Bypass -File .\run_hybrid_agent.ps1
 
 ---
 
+### 3. Bounded Swarm Demo Agent (`swarm_agent.py`)
+Demonstrates how a bounded multi-agent reasoning workflow can fit into LangOrch without replacing the orchestrator.
+
+The swarm agent exposes **workflow capabilities**, not raw browser or desktop control. It returns structured results that LangOrch can route on after callback resume.
+
+**Capabilities:**
+| Name | Type | Duration |
+|---|---|---|
+| `swarm.case_triage` | workflow | ~6s |
+| `swarm.document_review` | workflow | ~8s |
+
+**Start:**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_swarm_agent.ps1
+```
+- Runs on `http://127.0.0.1:9006`
+- Channel: `swarm`
+- Resource key: `swarm_default`
+
+**Intended usage:**
+- case classification and routing
+- document specialist review and synthesis
+- other bounded cognitive tasks that should return structured output
+
+---
+
 ## Register in LangOrch
 Go to `http://localhost:3000/agents` → **Register Agent** → fill URL → click **Fetch Caps** to auto-populate structured capabilities.
 

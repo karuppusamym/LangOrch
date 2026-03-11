@@ -250,6 +250,10 @@ class TestProcedureDetailSchema:
         mock_proc.status = "draft"
         mock_proc.effective_date = None
         mock_proc.description = None
+        mock_proc.release_channel = None
+        mock_proc.promoted_from_version = None
+        mock_proc.promoted_at = None
+        mock_proc.promoted_by = None
         mock_proc.project_id = None
         mock_proc.created_at = datetime.now(timezone.utc)
         mock_proc.ckp_json = json.dumps({
@@ -257,10 +261,13 @@ class TestProcedureDetailSchema:
             "version": "1.0",
             "workflow_graph": {"start_node": "n1", "nodes": {}},
         })
+        mock_proc.builder_draft_json = json.dumps({"nodes": [{"id": "n1"}]})
+        mock_proc.builder_draft_updated_at = datetime.now(timezone.utc)
         mock_proc.provenance_json = json.dumps({"created_by": "alice"})
         mock_proc.retrieval_metadata_json = json.dumps({"tags": ["test"]})
 
         detail = ProcedureDetail.model_validate(mock_proc)
+        assert detail.builder_draft == {"nodes": [{"id": "n1"}]}
         assert detail.provenance == {"created_by": "alice"}
         assert detail.retrieval_metadata == {"tags": ["test"]}
 
@@ -275,6 +282,10 @@ class TestProcedureDetailSchema:
         mock_proc.status = "draft"
         mock_proc.effective_date = None
         mock_proc.description = None
+        mock_proc.release_channel = None
+        mock_proc.promoted_from_version = None
+        mock_proc.promoted_at = None
+        mock_proc.promoted_by = None
         mock_proc.project_id = None
         mock_proc.created_at = datetime.now(timezone.utc)
         mock_proc.ckp_json = json.dumps({
@@ -282,9 +293,12 @@ class TestProcedureDetailSchema:
             "version": "1.0",
             "workflow_graph": {"start_node": "n1", "nodes": {}},
         })
+        mock_proc.builder_draft_json = None
+        mock_proc.builder_draft_updated_at = None
         mock_proc.provenance_json = None
         mock_proc.retrieval_metadata_json = None
 
         detail = ProcedureDetail.model_validate(mock_proc)
+        assert detail.builder_draft is None
         assert detail.provenance is None
         assert detail.retrieval_metadata is None

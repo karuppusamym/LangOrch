@@ -13,7 +13,7 @@ def _build_engine_kwargs() -> dict:
     """Return engine kwargs appropriate for the configured dialect."""
     if settings.is_postgres:
         return {
-            "echo": settings.DEBUG,
+            "echo": settings.SQL_ECHO,
             "future": True,
             "pool_size": settings.ORCH_DB_POOL_SIZE,
             "max_overflow": settings.ORCH_DB_MAX_OVERFLOW,
@@ -23,7 +23,7 @@ def _build_engine_kwargs() -> dict:
         }
     # SQLite — single-file, no pool tunables
     return {
-        "echo": settings.DEBUG,
+        "echo": settings.SQL_ECHO,
         "future": True,
         # aiosqlite is inherently single‑connection; connect_args are ignored
         # but the check_same_thread kwarg avoids the stdlib warning.

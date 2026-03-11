@@ -3,6 +3,7 @@
 import type {
   Artifact,
   Procedure,
+  ProcedureBuilderDraft,
   ProcedureDetail,
   Project,
   Run,
@@ -147,6 +148,24 @@ export async function updateProcedure(
   return request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}`, {
     method: "PUT",
     body: JSON.stringify({ ckp_json: ckpJson }),
+  });
+}
+
+export async function getProcedureBuilderDraft(
+  id: string,
+  version: string
+): Promise<ProcedureBuilderDraft> {
+  return request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/builder-draft`);
+}
+
+export async function saveProcedureBuilderDraft(
+  id: string,
+  version: string,
+  draft: Record<string, unknown>
+): Promise<ProcedureBuilderDraft> {
+  return request(`/procedures/${encodeURIComponent(id)}/${encodeURIComponent(version)}/builder-draft`, {
+    method: "PUT",
+    body: JSON.stringify({ draft }),
   });
 }
 
@@ -718,13 +737,23 @@ export async function getCheckpointState(
 export async function explainProcedure(
   procedureId: string,
   version: string,
-  inputVars?: Record<string, unknown>
+  inputVarsOrOptions?:
+    | Record<string, unknown>
+    | { inputVars?: Record<string, unknown>; ckpJson?: Record<string, unknown> }
 ): Promise<ExplainReport> {
+  const options =
+    inputVarsOrOptions && ("inputVars" in inputVarsOrOptions || "ckpJson" in inputVarsOrOptions)
+      ? inputVarsOrOptions
+      : { inputVars: inputVarsOrOptions as Record<string, unknown> | undefined };
+
   return request(
     `/procedures/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}/explain`,
     {
       method: "POST",
-      body: JSON.stringify({ input_vars: inputVars ?? {} }),
+      body: JSON.stringify({
+        input_vars: options.inputVars ?? {},
+        ckp_json: options.ckpJson,
+      }),
     }
   );
 }

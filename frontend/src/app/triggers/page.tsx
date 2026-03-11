@@ -14,18 +14,9 @@ const TYPE_COLORS: Record<string, string> = {
   manual: "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400",
 };
 
-const TYPE_ICONS: Record<string, string> = {
-  scheduled: "🕐",
-  webhook: "🔗",
-  event: "⚡",
-  file_watch: "📁",
-  manual: "▶",
-};
-
 function TriggerTypeBadge({ type }: { type: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_COLORS[type] ?? TYPE_COLORS.manual}`}>
-      <span>{TYPE_ICONS[type] ?? "▶"}</span>
+    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_COLORS[type] ?? TYPE_COLORS.manual}`}>
       {type.replace("_", " ")}
     </span>
   );
@@ -146,102 +137,111 @@ export default function TriggersPage() {
     scheduled: triggers.filter((t) => t.trigger_type === "scheduled").length,
     webhook: triggers.filter((t) => t.trigger_type === "webhook").length,
   };
+  const disabledCount = Math.max(0, stats.total - stats.enabled);
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Triggers</h1>
-          <p className="text-neutral-500 dark:text-neutral-400 mt-1">Schedule, webhook, and event-based run triggers</p>
-        </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing}
-          className="flex items-center gap-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-60 transition-colors"
-        >
-          <svg className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          {syncing ? "Syncing…" : "Sync from Procedures"}
-        </button>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: "Total", value: stats.total, color: "text-neutral-900 dark:text-neutral-100" },
-          { label: "Enabled", value: stats.enabled, color: "text-emerald-600 dark:text-emerald-400" },
-          { label: "Scheduled", value: stats.scheduled, color: "text-blue-600 dark:text-blue-400" },
-          { label: "Webhook", value: stats.webhook, color: "text-purple-600 dark:text-purple-400" },
-        ].map((item) => (
-          <div key={item.label} className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-5 py-4 shadow-sm">
-            <p className="text-xs text-neutral-400 uppercase tracking-wide">{item.label}</p>
-            <p className={`text-3xl font-bold mt-1 ${item.color}`}>{item.value}</p>
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Runtime Workspace</p>
+            <h1 className="mt-1 text-3xl font-bold text-neutral-900 dark:text-neutral-100">Triggers</h1>
+            <p className="mt-1 max-w-3xl text-sm text-neutral-500 dark:text-neutral-400">Schedule, webhook, and event-based trigger registrations with manual fire and sync controls.</p>
           </div>
-        ))}
-      </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="rounded-full border px-2 py-1">Enabled {stats.enabled}</span>
+            <span className="rounded-full border px-2 py-1">Disabled {disabledCount}</span>
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="flex items-center gap-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-60 transition-colors"
+            >
+              <svg className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              {syncing ? "Syncing…" : "Sync from Procedures"}
+            </button>
+          </div>
+        </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <input
-          type="text"
-          placeholder="Search procedure…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none w-56"
-        />
-        <select
-          value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
-          aria-label="Filter triggers by type"
-          className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none"
-        >
-          <option value="all">All types</option>
-          {allTypes.map((t) => (
-            <option key={t} value={t}>{t.replace("_", " ")}</option>
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { label: "Total", value: stats.total, color: "text-neutral-900 dark:text-neutral-100" },
+            { label: "Enabled", value: stats.enabled, color: "text-emerald-600 dark:text-emerald-400" },
+            { label: "Scheduled", value: stats.scheduled, color: "text-blue-600 dark:text-blue-400" },
+            { label: "Webhook", value: stats.webhook, color: "text-purple-600 dark:text-purple-400" },
+          ].map((item) => (
+            <div key={item.label} className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">{item.label}</p>
+              <p className={`mt-2 text-2xl font-semibold ${item.color}`}>{item.value}</p>
+            </div>
           ))}
-        </select>
-        <select
-          value={filterEnabled}
-          onChange={(e) => setFilterEnabled(e.target.value as "all" | "enabled" | "disabled")}
-          aria-label="Filter triggers by enabled status"
-          className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none"
-        >
-          <option value="all">All status</option>
-          <option value="enabled">Enabled</option>
-          <option value="disabled">Disabled</option>
-        </select>
-        <span className="text-xs text-neutral-400 ml-auto">{filtered.length} trigger{filtered.length !== 1 ? "s" : ""}</span>
+        </div>
+      </section>
+
+      <div className="rounded-2xl border border-neutral-200 bg-white p-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              placeholder="Search procedure or version"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-60 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+            <select
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              aria-label="Filter triggers by type"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none"
+            >
+              <option value="all">All types</option>
+              {allTypes.map((t) => (
+                <option key={t} value={t}>{t.replace("_", " ")}</option>
+              ))}
+            </select>
+            <select
+              value={filterEnabled}
+              onChange={(e) => setFilterEnabled(e.target.value as "all" | "enabled" | "disabled")}
+              aria-label="Filter triggers by enabled status"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none"
+            >
+              <option value="all">All status</option>
+              <option value="enabled">Enabled</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="rounded-full border px-2 py-1">Visible {filtered.length}</span>
+            <span className="rounded-full border px-2 py-1">Page {Math.min(trigPage + 1, Math.max(totalTrigPages, 1))} / {Math.max(totalTrigPages, 1)}</span>
+          </div>
+        </div>
       </div>
 
-      {/* Table */}
       {loading ? (
         <div className="flex items-center justify-center min-h-48">
           <p className="text-neutral-400 text-sm">Loading triggers…</p>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center min-h-48 rounded-xl border border-dashed border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+        <div className="flex flex-col items-center justify-center min-h-48 rounded-2xl border border-dashed border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <p className="text-neutral-400 text-sm">No triggers found</p>
           <p className="text-xs text-neutral-300 dark:text-neutral-600 mt-1">
             Define trigger_config in a procedure&apos;s CKP file, then click &quot;Sync from Procedures&quot;
           </p>
         </div>
       ) : (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-sm overflow-hidden">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50">
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400 w-6"></th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Procedure</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Version</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Type</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Schedule / Source</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Dedupe (s)</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Max Concurrent</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Updated</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-neutral-400">Actions</th>
+                  <th className="w-6 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400"></th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Procedure</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Type</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Source</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Limits</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-400">Updated</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-neutral-400">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -252,56 +252,59 @@ export default function TriggersPage() {
                   const updatedAt = new Date(trigger.updated_at);
                   const scheduleOrSource = trigger.schedule ?? trigger.event_source ?? "—";
                   return (
-                    <tr key={trigger.id} className={`group hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors ${!trigger.enabled ? "opacity-60" : ""}`}>
-                      <td className="px-4 py-3">
+                    <tr key={trigger.id} className={`hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors ${!trigger.enabled ? "opacity-60" : ""}`}>
+                      <td className="px-3 py-2.5">
                         <EnabledDot enabled={trigger.enabled} />
                       </td>
-                      <td className="px-4 py-3 font-medium text-neutral-900 dark:text-neutral-100 max-w-xs truncate">
-                        {trigger.procedure_id}
+                      <td className="px-3 py-2.5">
+                        <div className="max-w-sm">
+                          <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{trigger.procedure_id}</p>
+                          <p className="mt-0.5 font-mono text-[11px] text-neutral-500">v{trigger.version}</p>
+                        </div>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-neutral-500">{trigger.version}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2.5">
                         <TriggerTypeBadge type={trigger.trigger_type} />
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-neutral-500 max-w-xs truncate" title={scheduleOrSource}>
+                      <td className="px-3 py-2.5 font-mono text-xs text-neutral-500 max-w-xs truncate" title={scheduleOrSource}>
                         {scheduleOrSource}
                       </td>
-                      <td className="px-4 py-3 text-xs text-neutral-500">{trigger.dedupe_window_seconds}</td>
-                      <td className="px-4 py-3 text-xs text-neutral-500">{trigger.max_concurrent_runs ?? "∞"}</td>
-                      <td className="px-4 py-3 text-xs text-neutral-400">
+                      <td className="px-3 py-2.5 text-xs text-neutral-500">
+                        <div className="space-y-0.5">
+                          <p>Dedupe {trigger.dedupe_window_seconds}s</p>
+                          <p>Max {trigger.max_concurrent_runs ?? "∞"}</p>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-neutral-400">
                         {updatedAt.toLocaleDateString()} {updatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {/* Fire button */}
+                      <td className="px-3 py-2.5 text-right">
+                        <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => handleFire(trigger)}
                             disabled={isFiring || !trigger.enabled}
                             title="Fire Now"
                             className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
                           >
-                            {isFiring ? "…" : "▶ Fire"}
+                            {isFiring ? "..." : "Fire"}
                           </button>
 
-                          {/* Webhook copy (only for webhook triggers) */}
                           {trigger.trigger_type === "webhook" && (
                             <button
                               onClick={() => copyWebhook(trigger)}
                               title="Copy webhook URL"
                               className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-2 py-1 text-xs text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
                             >
-                              🔗
+                              Copy URL
                             </button>
                           )}
 
-                          {/* Delete */}
                           <button
                             onClick={() => handleDelete(trigger)}
                             disabled={isDeleting}
                             title="Delete trigger"
                             className="rounded-lg border border-red-200 dark:border-red-900/40 px-2 py-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50 transition-colors"
                           >
-                            {isDeleting ? "…" : "✕"}
+                            {isDeleting ? "..." : "Delete"}
                           </button>
                         </div>
                       </td>
@@ -330,15 +333,14 @@ export default function TriggersPage() {
         </div>
       )}
 
-      {/* Help */}
-      <div className="rounded-xl border border-neutral-100 dark:border-neutral-800/50 bg-neutral-50 dark:bg-neutral-900/50 px-5 py-4 text-xs text-neutral-500 dark:text-neutral-400 space-y-1">
+      <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-4 py-3 text-xs text-neutral-500 dark:text-neutral-400 space-y-1">
         <p className="font-medium text-neutral-700 dark:text-neutral-300">How triggers work</p>
         <ul className="list-disc list-inside space-y-0.5 ml-1">
           <li><strong>scheduled</strong> — cron expression fires a run on a fixed schedule (server-side APScheduler)</li>
-          <li><strong>webhook</strong> — POST to the webhook URL starts a run; copy the URL with 🔗</li>
+          <li><strong>webhook</strong> — POST to the webhook URL starts a run; use Copy URL for the endpoint</li>
           <li><strong>event</strong> — listens for named events via <code>/api/triggers/…/sync</code></li>
           <li><strong>file_watch</strong> — polls a file path; fires when mtime changes</li>
-          <li><strong>manual</strong> — no automatic firing; use the ▶ Fire button or the REST API</li>
+          <li><strong>manual</strong> — no automatic firing; use the Fire button or the REST API</li>
         </ul>
         <p className="pt-1">Triggers are defined in procedure CKP files under <code>trigger_config</code> and synced automatically on startup or via the Sync button.</p>
       </div>

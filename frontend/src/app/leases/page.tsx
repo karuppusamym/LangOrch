@@ -51,38 +51,41 @@ export default function LeasesPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Resources</h1>
-          <p className="text-neutral-500 dark:text-neutral-400 mt-1">Active resource leases held by running workflow steps</p>
-        </div>
-        <button onClick={load}
-          className="flex items-center gap-2 rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-          Refresh
-        </button>
-      </div>
-
-      {/* Stat cards */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">Active Leases</p>
-          <p className="mt-1 text-3xl font-bold text-blue-600">{leases.length}</p>
-        </div>
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">Expiring Soon</p>
-          <p className="mt-1 text-3xl font-bold text-amber-600">{leases.filter(l => new Date(l.expires_at).getTime() - Date.now() < 30_000).length}</p>
-        </div>
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm flex items-center gap-3">
-          <div>
-            <p className="text-sm text-neutral-500 dark:text-neutral-400">System Health</p>
-            <p className="mt-1 text-sm font-semibold text-green-600">{leases.length === 0 ? "All Free" : "In Use"}</p>
+    <div className="min-h-[calc(100vh-4rem)] space-y-6 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Infrastructure Workspace</p>
+            <h1 className="mt-1 text-3xl font-bold text-neutral-900 dark:text-neutral-100">Resources</h1>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Active resource leases held by running workflow steps</p>
           </div>
-          <div className={`ml-auto h-3 w-3 rounded-full ${leases.length === 0 ? "bg-green-500" : "bg-amber-500"}`} />
+          <button
+            onClick={load}
+            className="flex items-center gap-2 rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            Refresh
+          </button>
         </div>
-      </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">Active Leases</p>
+            <p className="mt-2 text-3xl font-semibold text-blue-600">{leases.length}</p>
+          </div>
+          <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">Expiring Soon</p>
+            <p className="mt-2 text-3xl font-semibold text-amber-600">{leases.filter(l => new Date(l.expires_at).getTime() - Date.now() < 30_000).length}</p>
+          </div>
+          <div className="flex items-center gap-3 rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">System Health</p>
+              <p className="mt-2 text-sm font-semibold text-green-600">{leases.length === 0 ? "All Free" : "In Use"}</p>
+            </div>
+            <div className={`ml-auto h-3 w-3 rounded-full ${leases.length === 0 ? "bg-green-500" : "bg-amber-500"}`} />
+          </div>
+        </div>
+      </section>
 
       {/* Lease table */}
       {loading ? (
@@ -90,12 +93,12 @@ export default function LeasesPage() {
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
         </div>
       ) : leases.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
+        <div className="rounded-2xl border border-dashed border-neutral-300 p-16 text-center text-neutral-400 dark:border-neutral-700">
           <svg className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-700" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
           No active leases — all resources are free.
         </div>
       ) : (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm">
+        <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
           <table className="w-full text-sm">
             <thead className="bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
               <tr className="text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">

@@ -69,3 +69,6 @@ frontend/test-results/
 *.tmp
 *.bak
 backend/langorch.db-wal
+dify-main-code-reference/
+dify-main-code-reference/*.*
+frontend/.next-dev

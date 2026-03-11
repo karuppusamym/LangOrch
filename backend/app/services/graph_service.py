@@ -20,6 +20,28 @@ NODE_COLORS: dict[str, str] = {
 }
 
 
+def _coalesce_successor(node: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = node.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _extract_parallel_successors(node: dict[str, Any]) -> list[tuple[str | None, str | None]]:
+    successors: list[tuple[str | None, str | None]] = []
+    for branch in node.get("branches", []):
+        if isinstance(branch, str):
+            successors.append((None, branch))
+            continue
+        if not isinstance(branch, dict):
+            continue
+        branch_id = branch.get("branch_id")
+        successor = _coalesce_successor(branch, "start_node", "entry_node", "next_node")
+        successors.append((branch_id if isinstance(branch_id, str) else None, successor))
+    return successors
+
+
 def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
     """Return ``{nodes: [...], edges: [...]}`` suitable for React Flow.
 
@@ -85,7 +107,7 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
                 rn = rule.get("next_node")
                 if rn:
                     successors.append(rn)
-            dn = node.get("default_next_node")
+            dn = _coalesce_successor(node, "default_next_node", "default_next")
             if dn:
                 successors.append(dn)
 
@@ -96,13 +118,12 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
                     successors.append(v)
 
         elif ntype == "loop":
-            bn = node.get("body_node")
+            bn = _coalesce_successor(node, "body_node", "loop_body")
             if bn:
                 successors.append(bn)
 
         elif ntype == "parallel":
-            for branch in node.get("branches", []):
-                sn = branch.get("start_node")
+            for _branch_id, sn in _extract_parallel_successors(node):
                 if sn:
                     successors.append(sn)
 
@@ -165,7 +186,7 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
                 rn = rule.get("next_node")
                 cond = rule.get("condition", rule.get("condition_expression", ""))
                 _add_edge(nid, rn, label=str(cond)[:40], animated=True)
-            dn = node.get("default_next_node")
+            dn = _coalesce_successor(node, "default_next_node", "default_next")
             _add_edge(nid, dn, label="default", animated=True)
 
         # Human approval — approve / reject / timeout edges
@@ -176,14 +197,12 @@ def extract_graph(workflow_graph: dict[str, Any]) -> dict[str, Any]:
 
         # Loop — body and exit edges
         elif ntype == "loop":
-            _add_edge(nid, node.get("body_node"), label="loop body", animated=True)
+            _add_edge(nid, _coalesce_successor(node, "body_node", "loop_body"), label="loop body", animated=True)
             # next_node already handled above as exit edge
 
         # Parallel — branch edges
         elif ntype == "parallel":
-            for branch in node.get("branches", []):
-                bid = branch.get("branch_id", "")
-                sn = branch.get("start_node")
+            for bid, sn in _extract_parallel_successors(node):
                 _add_edge(nid, sn, label=f"branch:{bid}" if bid else "", animated=True)
 
     # Mark end nodes (no outgoing edges except the start node)

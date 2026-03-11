@@ -7,6 +7,11 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 export const metadata: Metadata = {
   title: "LangOrch — Agentic Automation Platform",
   description: "CKP-driven workflow orchestrator with multi-channel agent execution",
+  icons: {
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({

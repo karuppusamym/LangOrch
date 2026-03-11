@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_db
 from app.schemas.procedures import (
     ProcedureCreate,
+    ProcedureBuilderDraftOut,
+    ProcedureBuilderDraftUpdate,
     ProcedureDetail,
     ProcedureOut,
     ProcedurePromoteRequest,
@@ -36,6 +38,7 @@ router = APIRouter()
 class ExplainRequest(BaseModel):
     """Optional body for the explain endpoint — can supply input variable values."""
     input_vars: dict[str, Any] = {}
+    ckp_json: dict[str, Any] | None = None
 
 
 @router.post("", response_model=ProcedureOut, status_code=201)
@@ -96,7 +99,11 @@ async def explain_procedure_route(
     if not proc:
         raise HTTPException(status_code=404, detail="Procedure not found")
     try:
-        ckp = json.loads(proc.ckp_json)
+        ckp = body.ckp_json if body and body.ckp_json is not None else json.loads(proc.ckp_json)
+        if ckp.get("procedure_id") and ckp.get("procedure_id") != procedure_id:
+            raise ValueError("procedure_id in CKP does not match target procedure_id")
+        if ckp.get("version") and ckp.get("version") != version:
+            raise ValueError("version in CKP does not match target version")
         ir = parse_ckp(ckp)
         errors = validate_ir(ir)
         if errors:
@@ -114,6 +121,48 @@ async def get_procedure(procedure_id: str, version: str, db: AsyncSession = Depe
     if not proc:
         raise HTTPException(status_code=404, detail="Procedure not found")
     return proc
+
+
+@router.get("/{procedure_id}/{version}/builder-draft", response_model=ProcedureBuilderDraftOut)
+async def get_procedure_builder_draft(
+    procedure_id: str,
+    version: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        proc, draft = await procedure_service.get_builder_draft(db, procedure_id, version)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if not proc:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+
+    return ProcedureBuilderDraftOut(
+        procedure_id=proc.procedure_id,
+        version=proc.version,
+        draft=draft,
+        updated_at=proc.builder_draft_updated_at,
+    )
+
+
+@router.put("/{procedure_id}/{version}/builder-draft", response_model=ProcedureBuilderDraftOut)
+async def update_procedure_builder_draft(
+    procedure_id: str,
+    version: str,
+    body: ProcedureBuilderDraftUpdate,
+    db: AsyncSession = Depends(get_db),
+    _principal: Principal = Depends(require_role("operator")),
+):
+    proc = await procedure_service.update_builder_draft(db, procedure_id, version, body.draft)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+
+    return ProcedureBuilderDraftOut(
+        procedure_id=proc.procedure_id,
+        version=proc.version,
+        draft=body.draft,
+        updated_at=proc.builder_draft_updated_at,
+    )
 
 
 @router.put("/{procedure_id}/{version}", response_model=ProcedureOut)

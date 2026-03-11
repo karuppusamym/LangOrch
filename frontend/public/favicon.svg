@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="LangOrch icon">
+  <defs>
+    <linearGradient id="langorchGradient" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f766e"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="52" height="52" rx="14" fill="#f5f7fb"/>
+  <path d="M20 21h10c9.4 0 14 3.9 14 11.6C44 40.7 38.8 45 29.2 45H20V21zm8.8 18.7c5.8 0 8.8-2.3 8.8-7.1 0-4.7-2.9-6.7-8.8-6.7h-2.3v13.8h2.3z" fill="url(#langorchGradient)"/>
+  <circle cx="47" cy="20" r="5" fill="#14b8a6"/>
+  <circle cx="18" cy="47" r="4" fill="#3b82f6"/>
+</svg>

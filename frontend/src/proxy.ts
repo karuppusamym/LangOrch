@@ -1,6 +1,6 @@
 /**
- * Next.js Edge Middleware — protect all routes except /login.
- * Redirects unauthenticated requests to /login.
+ * Next.js Proxy — protect all routes except /login.
+ * Redirects expired auth cookies to /login.
  */
 import { NextRequest, NextResponse } from "next/server";
 
@@ -22,10 +22,9 @@ function isTokenExpired(token: string): boolean {
   }
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Always allow public paths, static assets, and api routes
   if (
     isPublic(pathname) ||
     pathname.startsWith("/_next") ||
@@ -38,9 +37,6 @@ export function middleware(request: NextRequest) {
 
   const token = request.cookies.get("langorch_token")?.value;
 
-  // If no cookie-based token, allow through (client-side auth guard handles it)
-  // This keeps SSR/RSC working while client-side localStorage auth is the primary flow.
-  // For strict enforcement, swap to: if (!token || isTokenExpired(token)) { redirect }
   if (token && isTokenExpired(token)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
@@ -52,7 +48,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

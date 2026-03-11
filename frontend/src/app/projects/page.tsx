@@ -18,6 +18,7 @@ export default function ProjectsPage() {
   const [error, setError]       = useState("");
   const [confirmDelete, setConfirmDelete] = useState<Project | null>(null);
   const { toast } = useToast();
+  const totalProcedures = Object.values(procedureCounts).reduce((sum, count) => sum + count, 0);
 
   useEffect(() => { void load(); }, []);
 
@@ -89,26 +90,31 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Projects</h1>
-          <p className="text-neutral-500 dark:text-neutral-400 mt-1">Organize procedures into projects for better management</p>
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Workspace Catalog</p>
+            <h1 className="mt-1 text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Projects</h1>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Organize procedures into projects for better management.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Projects {projects.length}</span>
+            <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Linked procedures {totalProcedures}</span>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+              New Project
+            </button>
+          </div>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-          New Project
-        </button>
-      </div>
+      </section>
 
-      {/* Create form */}
       {showCreate && (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-sm">
-          <h3 className="mb-4 text-base font-semibold text-neutral-900 dark:text-neutral-100">Create Project</h3>
+        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <h3 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Create Project</h3>
           <div className="space-y-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">Name *</label>
@@ -133,16 +139,16 @@ export default function ProjectsPage() {
             </div>
           </div>
           {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-          <div className="mt-4 flex gap-2">
+          <div className="mt-3 flex gap-2">
             <button
               onClick={() => void handleCreate()}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
             >
               Create
             </button>
             <button
               onClick={() => { setShowCreate(false); setError(""); setForm({ name: "", description: "" }); }}
-              className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+              className="rounded-full border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800"
             >
               Cancel
             </button>
@@ -150,19 +156,18 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      {/* List */}
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
         </div>
       ) : projects.length === 0 && !showCreate ? (
-        <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
+        <div className="rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
           No projects yet. Click &ldquo;New Project&rdquo; to create one.
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {projects.map((p) => (
-            <div key={p.project_id} className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm hover:shadow-md transition-shadow">
+            <div key={p.project_id} className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md dark:border-neutral-800 dark:bg-neutral-900">
               {editId === p.project_id ? (
                 <div className="space-y-2">
                   <input
@@ -170,25 +175,29 @@ export default function ProjectsPage() {
                     value={editForm.name}
                     onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
                     onKeyDown={(e) => e.key === "Enter" && void handleUpdate(p.project_id)}
+                    title="Edit project name"
+                    aria-label="Edit project name"
                     className="w-full rounded-lg border border-neutral-300 dark:border-neutral-700 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
                   />
                   <input
                     value={editForm.description}
                     onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                    title="Edit project description"
+                    aria-label="Edit project description"
                     className="w-full rounded-lg border border-neutral-300 dark:border-neutral-700 px-2 py-1.5 text-xs text-neutral-500 focus:border-blue-500 focus:outline-none"
                     placeholder="Description (optional)"
                   />
                   <div className="flex gap-2">
-                    <button onClick={() => void handleUpdate(p.project_id)} className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700">Save</button>
-                    <button onClick={() => setEditId(null)} className="rounded-lg border border-neutral-300 px-3 py-1 text-xs text-neutral-600 hover:bg-neutral-50">Cancel</button>
+                    <button onClick={() => void handleUpdate(p.project_id)} className="rounded-full bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700">Save</button>
+                    <button onClick={() => setEditId(null)} className="rounded-full border border-neutral-300 px-3 py-1 text-xs text-neutral-600 hover:bg-neutral-50">Cancel</button>
                   </div>
                 </div>
               ) : (
                 <>
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950">
-                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950">
+                        <svg className="h-4.5 w-4.5 text-blue-600" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
                       </div>
                       <div>
                         <h3 className="font-semibold text-neutral-900 dark:text-neutral-100">{p.name}</h3>
@@ -206,22 +215,22 @@ export default function ProjectsPage() {
                       {procedureCounts[p.project_id] ?? 0} procedure{(procedureCounts[p.project_id] ?? 0) !== 1 ? "s" : ""}
                     </span>
                   </div>
-                  <div className="mt-4 flex gap-2">
+                  <div className="mt-3 flex gap-2">
                     <Link
                       href={`/procedures?project_id=${p.project_id}`}
-                      className="flex-1 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 px-3 py-1.5 text-center text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-950 transition-colors"
+                      className="flex-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 px-3 py-1.5 text-center text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-950 transition-colors"
                     >
                       Procedures
                     </Link>
                     <button
                       onClick={() => startEdit(p)}
-                      className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                      className="rounded-full border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => void handleDelete(p)}
-                      className="rounded-lg border border-red-200 dark:border-red-900 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
+                      className="rounded-full border border-red-200 dark:border-red-900 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
                     >
                       Delete
                     </button>

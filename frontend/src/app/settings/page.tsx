@@ -25,9 +25,9 @@ function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) =>
 function Field({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">{label}</label>
+      <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">{label}</label>
       {children}
-      {help && <p className="text-xs text-neutral-400 mt-1">{help}</p>}
+      {help && <p className="mt-1 text-xs text-neutral-400">{help}</p>}
     </div>
   );
 }
@@ -51,12 +51,12 @@ function TextInput({ value, onChange, placeholder }: { value: string; onChange: 
 function SaveBar({ dirty, saving, onSave }: { dirty: boolean; saving: boolean; onSave: () => void }) {
   if (!dirty && !saving) return null;
   return (
-    <div className="flex items-center justify-between rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-4 py-3">
+    <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/30 sm:flex-row sm:items-center sm:justify-between">
       <p className="text-xs text-amber-700 dark:text-amber-400">
-        ⚠ Changes take effect immediately and are persisted to the database across server restarts.
+        Changes take effect immediately and are persisted to the database across server restarts.
       </p>
       <button onClick={onSave} disabled={saving}
-        className="ml-4 shrink-0 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60 transition-colors">
+        className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-60">
         {saving ? "Saving…" : "Save Changes"}
       </button>
     </div>
@@ -142,19 +142,32 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Settings</h1>
-          <p className="text-neutral-500 dark:text-neutral-400 mt-1">Platform configuration and defaults</p>
+    <div className="min-h-[calc(100vh-4rem)] space-y-6 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Platform Controls</p>
+            <h1 className="mt-1 text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Settings</h1>
+            <p className="mt-1 max-w-3xl text-sm text-neutral-500 dark:text-neutral-400">Platform configuration, execution defaults, security controls, provider settings, and retention policies.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            {stats && (
+              <>
+                <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Runs {stats.totalRuns}</span>
+                <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Agents {stats.totalAgents}</span>
+                <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Procedures {stats.totalProcedures}</span>
+                <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 dark:border-neutral-700 dark:bg-neutral-800">Projects {stats.totalProjects}</span>
+              </>
+            )}
+            {dirty && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">Unsaved changes</span>}
+            {savedAt && (
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/20 dark:text-emerald-300">
+                Saved {savedAt.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
         </div>
-        {savedAt && (
-          <span className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
-            Saved {savedAt.toLocaleTimeString()}
-          </span>
-        )}
-      </div>
+      </section>
 
       {error && (
         <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-4 py-3 text-sm text-red-700 dark:text-red-400">
@@ -162,44 +175,43 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Tab bar */}
-      <div className="flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
+      <div className="rounded-2xl border border-neutral-200 bg-white p-2 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap gap-2">
         {TABS.map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === key
-              ? "border-blue-600 text-blue-600 dark:text-blue-400"
-              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+            className={`rounded-2xl px-4 py-2 text-sm font-medium transition-colors ${tab === key
+              ? "bg-blue-600 text-white"
+              : "bg-neutral-50 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:bg-neutral-800/70 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
               }`}>
             {label}
           </button>
         ))}
+        </div>
       </div>
 
       {/* ── General ─────────────────────────────── */}
       {tab === "general" && (
-        <div className="space-y-5">
-          {/* Platform overview */}
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Platform Overview</h2>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Platform Overview</h2>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
                 { label: "Total Runs", value: stats?.totalRuns ?? "—" },
                 { label: "Agents", value: stats?.totalAgents ?? "—" },
                 { label: "Procedures", value: stats?.totalProcedures ?? "—" },
                 { label: "Projects", value: stats?.totalProjects ?? "—" },
               ].map((item) => (
-                <div key={item.label} className="rounded-lg bg-neutral-50 dark:bg-neutral-800/60 px-4 py-3">
+                <div key={item.label} className="rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-3 dark:border-neutral-800 dark:bg-neutral-800/60">
                   <p className="text-xs text-neutral-400 uppercase tracking-wide">{item.label}</p>
-                  <p className="text-2xl font-bold text-neutral-900 dark:text-neutral-100 mt-1">{item.value}</p>
+                  <p className="mt-1 text-2xl font-bold text-neutral-900 dark:text-neutral-100">{item.value}</p>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Server info */}
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Server</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Server</h2>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Host">
                 <code className="block rounded-md bg-neutral-100 dark:bg-neutral-800 px-3 py-2 text-xs font-mono text-neutral-700 dark:text-neutral-300">{cfg.host}</code>
               </Field>
@@ -220,9 +232,8 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* CORS */}
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">CORS Origins</h2>
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">CORS Origins</h2>
             <Field label="Allowed origins" help="Comma-separated list of allowed origins for cross-origin requests">
               <TextInput
                 value={val("cors_origins").join(", ")}
@@ -237,11 +248,11 @@ export default function SettingsPage() {
 
       {/* ── Execution ────────────────────────────── */}
       {tab === "execution" && (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Worker Configuration</h2>
-            <p className="text-xs text-neutral-400 mb-5">Controls the embedded durable worker. Changes take effect in-memory immediately.</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-1 text-base font-semibold text-neutral-900 dark:text-neutral-100">Worker Configuration</h2>
+            <p className="mb-4 text-xs text-neutral-400">Controls the embedded durable worker. Changes take effect in-memory immediately.</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Embedded mode">
                 <div className="flex items-center gap-3 pt-1">
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.worker_embedded ? "bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-400"}`}>
@@ -279,10 +290,10 @@ export default function SettingsPage() {
 
       {/* ── Security ─────────────────────────────── */}
       {tab === "security" && (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Authentication</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Authentication</h2>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Auth enabled" help="When disabled, all requests are treated as admin">
                 <div className="flex items-center gap-3 pt-1">
                   <Toggle value={val("auth_enabled")} onChange={(v) => patch("auth_enabled", v)} />
@@ -297,8 +308,8 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Platform Security Features</h2>
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Platform Security Features</h2>
             <div className="space-y-3">
               {[
                 { label: "Secret Redaction", description: "Mask sensitive values in run logs and audit events", enabled: true },
@@ -306,7 +317,7 @@ export default function SettingsPage() {
                 { label: "Lease-based Locking", description: "Prevent concurrent modification of shared resources via distributed leases", enabled: true },
                 { label: "Circuit Breaker (Agents)", description: "Auto-open circuit after consecutive agent health failures", enabled: true },
               ].map(({ label, description, enabled }) => (
-                <div key={label} className="flex items-start gap-4 rounded-lg border border-neutral-100 dark:border-neutral-800 p-4">
+                <div key={label} className="flex items-start gap-3 rounded-lg border border-neutral-100 p-3 dark:border-neutral-800">
                   <span className={`mt-0.5 rounded-full w-2.5 h-2.5 flex-shrink-0 ${enabled ? "bg-emerald-500" : "bg-neutral-300"}`} />
                   <div className="flex-1">
                     <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{label}</p>
@@ -318,8 +329,8 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Secrets</h2>
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Secrets</h2>
             <Field label="Secrets rotation check" help="Warn when secrets have not been rotated recently">
               <div className="flex items-center gap-3 pt-1">
                 <Toggle value={val("secrets_rotation_check")} onChange={(v) => patch("secrets_rotation_check", v)} />
@@ -334,11 +345,11 @@ export default function SettingsPage() {
 
       {/* ── LLM ──────────────────────────────────── */}
       {tab === "llm" && (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">LLM Provider</h2>
-            <p className="text-xs text-neutral-400 mb-5">Configure the default LLM endpoint used by agentic steps.</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-1 text-base font-semibold text-neutral-900 dark:text-neutral-100">LLM Provider</h2>
+            <p className="mb-4 text-xs text-neutral-400">Configure the default LLM endpoint used by agentic steps.</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Base URL" help="OpenAI-compatible endpoint (e.g. http://localhost:11434/v1)">
                 <TextInput
                   value={val("llm_base_url") ?? ""}
@@ -372,7 +383,7 @@ export default function SettingsPage() {
               </Field>
             </div>
             {/* Test Connection */}
-            <div className="mt-5 flex items-center gap-3 pt-4 border-t border-neutral-100 dark:border-neutral-800">
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-neutral-100 pt-3 dark:border-neutral-800">
               <button
                 onClick={async () => {
                   setLlmTesting(true);
@@ -414,10 +425,10 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Apigee Gateway (mTLS + OAuth2)</h2>
-            <p className="text-xs text-neutral-400 mb-5">Configure Apigee token exchange to dynamically inject Bearer tokens into LLM calls.</p>
-            <div className="space-y-5">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-1 text-base font-semibold text-neutral-900 dark:text-neutral-100">Apigee Gateway (mTLS + OAuth2)</h2>
+            <p className="mb-4 text-xs text-neutral-400">Configure Apigee token exchange to dynamically inject Bearer tokens into LLM calls.</p>
+            <div className="space-y-4">
               <Field label="Enable Apigee Integration" help="Requires valid token URL, mTLS certs, and client credentials">
                 <div className="flex items-center gap-3 pt-1">
                   <Toggle value={val("apigee_enabled")} onChange={(v) => patch("apigee_enabled", v)} />
@@ -427,7 +438,7 @@ export default function SettingsPage() {
                 </div>
               </Field>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="Token URL" help="Apigee OAuth2 token endpoint">
                   <TextInput value={val("apigee_token_url") ?? ""} onChange={(s) => patch("apigee_token_url", s || null)} placeholder="https://api.enterprise.com/oauth/token" />
                 </Field>
@@ -455,10 +466,10 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Enterprise Configuration</h2>
-            <p className="text-xs text-neutral-400 mb-5">Advanced configuration for standalone API gateways and custom model costs.</p>
-            <div className="space-y-5">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-1 text-base font-semibold text-neutral-900 dark:text-neutral-100">Enterprise Configuration</h2>
+            <p className="mb-4 text-xs text-neutral-400">Advanced configuration for standalone API gateways and custom model costs.</p>
+            <div className="space-y-4">
               <Field label="API Gateway Headers (JSON)" help="Extra headers injected on every LLM call (e.g. proxy auth, tenant ID)">
                 <textarea
                   value={val("llm_gateway_headers") ?? ""}
@@ -485,11 +496,11 @@ export default function SettingsPage() {
 
       {/* ── Retention & Alerts ──────────────────── */}
       {tab === "retention" && (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Data Retention</h2>
-            <p className="text-xs text-neutral-400 mb-5">Automatic pruning of old run events and artifact files.</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-1 text-base font-semibold text-neutral-900 dark:text-neutral-100">Data Retention</h2>
+            <p className="mb-4 text-xs text-neutral-400">Automatic pruning of old run events and artifact files.</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Checkpoint retention (days)" help="Run events older than this are pruned hourly (0 = keep forever)">
                 <NumInput value={val("checkpoint_retention_days")} onChange={(n) => patch("checkpoint_retention_days", n)} />
               </Field>
@@ -499,8 +510,8 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Alerts</h2>
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Alerts</h2>
             <Field label="Alert webhook URL" help="POST failures/completions to this URL (leave empty to disable)">
               <TextInput
                 value={val("alert_webhook_url") ?? ""}
@@ -510,9 +521,9 @@ export default function SettingsPage() {
             </Field>
           </div>
 
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 mb-4">Metrics Push</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Metrics Push</h2>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Pushgateway URL" help="Prometheus Pushgateway target (leave empty to disable)">
                 <TextInput
                   value={val("metrics_push_url") ?? ""}

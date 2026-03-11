@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     # ── Server ──────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    DEBUG: bool = True
+    DEBUG: bool = False
+    SQL_ECHO: bool = False
     
     # ── Observability ───────────────────────────────────────────
     # Log format: "text" (default) or "json" (for structured remote logging)
@@ -172,18 +173,18 @@ class Settings(BaseSettings):
     AUTOSCALER_SCALE_WEBHOOK_TIMEOUT_SECONDS: float = 5.0
     # ── Worker (durable job queue) ─────────────────────────────
     # WORKER_EMBEDDED=true  → worker runs as an asyncio.Task inside the API
-    #                         process (default for SQLite dev mode).
+    #                         process (opt-in for local dev / single-process runs).
     # WORKER_EMBEDDED=false → run worker separately with: python -m app.worker
     #                         (required for PostgreSQL multi-process production).
-    # When not set explicitly it defaults to True for SQLite and False for PG
-    # via the _auto_configure validator.
+    # When not set explicitly it defaults to False so the API process stays
+    # responsive unless embedded execution is explicitly requested.
     WORKER_EMBEDDED: bool | None = None
 
     # Max concurrent run executions per worker process.
     WORKER_CONCURRENCY: int = 4
 
     # Seconds between job poll cycles.
-    WORKER_POLL_INTERVAL: float = 2.0
+    WORKER_POLL_INTERVAL: float = 5.0
 
     # Seconds a worker holds a job lock before it becomes reclaimable.
     # The heartbeat renews this every WORKER_HEARTBEAT_INTERVAL seconds.
@@ -313,13 +314,14 @@ class Settings(BaseSettings):
         ):
             object.__setattr__(self, "CHECKPOINTER_URL", self.ORCH_DB_URL)
 
-        # Default WORKER_EMBEDDED: True for SQLite (single-process dev),
-        # False for PostgreSQL (worker is a separate process).
+        # Default WORKER_EMBEDDED: auto-detect from dialect.
+        # SQLite (dev/single-process) → True  (worker runs embedded in the API process)
+        # PostgreSQL (production)     → False (run worker separately: python -m app.worker)
         if self.WORKER_EMBEDDED is None:
             object.__setattr__(
                 self,
                 "WORKER_EMBEDDED",
-                self.ORCH_DB_DIALECT == "sqlite",
+                self.is_sqlite,
             )
 
         if self.AUTH_ENABLED or self.SSO_ENABLED:

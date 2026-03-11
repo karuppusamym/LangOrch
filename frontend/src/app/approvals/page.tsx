@@ -85,36 +85,39 @@ export default function ApprovalsPage() {
   });
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Approval Reports</h1>
-          <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-            Review active approvals, decision latency, stale waits, and the full approval flow per run.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 text-xs text-neutral-500 dark:text-neutral-400">
-          <span className="rounded-full bg-emerald-50 px-3 py-1.5 font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-            Live approval stream
-          </span>
-          {staleApprovals.length > 0 && (
-            <span className="rounded-full bg-neutral-100 px-3 py-1.5 font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-              {staleApprovals.length} stale waiting records
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Approvals Workspace</p>
+            <h1 className="mt-1 text-3xl font-bold text-neutral-900 dark:text-neutral-100">Approval Reports</h1>
+            <p className="mt-1 max-w-3xl text-sm text-neutral-500 dark:text-neutral-400">
+              Review active approvals, decision latency, stale waits, and the full approval flow per run.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="rounded-full bg-emerald-50 px-3 py-1.5 font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+              Live approval stream
             </span>
-          )}
+            {staleApprovals.length > 0 && (
+              <span className="rounded-full bg-neutral-100 px-3 py-1.5 font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                {staleApprovals.length} stale waiting records
+              </span>
+            )}
+          </div>
         </div>
-      </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Actionable" value={String(actionableApprovals.length)} detail="Pending approvals on active runs" tone="amber" />
-        <StatCard label="Overdue" value={String(overdueApprovals.length)} detail="Pending beyond their expiry window" tone="red" />
-        <StatCard label="Resolved" value={`${approvedCount}/${rejectedCount}`} detail="Approved / rejected decisions" tone="emerald" />
-        <StatCard label="Avg Response" value={avgDecisionMinutes != null ? `${avgDecisionMinutes.toFixed(1)} min` : "-"} detail="Mean time from request to decision" tone="blue" />
-      </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <StatCard label="Actionable" value={String(actionableApprovals.length)} detail="Pending approvals on active runs" tone="amber" />
+          <StatCard label="Overdue" value={String(overdueApprovals.length)} detail="Pending beyond their expiry window" tone="red" />
+          <StatCard label="Resolved" value={`${approvedCount}/${rejectedCount}`} detail="Approved / rejected decisions" tone="emerald" />
+          <StatCard label="Avg Response" value={avgDecisionMinutes != null ? `${avgDecisionMinutes.toFixed(1)} min` : "-"} detail="Mean time from request to decision" tone="blue" />
+        </div>
+      </section>
 
-      <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
+      <div className="rounded-2xl border border-neutral-200 bg-white p-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
             <label className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Approver</label>
             <input
               value={approverName}
@@ -122,6 +125,11 @@ export default function ApprovalsPage() {
               placeholder="name used for decisions"
               className="w-52 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-sm text-neutral-900 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
             />
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+              <span className="rounded-full border px-2 py-1">Pending {actionableApprovals.length}</span>
+              <span className="rounded-full border px-2 py-1">Resolved {resolvedApprovals.length}</span>
+              <span className="rounded-full border px-2 py-1">Stale {staleApprovals.length}</span>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
             <FilterButton label={`Pending (${actionableApprovals.length})`} active={filter === "pending"} onClick={() => setFilter("pending")} />
@@ -140,7 +148,7 @@ export default function ApprovalsPage() {
           {filter === "pending" ? "No actionable approvals remain." : filter === "resolved" ? "No resolved approvals yet." : "No approvals found."}
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {filtered.map((approval) => {
             const overdue = isOverdueApproval(approval);
             const actionable = isActionableApproval(approval);
@@ -150,14 +158,14 @@ export default function ApprovalsPage() {
             return (
               <article
                 key={approval.approval_id}
-                className={`rounded-2xl border p-5 shadow-sm transition-shadow hover:shadow-md ${overdue
+                className={`rounded-2xl border p-4 shadow-sm transition-shadow hover:shadow-md ${overdue
                   ? "border-red-200 bg-red-50/80 dark:border-red-900/40 dark:bg-red-950/20"
                   : actionable
                     ? "border-amber-200 bg-amber-50/70 dark:border-amber-900/40 dark:bg-amber-950/20"
                     : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"}`}
               >
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="min-w-0 flex-1 space-y-4">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_240px] xl:items-start">
+                  <div className="min-w-0 space-y-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <ApprovalStatusBadge status={approval.status} />
                       <FlowTag label={approval.decision_type.replace(/_/g, " ")} tone="violet" />
@@ -176,7 +184,7 @@ export default function ApprovalsPage() {
                       </p>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-3">
+                    <div className="grid gap-2 md:grid-cols-3">
                       <MetricTile label="Requested" value={formatTimestamp(approval.created_at)} subvalue={formatDistance(approval.created_at)} />
                       <MetricTile
                         label={approval.status === "pending" ? "Waiting" : "Resolved"}
@@ -190,12 +198,12 @@ export default function ApprovalsPage() {
                       />
                     </div>
 
-                    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-950/40">
+                    <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/40">
                       <div className="flex flex-wrap items-center gap-2 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
                         <span>Approval Flow</span>
                         {approval.decided_by && <span className="normal-case tracking-normal">by {approval.decided_by}</span>}
                       </div>
-                      <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <div className="mt-3 grid gap-2 md:grid-cols-3">
                         <FlowStep title="1. Requested" tone="blue" detail={formatTimestamp(approval.created_at)} supporting={`Run ${approval.run_id.slice(0, 12)}...`} />
                         <FlowStep
                           title="2. Waiting"
@@ -213,11 +221,11 @@ export default function ApprovalsPage() {
                     </div>
 
                     {contextEntries.length > 0 && (
-                      <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/40 dark:bg-sky-950/20">
+                      <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-3 dark:border-sky-900/40 dark:bg-sky-950/20">
                         <p className="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">Context Snapshot</p>
-                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
                           {contextEntries.map(([key, value]) => (
-                            <div key={key} className="rounded-lg bg-white/80 p-3 dark:bg-neutral-900/60">
+                            <div key={key} className="rounded-lg bg-white/80 p-2.5 dark:bg-neutral-900/60">
                               <p className="text-[11px] font-medium uppercase tracking-wide text-sky-600 dark:text-sky-400">{key}</p>
                               <p className="mt-1 break-words text-sm text-neutral-700 dark:text-neutral-200">{compactValue(value)}</p>
                             </div>
@@ -227,7 +235,7 @@ export default function ApprovalsPage() {
                     )}
 
                     {(commentText || approval.decision_payload) && (
-                      <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-950/60">
+                      <div className="rounded-2xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-950/60">
                         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Decision Record</p>
                         {commentText && <p className="mt-2 text-sm text-neutral-700 dark:text-neutral-200">{commentText}</p>}
                         {approval.decision_payload && (
@@ -237,10 +245,10 @@ export default function ApprovalsPage() {
                     )}
                   </div>
 
-                  <div className="w-full shrink-0 xl:w-64">
-                    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-950/50">
+                  <div className="w-full shrink-0">
+                    <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/50">
                       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Actions</p>
-                      <div className="mt-3 space-y-3 text-sm">
+                      <div className="mt-3 space-y-2 text-sm">
                         <Link href={`/approvals/${approval.approval_id}`} className="block rounded-lg border border-neutral-200 bg-white px-3 py-2 text-center font-medium text-blue-600 hover:bg-blue-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-blue-300 dark:hover:bg-blue-950/30">
                           Open detail report
                         </Link>
@@ -255,7 +263,7 @@ export default function ApprovalsPage() {
                                 setDecisionType("approved");
                                 setComment("");
                               }}
-                              className="w-full rounded-lg bg-green-600 px-4 py-2.5 font-medium text-white hover:bg-green-700"
+                              className="w-full rounded-lg bg-green-600 px-4 py-2 font-medium text-white hover:bg-green-700"
                             >
                               Approve
                             </button>
@@ -265,7 +273,7 @@ export default function ApprovalsPage() {
                                 setDecisionType("rejected");
                                 setComment("");
                               }}
-                              className="w-full rounded-lg border border-red-300 px-4 py-2.5 font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30"
+                              className="w-full rounded-lg border border-red-300 px-4 py-2 font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30"
                             >
                               Reject
                             </button>
@@ -301,7 +309,7 @@ export default function ApprovalsPage() {
               </div>
 
               {Object.keys(activeApproval.context_data ?? {}).length > 0 && (
-                <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/40 dark:bg-sky-950/20">
+                <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/40 dark:bg-sky-950/20">
                   <p className="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">Decision context</p>
                   <pre className="mt-3 max-h-52 overflow-auto rounded-lg bg-white/80 p-3 text-xs text-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-200">{JSON.stringify(activeApproval.context_data, null, 2)}</pre>
                 </div>
@@ -465,10 +473,10 @@ function StatCard({
     blue: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300",
   };
   return (
-    <div className={`rounded-2xl border p-5 shadow-sm ${tones[tone]}`}>
+    <div className={`rounded-2xl border p-4 shadow-sm ${tones[tone]}`}>
       <p className="text-xs font-semibold uppercase tracking-wide">{label}</p>
-      <p className="mt-2 text-3xl font-bold">{value}</p>
-      <p className="mt-2 text-sm opacity-80">{detail}</p>
+      <p className="mt-1.5 text-2xl font-bold">{value}</p>
+      <p className="mt-1.5 text-xs opacity-80">{detail}</p>
     </div>
   );
 }
@@ -498,9 +506,9 @@ function FlowTag({ label, tone }: { label: string; tone: "violet" | "emerald" | 
 
 function MetricTile({ label, value, subvalue }: { label: string; value: string; subvalue: string }) {
   return (
-    <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+    <div className="rounded-2xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{label}</p>
-      <p className="mt-2 text-sm font-medium text-neutral-900 dark:text-neutral-100">{value}</p>
+      <p className="mt-1.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">{value}</p>
       <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{subvalue}</p>
     </div>
   );
@@ -525,9 +533,9 @@ function FlowStep({
     neutral: "border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900",
   };
   return (
-    <div className={`rounded-xl border p-4 ${tones[tone]}`}>
+    <div className={`rounded-2xl border p-3 ${tones[tone]}`}>
       <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{title}</p>
-      <p className="mt-2 text-sm font-medium text-neutral-900 dark:text-neutral-100">{detail}</p>
+      <p className="mt-1.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">{detail}</p>
       <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{supporting}</p>
     </div>
   );

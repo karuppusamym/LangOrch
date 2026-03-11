@@ -21,13 +21,13 @@ export function useTheme() {
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>("light");
 
-  // On mount, read from localStorage or system preference
+  // Default to light unless the user explicitly stored a preference.
   useEffect(() => {
     const stored = localStorage.getItem("langorch-theme") as Theme | null;
     if (stored === "dark" || stored === "light") {
       setTheme(stored);
-    } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-      setTheme("dark");
+    } else {
+      setTheme("light");
     }
   }, []);
 

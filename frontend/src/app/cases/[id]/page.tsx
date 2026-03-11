@@ -185,25 +185,25 @@ export default function CaseDetailPage() {
     const borderCls = fieldErr
       ? "border-red-400 focus:border-red-500"
       : showDefault && isUsingDefault
-        ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
-        : "border-gray-300 focus:border-primary-500";
+        ? "border-neutral-200 bg-neutral-50 focus:border-sky-500 focus:bg-white"
+        : "border-neutral-300 focus:border-sky-500";
 
     return (
       <div key={key}>
         <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
-          <label className="text-xs font-semibold text-gray-700">
+          <label className="text-xs font-semibold text-neutral-700">
             {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
           </label>
-          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
+          {meta?.type && <span className="text-[10px] uppercase tracking-wide text-neutral-400">{meta.type as string}</span>}
           {sensitive && <span className="text-[10px] font-medium text-yellow-600">sensitive</span>}
           {showDefault && hasDefault && !sensitive && (
-            <span className="ml-auto text-[10px] text-gray-400">
+            <span className="ml-auto text-[10px] text-neutral-400">
               default: <code className="font-mono">{String(meta.default)}</code>
               {!isUsingDefault && (
                 <button
                   type="button"
                   onClick={() => handleRunVarChange(key, String(meta.default), meta)}
-                  className="ml-1 text-primary-600 hover:underline"
+                  className="ml-1 text-sky-700 hover:underline"
                 >
                   restore
                 </button>
@@ -211,7 +211,7 @@ export default function CaseDetailPage() {
             </span>
           )}
         </div>
-        {meta?.description && <p className="mb-1.5 text-xs text-gray-400">{meta.description as string}</p>}
+        {meta?.description && <p className="mb-1.5 text-xs text-neutral-400">{meta.description as string}</p>}
         {allowed ? (
           <select
             aria-label={key}
@@ -244,9 +244,9 @@ export default function CaseDetailPage() {
           <p className="mt-1 text-xs text-red-500">{fieldErr}</p>
         ) : (
           <span className="mt-1 inline-flex gap-3">
-            {validation.regex && <span className="text-xs text-gray-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
-            {validation.min !== undefined && <span className="text-xs text-gray-400">Min: {validation.min as number}</span>}
-            {validation.max !== undefined && <span className="text-xs text-gray-400">Max: {validation.max as number}</span>}
+            {validation.regex && <span className="text-xs text-neutral-400">Pattern: <code className="font-mono">{validation.regex as string}</code></span>}
+            {validation.min !== undefined && <span className="text-xs text-neutral-400">Min: {validation.min as number}</span>}
+            {validation.max !== undefined && <span className="text-xs text-neutral-400">Max: {validation.max as number}</span>}
           </span>
         )}
       </div>
@@ -345,18 +345,21 @@ export default function CaseDetailPage() {
   if (!caseItem) return <div className="p-6 text-sm text-red-600">Case not found</div>;
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <Link href="/cases" className="text-sm text-blue-600 hover:underline">← Cases</Link>
-          <h1 className="mt-1 text-2xl font-bold text-neutral-900 dark:text-neutral-100">{caseItem.title}</h1>
-          <p className="font-mono text-xs text-neutral-500">{caseItem.case_id}</p>
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      {/* Header */}
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Link href="/cases" className="text-sm text-blue-600 hover:underline">← Cases</Link>
+            <h1 className="mt-1 text-2xl font-semibold text-neutral-900 dark:text-neutral-100">{caseItem.title}</h1>
+            <p className="font-mono text-xs text-neutral-500">{caseItem.case_id}</p>
+          </div>
+          <button onClick={() => void load()} className="shrink-0 rounded-full border border-neutral-200 px-4 py-2 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800">Refresh</button>
         </div>
-        <button onClick={() => void load()} className="rounded-lg border px-3 py-1.5 text-sm">Refresh</button>
-      </div>
+      </section>
 
       <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.2fr]">
-        <div className="rounded-xl border bg-white dark:bg-neutral-900 p-4 space-y-2 text-sm">
+        <div className="rounded-2xl border bg-white dark:bg-neutral-900 p-4 space-y-2 text-sm">
           <h2 className="font-semibold">Case State</h2>
           <div className="grid grid-cols-2 gap-2">
             <label className="text-xs text-neutral-500">Status</label>
@@ -393,7 +396,7 @@ export default function CaseDetailPage() {
           </div>
         </div>
 
-        <div className="rounded-xl border bg-white dark:bg-neutral-900 p-4 space-y-1 text-xs">
+        <div className="rounded-2xl border bg-white dark:bg-neutral-900 p-4 space-y-1 text-xs">
           <h2 className="mb-2 text-sm font-semibold">Case Metadata</h2>
           <p><span className="text-neutral-500">Project:</span> {caseItem.project_id ?? "-"}</p>
           <p><span className="text-neutral-500">Type:</span> {caseItem.case_type ?? "-"}</p>
@@ -405,7 +408,7 @@ export default function CaseDetailPage() {
           <p><span className="text-neutral-500">Updated:</span> {fmtDate(caseItem.updated_at)}</p>
         </div>
 
-        <div className="rounded-xl border bg-white dark:bg-neutral-900 p-4">
+        <div className="rounded-2xl border bg-white dark:bg-neutral-900 p-4">
           <h2 className="mb-2 text-sm font-semibold">Linked Runs ({runs.length})</h2>
           <div className="mb-3 space-y-2 rounded border border-neutral-200 dark:border-neutral-800 p-2">
             <p className="text-xs text-neutral-500">Start run for this case</p>
@@ -450,7 +453,7 @@ export default function CaseDetailPage() {
         </div>
       </div>
 
-      <div className="rounded-xl border bg-white dark:bg-neutral-900 p-4">
+      <div className="rounded-2xl border bg-white dark:bg-neutral-900 p-4">
         <h2 className="mb-2 text-sm font-semibold">Timeline ({events.length})</h2>
         <div className="max-h-[28rem] space-y-2 overflow-y-auto">
           {events.length === 0 ? (
@@ -474,14 +477,14 @@ export default function CaseDetailPage() {
 
       {runModalOpen && runModalProcedure && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-0.5 text-base font-semibold text-gray-900">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-0.5 text-base font-semibold text-neutral-900">
               {runModalMustFillEntries.length > 0
                 ? `${runModalMustFillEntries.length} required field${runModalMustFillEntries.length !== 1 ? "s" : ""} need input`
                 : "Review Run Variables"}
             </h3>
-            <p className="mb-1 text-xs font-medium text-gray-500">{runModalProcedure.name}</p>
-            <p className="mb-4 text-xs text-gray-400">
+            <p className="mb-1 text-xs font-medium text-neutral-500">{runModalProcedure.name}</p>
+            <p className="mb-4 text-xs text-neutral-400">
               {runModalMustFillEntries.length > 0
                 ? "Fill in the required fields before starting."
                 : "All fields have default values. Override any before starting."}
@@ -494,7 +497,7 @@ export default function CaseDetailPage() {
               {runModalOverrideEntries.length > 0 && (
                 runModalMustFillEntries.length > 0 ? (
                   <details className="group">
-                    <summary className="flex list-none cursor-pointer select-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
+                    <summary className="flex list-none cursor-pointer select-none items-center gap-1 py-2 text-xs font-medium text-neutral-500 hover:text-neutral-700">
                       <span className="inline-block transition-transform group-open:rotate-90">▶</span>
                       {`${runModalOverrideEntries.length} field${runModalOverrideEntries.length !== 1 ? "s" : ""} have defaults - expand to override`}
                     </summary>
@@ -519,7 +522,7 @@ export default function CaseDetailPage() {
               </button>
               <button
                 onClick={() => setRunModalOpen(false)}
-                className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="flex-1 rounded-lg border border-neutral-300 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
               >
                 Cancel
               </button>

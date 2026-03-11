@@ -128,7 +128,7 @@ _NODE_EXECUTORS: dict[str, Any] = {
 }
 
 # Node types whose executors need db_factory (for dynamic agent dispatch)
-_NEEDS_DB: set[str] = {"sequence", "subflow", "llm_action"}
+_NEEDS_DB: set[str] = {"sequence", "subflow", "llm_action", "loop"}
 
 
 def build_graph(
@@ -213,6 +213,24 @@ def build_graph(
                             await acquire_rate_limit(ir.procedure_id, max_rpm)
                         _t0 = asyncio.get_event_loop().time()
                         result = await execute_parallel(node, state, db_factory=db_factory, nodes=ir.nodes)
+                        _emit_custom_metrics()
+                        if _max_ms:
+                            patch = await _check_sla(node.node_id, _t0, _max_ms, _on_breach, _escalation_handler, state, db_factory)
+                            if patch:
+                                result = {**result, **patch}
+                        return _apply_checkpoint_marker(result, node.node_id)
+                    if sem:
+                        async with sem:
+                            return await _run()
+                    return await _run()
+            elif node.type == "loop":
+                async def fn(state: OrchestratorState) -> OrchestratorState:
+                    async def _run():
+                        if max_rpm:
+                            await acquire_rate_limit(ir.procedure_id, max_rpm)
+                        _t0 = asyncio.get_event_loop().time()
+                        from app.runtime.node_executors import execute_loop_runtime
+                        result = await execute_loop_runtime(node, state, nodes=ir.nodes, db_factory=db_factory)
                         _emit_custom_metrics()
                         if _max_ms:
                             patch = await _check_sla(node.node_id, _t0, _max_ms, _on_breach, _escalation_handler, state, db_factory)

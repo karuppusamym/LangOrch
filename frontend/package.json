@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "clean": "node -e \"const fs=require('fs'); for (const dir of ['.next', '.next-dev']) fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync('tsconfig.tsbuildinfo', { force: true });\"",
+    "clean:build": "node -e \"const fs=require('fs'); fs.rmSync('.next', { recursive: true, force: true }); fs.rmSync('tsconfig.tsbuildinfo', { force: true });\"",
+    "clean:dev": "node -e \"const fs=require('fs'); fs.rmSync('.next-dev', { recursive: true, force: true });\"",
     "dev": "cross-env NODE_NO_WARNINGS=1 next dev",
     "build": "cross-env NODE_NO_WARNINGS=1 next build",
     "start": "cross-env NODE_NO_WARNINGS=1 next start",
@@ -14,10 +17,10 @@
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
     "@xyflow/react": "^12.10.0",
-    "html-to-image": "^1.11.11",
-    "jspdf": "^2.5.2",
     "clsx": "^2.1.0",
     "date-fns": "^4.1.0",
+    "html-to-image": "^1.11.11",
+    "jspdf": "^4.2.0",
     "lucide-react": "^0.575.0",
     "next": "^14.2.0",
     "react": "^18.3.0",

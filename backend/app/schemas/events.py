@@ -22,16 +22,34 @@ class RunEventOut(BaseModel):
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
+    @staticmethod
+    def _decode_payload(raw: Any) -> dict[str, Any] | None:
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except Exception:
+                return None
+        return raw
+
     @model_validator(mode="before")
     @classmethod
     def _parse_payload(cls, data: Any) -> Any:
-        if hasattr(data, "payload_json"):
-            raw = data.payload_json
-            if isinstance(raw, str):
-                try:
-                    data.payload = json.loads(raw)
-                except Exception:
-                    data.payload = None
-            else:
-                data.payload = raw
+        if isinstance(data, dict):
+            parsed = dict(data)
+            if "payload" not in parsed and "payload_json" in parsed:
+                parsed["payload"] = cls._decode_payload(parsed.get("payload_json"))
+            return parsed
+
+        if hasattr(data, "event_id"):
+            return {
+                "event_id": data.event_id,
+                "run_id": data.run_id,
+                "created_at": data.ts,
+                "event_type": data.event_type,
+                "node_id": data.node_id,
+                "step_id": data.step_id,
+                "attempt": data.attempt,
+                "payload": cls._decode_payload(getattr(data, "payload_json", None)),
+            }
+
         return data

@@ -273,90 +273,114 @@ function ProceduresContent() {
       proc.procedure_id.toLowerCase().includes(search.toLowerCase())) &&
     (!releaseChannelFilter || normalizeReleaseChannel(proc.release_channel) === releaseChannelFilter)
   );
+  const activeCount = procedures.filter((proc) => proc.status === "active").length;
+  const draftCount = procedures.filter((proc) => proc.status === "draft").length;
   const PROC_PAGE_SIZE = 15;
   const totalProcPages = Math.ceil(filtered.length / PROC_PAGE_SIZE);
   const pagedProcs = filtered.slice(procPage * PROC_PAGE_SIZE, (procPage + 1) * PROC_PAGE_SIZE);
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Procedures</h1>
-          <p className="text-neutral-500 dark:text-neutral-400 mt-1">
-            {activeProject ? `Showing procedures for: ${activeProject.name}` : "Manage and run your workflow procedures"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {activeProject && (
-            <button onClick={() => changeProjectFilter("")}
-              className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-3 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
-              ← All Procedures
-            </button>
-          )}
-          <button onClick={() => { setShowCreate(false); setShowImport(true); }}
-            className="flex items-center gap-2 rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
-            <svg className="w-4 h-4 text-neutral-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-            Import CKP
-          </button>
-          <button onClick={() => { setShowImport(false); setShowCreate(true); }}
-            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-            Create New
-          </button>
-        </div>
-      </div>
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      <div className="space-y-4">
+        <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Workflow Catalog</p>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Procedures</h1>
+                <span className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-[11px] font-medium text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400">
+                  {filtered.length} visible
+                </span>
+                {activeProject && (
+                  <span className="rounded-full bg-blue-100 px-3 py-1 text-[11px] font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                    {activeProject.name}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1.5 max-w-3xl text-sm leading-5 text-neutral-500 dark:text-neutral-400">
+                {activeProject ? `Showing procedures for ${activeProject.name}.` : "Manage, import, and launch workflow procedures from one dense operational view."}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {activeProject && (
+                <button onClick={() => changeProjectFilter("")}
+                  className="rounded-full border border-neutral-300 px-3.5 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+                  All Procedures
+                </button>
+              )}
+              <button onClick={() => { setShowCreate(false); setShowImport(true); }}
+                  className="flex items-center gap-2 rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 transition-colors">
+                  <svg className="w-4 h-4 text-neutral-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                Import CKP
+              </button>
+              <button onClick={() => { setShowImport(false); setShowCreate(true); }}
+                className="flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                Create New
+              </button>
+            </div>
+          </div>
 
-      {/* Filters */}
-      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[180px]">
+          <div className="mt-4 grid items-start gap-2.5 md:grid-cols-3">
+            {[
+              { label: "Total", value: procedures.length, meta: "cataloged", tone: "text-neutral-900 dark:text-neutral-100" },
+              { label: "Active", value: activeCount, meta: "ready to run", tone: "text-emerald-600" },
+              { label: "Draft", value: draftCount, meta: "in progress", tone: "text-amber-600" },
+            ].map((card) => (
+              <div key={card.label} className="self-start rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">{card.label}</p>
+                <div className="mt-2 flex items-end justify-between gap-3">
+                  <p className={`text-2xl font-semibold ${card.tone}`}>{card.value}</p>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">{card.meta}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-2 rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="relative min-w-[220px] flex-1">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
             <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search procedures…"
-              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+              className="w-full rounded-2xl border border-neutral-300 bg-neutral-50 pl-9 pr-3 py-2 text-sm text-neutral-900 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100" />
+              </div>
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter by status"
+                className="rounded-2xl border border-neutral-300 bg-white px-3.5 py-2 text-sm text-neutral-700 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                <option value="">All Statuses</option>
+                <option value="active">Active</option>
+                <option value="draft">Draft</option>
+                <option value="deprecated">Deprecated</option>
+                <option value="archived">Archived</option>
+              </select>
+              <select value={releaseChannelFilter} onChange={(e) => setReleaseChannelFilter(e.target.value)} aria-label="Filter by release channel"
+                className="rounded-2xl border border-neutral-300 bg-white px-3.5 py-2 text-sm text-neutral-700 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                <option value="">All Channels</option>
+                <option value="dev">Dev</option>
+                <option value="qa">QA</option>
+                <option value="prod">Prod</option>
+              </select>
+              <select value={projectFilter} onChange={(e) => changeProjectFilter(e.target.value)} aria-label="Filter by project"
+                className="rounded-2xl border border-neutral-300 bg-white px-3.5 py-2 text-sm text-neutral-700 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                <option value="">All Projects</option>
+                {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
+              </select>
+              <span className="text-xs text-neutral-400">{filtered.length}{filtered.length !== procedures.length ? ` of ${procedures.length}` : ""} procedure{procedures.length !== 1 ? "s" : ""}</span>
+            </div>
           </div>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter by status"
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
-            <option value="">All Statuses</option>
-            <option value="active">Active</option>
-            <option value="draft">Draft</option>
-            <option value="deprecated">Deprecated</option>
-            <option value="archived">Archived</option>
-          </select>
-          <select value={releaseChannelFilter} onChange={(e) => setReleaseChannelFilter(e.target.value)} aria-label="Filter by release channel"
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
-            <option value="">All Channels</option>
-            <option value="dev">Dev</option>
-            <option value="qa">QA</option>
-            <option value="prod">Prod</option>
-          </select>
-          <select value={projectFilter} onChange={(e) => changeProjectFilter(e.target.value)} aria-label="Filter by project"
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none">
-            <option value="">All Projects</option>
-            {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
-          </select>
-          <input
-            value={quickRunCaseId}
-            onChange={(e) => setQuickRunCaseId(e.target.value)}
-            placeholder="Run case_id (optional)"
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 focus:border-blue-500 focus:outline-none"
-          />
-          <span className="text-xs text-neutral-400">{filtered.length}{filtered.length !== procedures.length ? ` of ${procedures.length}` : ""} procedure{procedures.length !== 1 ? "s" : ""}</span>
-        </div>
-      </div>
+        </section>
 
       {/* Import form */}
       {showImport && (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-sm">
+        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
           <h3 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Import CKP Procedure</h3>
           <textarea value={importJson} onChange={(e) => setImportJson(e.target.value)}
-            className="h-48 w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 p-3 font-mono text-xs focus:border-blue-500 focus:outline-none"
+            className="h-44 w-full rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 p-3 font-mono text-xs focus:border-blue-500 focus:outline-none"
             placeholder='{"procedure_id": "...", "version": "...", ...}' />
           {projects.length > 0 && (
             <div className="mt-3">
               <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">Assign to project (optional)</label>
               <select value={importProjectId} onChange={(e) => setImportProjectId(e.target.value)} aria-label="Assign to project"
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                className="w-full rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
                 <option value="">— No project —</option>
                 {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
               </select>
@@ -364,9 +388,9 @@ function ProceduresContent() {
           )}
           {importError && <p className="mt-2 text-sm text-red-600">{importError}</p>}
           <div className="mt-3 flex gap-2">
-            <button onClick={handleImport} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Import</button>
+            <button onClick={handleImport} className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Import</button>
             <button onClick={() => { setShowImport(false); setImportError(""); setImportProjectId(""); }}
-              className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+              className="rounded-full border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
               Cancel
             </button>
           </div>
@@ -375,30 +399,30 @@ function ProceduresContent() {
 
       {/* Create form */}
       {showCreate && (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-sm mb-6">
+        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
           <h3 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Create New Procedure</h3>
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300">Procedure ID</label>
               <input value={createId} onChange={(e) => setCreateId(e.target.value)}
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                className="w-full rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                 placeholder="e.g. loan_application" autoFocus />
             </div>
             {projects.length > 0 && (
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300">Assign to project (optional)</label>
                 <select value={createProjectId} onChange={(e) => setCreateProjectId(e.target.value)} aria-label="Assign to project"
-                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                  className="w-full rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
                   <option value="">— No project —</option>
                   {projects.map((p) => (<option key={p.project_id} value={p.project_id}>{p.name}</option>))}
                 </select>
               </div>
             )}
             {createError && <p className="text-sm text-red-600">{createError}</p>}
-            <div className="pt-2 flex gap-2">
-              <button onClick={handleCreate} disabled={!createId.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">Create &amp; Edit</button>
+            <div className="pt-1 flex gap-2">
+              <button onClick={handleCreate} disabled={!createId.trim()} className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">Create &amp; Edit</button>
               <button onClick={() => { setShowCreate(false); setCreateError(""); setCreateProjectId(""); setCreateId(""); }}
-                className="rounded-lg border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                className="rounded-full border border-neutral-300 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
                 Cancel
               </button>
             </div>
@@ -412,20 +436,29 @@ function ProceduresContent() {
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-16 text-center text-neutral-400">
+        <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-12 text-center text-neutral-500 shadow-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
           {procedures.length === 0 ? 'No procedures yet. Click "Import CKP" to get started.' : "No procedures match your current filters."}
         </div>
       ) : (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm">
+        <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-100 px-4 py-2.5 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+            <span>Quick run case ID applies when starting procedures from this page.</span>
+            <input
+              value={quickRunCaseId}
+              onChange={(e) => setQuickRunCaseId(e.target.value)}
+              placeholder="Optional case_id for quick runs"
+              className="min-w-[220px] rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs text-neutral-700 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+            />
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
-              <tr className="text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                <th className="px-5 py-3">Name</th>
-                <th className="px-5 py-3">Version</th>
-                <th className="px-5 py-3">Project</th>
-                <th className="px-5 py-3">Status</th>
-                <th className="px-5 py-3">Created</th>
-                <th className="px-5 py-3 text-right">Actions</th>
+              <tr className="text-left text-[11px] font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Version</th>
+                <th className="px-4 py-3">Project</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Created</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -436,23 +469,24 @@ function ProceduresContent() {
                 const isRunning = runningId === key;
                 return (
                   <tr key={key} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors">
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3">
                       <Link href={href} className="font-medium text-neutral-900 dark:text-neutral-100 hover:text-blue-600 dark:hover:text-blue-400">
                         {proc.name}
                       </Link>
+                      <p className="mt-0.5 text-xs text-neutral-400 dark:text-neutral-500">{proc.procedure_id}</p>
                       {proc.description && <p className="text-xs text-neutral-400 mt-0.5 truncate max-w-[250px]">{proc.description}</p>}
                     </td>
-                    <td className="px-5 py-3">
-                      <span className="rounded-md bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-xs font-mono text-neutral-600 dark:text-neutral-400">v{proc.version}</span>
+                    <td className="px-4 py-3">
+                      <span className="rounded-full bg-neutral-100 dark:bg-neutral-800 px-2.5 py-1 text-xs font-mono text-neutral-600 dark:text-neutral-400">v{proc.version}</span>
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3">
                       {projName ? (
                         <span className="rounded-full bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-400">{projName}</span>
                       ) : (
                         <span className="text-xs text-neutral-400">—</span>
                       )}
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <StatusBadge status={proc.status} />
                         <span
@@ -462,21 +496,21 @@ function ProceduresContent() {
                         </span>
                       </div>
                     </td>
-                    <td className="px-5 py-3 text-xs text-neutral-400">{new Date(proc.created_at).toLocaleDateString()}</td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3 text-xs text-neutral-400">{new Date(proc.created_at).toLocaleDateString()}</td>
+                    <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={(e) => void handleQuickRun(proc, e)}
                           disabled={isRunning || proc.status === "archived" || proc.status === "deprecated"}
-                          className="flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                          className="flex items-center gap-1 rounded-full bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
                           <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                           {isRunning ? "Starting…" : "Run"}
                         </button>
                         <Link href={`${href}?tab=graph`} onClick={(e) => e.stopPropagation()}
-                          className="rounded-md border border-neutral-200 dark:border-neutral-700 px-2.5 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                          className="rounded-full border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
                           Graph
                         </Link>
                         <Link href={`${href}?tab=explain`} onClick={(e) => e.stopPropagation()}
-                          className="rounded-md border border-neutral-200 dark:border-neutral-700 px-2.5 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                          className="rounded-full border border-neutral-200 dark:border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800">
                           Analyze
                         </Link>
                       </div>
@@ -487,16 +521,16 @@ function ProceduresContent() {
             </tbody>
           </table>
           {totalProcPages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50">
+            <div className="flex items-center justify-between px-4 py-2.5 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50">
               <span className="text-xs text-neutral-400">{procPage * PROC_PAGE_SIZE + 1}–{Math.min((procPage + 1) * PROC_PAGE_SIZE, filtered.length)} of {filtered.length} procedures</span>
               <div className="flex items-center gap-1.5">
                 <button onClick={() => setProcPage((p) => Math.max(0, p - 1))} disabled={procPage === 0}
-                  className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                  className="rounded-full px-3 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
                   ← Prev
                 </button>
                 <span className="text-xs text-neutral-500 px-2">{procPage + 1} / {totalProcPages}</span>
                 <button onClick={() => setProcPage((p) => Math.min(totalProcPages - 1, p + 1))} disabled={procPage >= totalProcPages - 1}
-                  className="rounded px-2.5 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                  className="rounded-full px-3 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">
                   Next →
                 </button>
               </div>
@@ -504,6 +538,8 @@ function ProceduresContent() {
           )}
         </div>
       )}
+
+      </div>
 
       {/* ── Quick-run variables modal ──────────────────────────── */}
       {showVarsModal && quickRunProc && (() => {
@@ -530,26 +566,26 @@ function ProceduresContent() {
           const borderCls = fieldErr
             ? "border-red-400 focus:border-red-500"
             : showDefault && isUsingDefault
-              ? "border-gray-200 bg-gray-50 focus:border-primary-500 focus:bg-white"
-              : "border-gray-300 focus:border-primary-500";
+              ? "border-neutral-200 bg-neutral-50 focus:border-sky-500 focus:bg-white"
+              : "border-neutral-300 focus:border-sky-500";
           return (
             <div key={key}>
               <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
-                <label className="text-xs font-semibold text-gray-700">
+                <label className="text-xs font-semibold text-neutral-700">
                   {key}{isRequired && <span className="ml-0.5 text-red-500">*</span>}
                 </label>
-                {meta?.type && <span className="text-[10px] uppercase tracking-wide text-gray-400">{meta.type as string}</span>}
+                {meta?.type && <span className="text-[10px] uppercase tracking-wide text-neutral-400">{meta.type as string}</span>}
                 {isSensitive && <span className="text-[10px] text-yellow-600 font-medium">🔒 sensitive</span>}
                 {showDefault && hasDefault && !isSensitive && (
-                  <span className="ml-auto text-[10px] text-gray-400">
+                  <span className="ml-auto text-[10px] text-neutral-400">
                     default: <code className="font-mono">{String(meta.default)}</code>
                     {!isUsingDefault && (
-                      <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-primary-600 hover:underline">restore</button>
+                      <button type="button" onClick={() => handleVarChange(key, String(meta.default), meta)} className="ml-1 text-sky-600 hover:underline">restore</button>
                     )}
                   </span>
                 )}
               </div>
-              {meta?.description && <p className="mb-1.5 text-xs text-gray-400">{meta.description as string}</p>}
+              {meta?.description && <p className="mb-1.5 text-xs text-neutral-400">{meta.description as string}</p>}
               {allowed ? (
                 <select aria-label={key} value={currentVal} onChange={(e) => handleVarChange(key, e.target.value, meta)} className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}>
                   <option value="">— select —</option>
@@ -574,14 +610,14 @@ function ProceduresContent() {
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-            <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-              <h3 className="mb-0.5 text-base font-semibold text-gray-900">
+            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+              <h3 className="mb-0.5 text-base font-semibold text-neutral-900">
                 {mustFillEntries.length > 0
                   ? `${mustFillEntries.length} required field${mustFillEntries.length !== 1 ? "s" : ""} need input`
                   : "Review Run Variables"}
               </h3>
-              <p className="mb-1 text-xs text-gray-500 font-medium">{quickRunProc.name}</p>
-              <p className="mb-4 text-xs text-gray-400">
+              <p className="mb-1 text-xs font-medium text-neutral-500">{quickRunProc.name}</p>
+              <p className="mb-4 text-xs text-neutral-400">
                 {mustFillEntries.length > 0
                   ? "Fill in the required fields before starting."
                   : "All fields have default values. Override any before starting."}
@@ -591,7 +627,7 @@ function ProceduresContent() {
                 {overrideEntries.length > 0 && (
                   mustFillEntries.length > 0 ? (
                     <details className="group">
-                      <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
+                      <summary className="flex cursor-pointer select-none list-none items-center gap-1 py-2 text-xs font-medium text-neutral-500 hover:text-neutral-700">
                         <span className="inline-block transition-transform group-open:rotate-90">▶</span>
                         {`${overrideEntries.length} field${overrideEntries.length !== 1 ? "s" : ""} have defaults — expand to override`}
                       </summary>
@@ -631,13 +667,13 @@ function ProceduresContent() {
                     void doQuickCreateRun(parsed);
                   }}
                   disabled={runCreating || Object.keys(varsErrors).length > 0}
-                  className="flex-1 rounded-lg bg-green-600 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                  className="flex-1 rounded-full bg-green-600 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                 >
                   {runCreating ? "Starting…" : "Start Run"}
                 </button>
                 <button
                   onClick={() => setShowVarsModal(false)}
-                  className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="flex-1 rounded-full border border-neutral-300 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100"
                 >
                   Cancel
                 </button>

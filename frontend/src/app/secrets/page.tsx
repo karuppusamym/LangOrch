@@ -31,6 +31,7 @@ export default function SecretsPage() {
   const [fDescription, setFDesc]    = useState("");
   const [fProvider, setFProvider]   = useState("db");
   const [fTags, setFTags]           = useState("");
+  const taggedCount = secrets.filter((secret) => (secret.tags ?? []).length > 0).length;
 
   async function reload() {
     try {
@@ -101,21 +102,27 @@ export default function SecretsPage() {
   );
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Secrets</h1>
-          <p className="text-neutral-500 dark:text-neutral-400 mt-1">Manage encrypted secrets and external vault references</p>
+    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
+      <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Secrets</h1>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Manage encrypted secrets and external vault references.</p>
+          </div>
+          <div className="shrink-0 flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="rounded-full border border-neutral-200 px-2.5 py-1 dark:border-neutral-700">Secrets {secrets.length}</span>
+            <span className="rounded-full border border-neutral-200 px-2.5 py-1 dark:border-neutral-700">Tagged {taggedCount}</span>
+            <button onClick={openCreate} className="flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+              Add Secret
+            </button>
+          </div>
         </div>
-        <button onClick={openCreate} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors flex items-center gap-2">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-          Add Secret
-        </button>
-      </div>
+      </section>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {Object.entries(PROVIDER_META).map(([key, meta]) => (
-          <div key={key} className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3 flex flex-col gap-1">
+          <div key={key} className="flex flex-col gap-1 rounded-2xl border border-neutral-200 bg-white p-3.5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
             <span className={"self-start rounded-full px-2 py-0.5 text-xs font-medium " + meta.color}>{meta.label}</span>
             <p className="text-xl font-bold text-neutral-900 dark:text-neutral-100">
               {secrets.filter((s) => (s.provider_hint ?? "db") === key).length}
@@ -124,38 +131,38 @@ export default function SecretsPage() {
         ))}
       </div>
 
-      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
+      <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search secrets..."
-            className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+            className="w-full rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 pl-9 pr-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none" />
         </div>
       </div>
 
       {loading ? (
         <div className="flex justify-center py-16"><div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" /></div>
       ) : (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm">
+        <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
           <table className="w-full text-sm">
             <thead className="bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
               <tr className="text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                <th className="px-5 py-3">Name</th>
-                <th className="px-5 py-3">Provider</th>
-                <th className="px-5 py-3">Description</th>
-                <th className="px-5 py-3">Tags</th>
-                <th className="px-5 py-3">Created By</th>
-                <th className="px-5 py-3">Updated</th>
-                <th className="px-5 py-3 text-right">Actions</th>
+                <th className="px-4 py-2.5">Name</th>
+                <th className="px-4 py-2.5">Provider</th>
+                <th className="px-4 py-2.5">Description</th>
+                <th className="px-4 py-2.5">Tags</th>
+                <th className="px-4 py-2.5">Created By</th>
+                <th className="px-4 py-2.5">Updated</th>
+                <th className="px-4 py-2.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {filtered.length === 0 ? (
-                <tr><td colSpan={7} className="px-5 py-12 text-center text-neutral-400">No secrets found.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-12 text-center text-neutral-400">No secrets found.</td></tr>
               ) : filtered.map((s) => {
                 const p = PROVIDER_META[s.provider_hint ?? "db"] ?? PROVIDER_META.db;
                 return (
                   <tr key={s.secret_id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <svg className="w-4 h-4 text-neutral-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
@@ -163,19 +170,19 @@ export default function SecretsPage() {
                         <span className="font-mono font-medium text-neutral-900 dark:text-neutral-100">{s.name}</span>
                       </div>
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3">
                       <span className={"rounded-full px-2 py-0.5 text-xs font-medium " + p.color}>{p.label}</span>
                     </td>
-                    <td className="px-5 py-3 text-neutral-500 dark:text-neutral-400 max-w-xs truncate">{s.description ?? ""}</td>
-                    <td className="px-5 py-3">
+                    <td className="max-w-xs truncate px-4 py-3 text-neutral-500 dark:text-neutral-400">{s.description ?? ""}</td>
+                    <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
                         {(s.tags ?? []).length === 0 ? <span className="text-neutral-300 dark:text-neutral-600"></span> :
                           (s.tags ?? []).map((t) => <span key={t} className="rounded px-1.5 py-0.5 text-xs bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">{t}</span>)}
                       </div>
                     </td>
-                    <td className="px-5 py-3 text-xs text-neutral-400">{s.created_by ?? ""}</td>
-                    <td className="px-5 py-3 text-xs text-neutral-400">{new Date(s.updated_at).toLocaleDateString()}</td>
-                    <td className="px-5 py-3 text-right">
+                    <td className="px-4 py-3 text-xs text-neutral-400">{s.created_by ?? ""}</td>
+                    <td className="px-4 py-3 text-xs text-neutral-400">{new Date(s.updated_at).toLocaleDateString()}</td>
+                    <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button onClick={() => openEdit(s)} className="rounded-md px-2.5 py-1 text-xs font-medium bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors">Edit</button>
                         <button onClick={() => { setModal({ type: "delete", secret: s }); setError(""); }} className="rounded-md px-2.5 py-1 text-xs font-medium bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors">Delete</button>
@@ -207,13 +214,13 @@ export default function SecretsPage() {
               <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
                 {modal.type === "create" ? "Value *" : "New Value (blank = unchanged)"}
               </label>
-              <input type="password" value={fValue} onChange={(e) => setFValue(e.target.value)} placeholder=""
+              <input type="password" value={fValue} onChange={(e) => setFValue(e.target.value)} title="Secret value" aria-label="Secret value"
                 className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
               <p className="text-xs text-neutral-400 mt-1">Values are encrypted at rest with AES-Fernet. Never stored in plaintext.</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Provider</label>
-              <select value={fProvider} onChange={(e) => setFProvider(e.target.value)}
+              <select value={fProvider} onChange={(e) => setFProvider(e.target.value)} title="Secret provider" aria-label="Secret provider"
                 className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
                 {Object.entries(PROVIDER_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
               </select>

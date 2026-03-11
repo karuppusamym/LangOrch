@@ -951,6 +951,34 @@ def execute_loop(node: IRNode, state: OrchestratorState) -> OrchestratorState:
     iterator = vs.get(payload.iterator_var, [])
     index = state.get("loop_index", 0)
 
+    if not isinstance(iterator, list):
+        if isinstance(iterator, tuple):
+            iterator = list(iterator)
+        elif iterator is None:
+            iterator = []
+        else:
+            return {
+                **state,
+                "error": {
+                    "message": f"Loop iterator '{payload.iterator_var}' must resolve to a list or tuple",
+                    "node_id": node.node_id,
+                },
+                "terminal_status": "failed",
+                "next_node_id": None,
+                "current_node_id": node.node_id,
+            }  # type: ignore
+
+    max_iterations = getattr(payload, "max_iterations", None)
+    if max_iterations is not None and index >= max_iterations:
+        return {
+            **state,
+            "vars": vs,
+            "loop_index": 0,
+            "loop_item": None,
+            "next_node_id": payload.next_node_id,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
     if index < len(iterator):
         item = iterator[index]
         vs[payload.iterator_variable] = item
@@ -984,6 +1012,147 @@ def execute_loop(node: IRNode, state: OrchestratorState) -> OrchestratorState:
         **state,
         "vars": vs,
         "loop_index": 0,
+        "loop_item": None,
+        "next_node_id": payload.next_node_id,
+        "current_node_id": node.node_id,
+    }  # type: ignore
+
+
+async def execute_loop_runtime(
+    node: IRNode,
+    state: OrchestratorState,
+    nodes: dict[str, IRNode],
+    db_factory: Callable | None = None,
+) -> OrchestratorState:
+    """Execute a loop node end-to-end, including repeated body execution."""
+    payload: IRLoopPayload = node.payload
+    stepped_state = execute_loop(node, state)
+
+    if stepped_state.get("error") or stepped_state.get("next_node_id") != payload.body_node_id:
+        return stepped_state
+
+    if not payload.body_node_id or payload.body_node_id not in nodes:
+        return {
+            **state,
+            "error": {
+                "message": f"Loop body_node '{payload.body_node_id}' not found",
+                "node_id": node.node_id,
+            },
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    iterator = stepped_state.get("vars", {}).get(payload.iterator_var, [])
+    if isinstance(iterator, tuple):
+        iterator = list(iterator)
+    if not isinstance(iterator, list):
+        iterator = []
+
+    max_iterations = getattr(payload, "max_iterations", None)
+    max_iterations = max_iterations if max_iterations is not None else len(iterator)
+    collect_results: list[Any] = []
+    collect_variable = getattr(payload, "collect_variable", None)
+    continue_on_error = bool(getattr(payload, "continue_on_error", False))
+
+    if collect_variable:
+        existing_results = stepped_state.get("vars", {}).get(collect_variable)
+        if isinstance(existing_results, list):
+            collect_results = list(existing_results)
+
+    current_state: OrchestratorState = stepped_state
+    current_index = current_state.get("loop_index", 0)
+
+    while current_index < len(iterator) and current_index < max_iterations:
+        body_state: OrchestratorState = {
+            **current_state,
+            "current_node_id": payload.body_node_id,
+            "next_node_id": payload.body_node_id,
+            "error": None,
+            "terminal_status": None,
+        }
+
+        body_final = await _execute_branch_path(
+            start_node_id=payload.body_node_id,
+            join_node_id=node.node_id,
+            state=body_state,
+            nodes=nodes,
+            db_factory=db_factory,
+        )
+
+        if body_final.get("terminal_status") == "awaiting_approval":
+            if collect_variable:
+                pending_vars = dict(body_final.get("vars", {}))
+                pending_vars[collect_variable] = list(collect_results)
+                body_final = {**body_final, "vars": pending_vars}
+            return {
+                **body_final,
+                "current_node_id": node.node_id,
+                "next_node_id": None,
+            }  # type: ignore
+
+        if body_final.get("error"):
+            if not continue_on_error:
+                return {
+                    **body_final,
+                    "error": {
+                        "message": f"Loop iteration {current_index} failed",
+                        "node_id": node.node_id,
+                        "iteration": current_index,
+                        "loop_error": body_final.get("error"),
+                    },
+                    "terminal_status": "failed",
+                    "current_node_id": node.node_id,
+                    "next_node_id": None,
+                }  # type: ignore
+
+            current_state = {
+                **body_final,
+                "error": None,
+                "terminal_status": None,
+                "current_node_id": node.node_id,
+                "next_node_id": None,
+            }
+        else:
+            current_state = {
+                **body_final,
+                "error": None,
+                "terminal_status": None,
+                "current_node_id": node.node_id,
+                "next_node_id": None,
+            }
+
+            if collect_variable:
+                current_vars = dict(current_state.get("vars", {}))
+                collect_results.append(current_vars.get(payload.iterator_variable, iterator[current_index]))
+                current_vars[collect_variable] = list(collect_results)
+                current_state["vars"] = current_vars
+
+        current_index += 1
+        if current_index >= len(iterator) or current_index >= max_iterations:
+            break
+
+        current_state = execute_loop(
+            node,
+            {
+                **current_state,
+                "loop_index": current_index,
+                "loop_item": None,
+            },
+        )
+        if current_state.get("error") or current_state.get("next_node_id") != payload.body_node_id:
+            return current_state
+
+    final_vars = dict(current_state.get("vars", {}))
+    if collect_variable:
+        final_vars[collect_variable] = list(collect_results)
+
+    return {
+        **current_state,
+        "vars": final_vars,
+        "loop_index": 0,
+        "loop_item": None,
+        "loop_results": list(collect_results) if collect_variable else current_state.get("loop_results"),
         "next_node_id": payload.next_node_id,
         "current_node_id": node.node_id,
     }  # type: ignore
@@ -1023,7 +1192,7 @@ async def execute_parallel(
     wait_strategy = (payload.wait_strategy or "all").lower()
     branch_failure = (payload.branch_failure or "continue").lower()
 
-    for branch in payload.branches:
+    async def _run_branch(branch: Any) -> tuple[str, OrchestratorState]:
         branch_state: OrchestratorState = {
             **state,
             "vars": dict(base_vars),
@@ -1041,9 +1210,28 @@ async def execute_parallel(
             db_factory=db_factory,
         )
 
-        branch_deltas[branch.branch_id] = _compute_var_delta(base_vars, branch_final.get("vars", {}))
+        return branch.branch_id, branch_final
+
+    tasks = {
+        branch.branch_id: asyncio.create_task(_run_branch(branch))
+        for branch in payload.branches
+    }
+
+    async def _cancel_pending(exclude_branch_id: str | None = None) -> None:
+        pending = [
+            task for branch_id, task in tasks.items()
+            if branch_id != exclude_branch_id and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _process_branch_result(branch_id: str, branch_final: OrchestratorState) -> OrchestratorState | None:
+        branch_deltas[branch_id] = _compute_var_delta(base_vars, branch_final.get("vars", {}))
 
         if branch_final.get("terminal_status") == "awaiting_approval":
+            await _cancel_pending(exclude_branch_id=branch_id)
             return {
                 **branch_final,
                 "current_node_id": node.node_id,
@@ -1051,13 +1239,14 @@ async def execute_parallel(
             }  # type: ignore
 
         if branch_final.get("error"):
-            branch_errors[branch.branch_id] = branch_final.get("error")
+            branch_errors[branch_id] = branch_final.get("error")
             if branch_failure == "fail":
+                await _cancel_pending(exclude_branch_id=branch_id)
                 return {
                     **state,
                     "vars": base_vars,
                     "error": {
-                        "message": f"Parallel branch '{branch.branch_id}' failed",
+                        "message": f"Parallel branch '{branch_id}' failed",
                         "node_id": node.node_id,
                         "branch_error": branch_final.get("error"),
                     },
@@ -1065,9 +1254,59 @@ async def execute_parallel(
                     "next_node_id": None,
                     "current_node_id": node.node_id,
                 }  # type: ignore
+            return None
 
-        if wait_strategy == "any" and not branch_final.get("error"):
-            break
+        if wait_strategy == "any":
+            await _cancel_pending(exclude_branch_id=branch_id)
+            merged_vars = dict(base_vars)
+            for delta in branch_deltas.values():
+                merged_vars.update(delta)
+            merged_vars["parallel_results"] = {
+                "branches": branch_deltas,
+                "errors": branch_errors,
+            }
+            return {
+                **state,
+                "vars": merged_vars,
+                "next_node_id": payload.next_node_id,
+                "current_node_id": node.node_id,
+            }  # type: ignore
+
+        return None
+
+    if wait_strategy == "any":
+        pending_tasks = set(tasks.values())
+        while pending_tasks:
+            done, pending_tasks = await asyncio.wait(
+                pending_tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for completed in done:
+                branch_id, branch_final = await completed
+                early_result = await _process_branch_result(branch_id, branch_final)
+                if early_result is not None:
+                    return early_result
+
+        # All branches completed without a successful fast-path.
+        merged_vars = dict(base_vars)
+        for delta in branch_deltas.values():
+            merged_vars.update(delta)
+        merged_vars["parallel_results"] = {
+            "branches": branch_deltas,
+            "errors": branch_errors,
+        }
+        return {
+            **state,
+            "vars": merged_vars,
+            "next_node_id": payload.next_node_id,
+            "current_node_id": node.node_id,
+        }  # type: ignore
+
+    branch_results = await asyncio.gather(*tasks.values())
+    for branch_id, branch_final in branch_results:
+        early_result = await _process_branch_result(branch_id, branch_final)
+        if early_result is not None:
+            return early_result
 
     merged_vars = dict(base_vars)
     for delta in branch_deltas.values():
@@ -1112,12 +1351,7 @@ def execute_processing(node: IRNode, state: OrchestratorState) -> OrchestratorSt
     payload: IRProcessingPayload = node.payload
     vs = _build_template_vars(state)
 
-    for op in payload.operations:
-        rendered = render_template_dict(op.params, vs)
-        result = _execute_internal_action(op.action, rendered, vs)
-        output_var = rendered.get("output_variable")
-        if output_var and result is not None:
-            vs[output_var] = result
+    _apply_processing_ops(payload.operations, vs)
 
     return {**state, "vars": vs, "next_node_id": payload.next_node_id, "current_node_id": node.node_id}  # type: ignore
 
@@ -1169,6 +1403,10 @@ def execute_human_approval(node: IRNode, state: OrchestratorState) -> Orchestrat
         "decision_type": payload.decision_type,
         "options": payload.options,
         "context_data": payload.context_data,
+        "timeout_ms": getattr(payload, "timeout_ms", None),
+        "timeout_action": getattr(payload, "timeout_action", None),
+        "approval_level": getattr(payload, "approval_level", None),
+        "escalation_contact": getattr(payload, "escalation_contact", None),
     }
 
     return {
@@ -1404,6 +1642,25 @@ async def execute_subflow(
     payload: IRSubflowPayload = node.payload
     vs = _build_template_vars(state)
     run_id = state.get("run_id", "")
+    current_procedure_id = state.get("procedure_id")
+    subflow_stack = list(state.get("_subflow_stack", []))
+
+    if payload.procedure_id and (
+        payload.procedure_id == current_procedure_id or payload.procedure_id in subflow_stack
+    ):
+        return {
+            **state,
+            "error": {
+                "message": (
+                    f"Recursive subflow detected: '{payload.procedure_id}' is already in the call stack"
+                ),
+                "node_id": node.node_id,
+                "subflow_stack": subflow_stack,
+            },
+            "terminal_status": "failed",
+            "next_node_id": None,
+            "current_node_id": node.node_id,
+        }  # type: ignore
 
     if not db_factory:
         return {
@@ -1488,6 +1745,10 @@ async def execute_subflow(
         "telemetry": {},
         "artifacts": [],
         "terminal_status": None,
+        "_subflow_stack": [
+            *subflow_stack,
+            *([current_procedure_id] if current_procedure_id else []),
+        ],
     }
 
     subflow_thread_id = f"{run_id}:subflow:{node.node_id}:{child_ir.procedure_id}:{child_ir.version}"
@@ -1559,8 +1820,24 @@ async def execute_subflow(
 def execute_terminate(node: IRNode, state: OrchestratorState) -> OrchestratorState:
     """Mark run as terminated."""
     payload: IRTerminatePayload = node.payload
+    vs = _build_template_vars(state)
+
+    _apply_processing_ops(payload.cleanup_actions, vs)
+    if payload.status == "failed":
+        _apply_processing_ops(payload.error_actions, vs)
+
+    for output_key, mapping in payload.outputs.items():
+        if isinstance(mapping, str):
+            if "{{" in mapping and "}}" in mapping:
+                vs[output_key] = render_template_str(mapping, vs)
+            else:
+                vs[output_key] = vs.get(mapping, mapping)
+        else:
+            vs[output_key] = mapping
+
     return {
         **state,
+        "vars": vs,
         "terminal_status": payload.status,
         "next_node_id": None,
         "current_node_id": node.node_id,
@@ -1749,10 +2026,10 @@ async def _execute_node(
         return await execute_sequence(node, state, db_factory=db_factory)
     if node.type == "parallel":
         return await execute_parallel(node, state, db_factory=db_factory, nodes=nodes)
+    if node.type == "loop":
+        return await execute_loop_runtime(node, state, nodes=nodes, db_factory=db_factory)
     if node.type == "logic":
         return execute_logic(node, state)
-    if node.type == "loop":
-        return execute_loop(node, state)
     if node.type == "verification":
         return execute_verification(node, state)
     if node.type == "processing":
@@ -1762,7 +2039,9 @@ async def _execute_node(
     if node.type == "human_approval":
         return execute_human_approval(node, state)
     if node.type == "llm_action":
-        return execute_llm_action(node, state)
+        return await execute_llm_action(node, state, db_factory=db_factory)
+    if node.type == "subflow":
+        return await execute_subflow(node, state, db_factory=db_factory)
     if node.type == "terminate":
         return execute_terminate(node, state)
     return {
@@ -1780,6 +2059,15 @@ def _compute_var_delta(base_vars: dict[str, Any], branch_vars: dict[str, Any]) -
         if key not in base_vars or base_vars.get(key) != value:
             delta[key] = value
     return delta
+
+
+def _apply_processing_ops(operations: list[IRProcessingOp], vars_ctx: dict[str, Any]) -> None:
+    for op in operations:
+        rendered = render_template_dict(op.params, vars_ctx)
+        result = _execute_internal_action(op.action, rendered, vars_ctx)
+        output_var = rendered.get("output_variable")
+        if output_var and result is not None:
+            vars_ctx[output_var] = result
 
 
 def _extract_artifacts_from_result(result: Any) -> list[dict[str, Any]]:

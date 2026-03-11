@@ -106,6 +106,42 @@ class TestProceduresAPI:
         resp = await client.get("/api/procedures/nonexistent/1.0.0")
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_get_procedure_detail_does_not_mutate_text_backed_json(self, client):
+        pid = f"detail_test_{_uid()}"
+        ckp = {
+            "procedure_id": pid,
+            "version": "1.0.0",
+            "description": "Procedure detail regression",
+            "global_config": {"max_retries": 2, "retry_delay_ms": 500},
+            "variables_schema": {"greeting": {"type": "string", "default": "hello"}},
+            "workflow_graph": {
+                "start_node": "start",
+                "nodes": {
+                    "start": {
+                        "type": "sequence",
+                        "next_node": "end",
+                        "steps": [
+                            {"step_id": "log_hello", "action": "log", "message": "Hello from test"}
+                        ],
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+
+        import_resp = await client.post("/api/procedures", json={"ckp_json": ckp})
+        assert import_resp.status_code == 201
+
+        detail_resp = await client.get(f"/api/procedures/{pid}/1.0.0")
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["procedure_id"] == pid
+        assert detail["ckp_json"]["workflow_graph"]["start_node"] == "start"
+
+        second_detail_resp = await client.get(f"/api/procedures/{pid}/1.0.0")
+        assert second_detail_resp.status_code == 200
+
 
 class TestRunsAPI:
     @pytest.mark.asyncio
@@ -214,6 +250,52 @@ class TestCreateAndRunWorkflow:
         resp = await client.post("/api/runs", json=run_body)
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_list_run_events_does_not_mutate_text_backed_payloads(self, client):
+        pid = f"events_test_{_uid()}"
+        ckp = {
+            "procedure_id": pid,
+            "version": "1.0.0",
+            "global_config": {},
+            "variables_schema": {},
+            "workflow_graph": {
+                "start_node": "start",
+                "nodes": {
+                    "start": {
+                        "type": "sequence",
+                        "next_node": "end",
+                        "steps": [
+                            {"step_id": "s1", "action": "log", "message": "test"}
+                        ],
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+
+        import_resp = await client.post("/api/procedures", json={"ckp_json": ckp})
+        assert import_resp.status_code == 201
+
+        run_resp = await client.post(
+            "/api/runs",
+            json={
+                "procedure_id": pid,
+                "procedure_version": "1.0.0",
+                "input_vars": {},
+            },
+        )
+        assert run_resp.status_code == 201
+        run_id = run_resp.json()["run_id"]
+
+        events_resp = await client.get(f"/api/runs/{run_id}/events")
+        assert events_resp.status_code == 200
+        events = events_resp.json()
+        assert len(events) > 0
+        assert any(event["event_type"] == "run_created" for event in events)
+
+        second_events_resp = await client.get(f"/api/runs/{run_id}/events")
+        assert second_events_resp.status_code == 200
+
 
 class TestGraphAPI:
     @pytest.mark.asyncio
@@ -254,3 +336,112 @@ class TestGraphAPI:
     async def test_get_graph_not_found(self, client):
         resp = await client.get("/api/procedures/nonexistent/1.0.0/graph")
         assert resp.status_code == 404
+
+
+class TestProcedureExplainAPI:
+    @pytest.mark.asyncio
+    async def test_explain_with_ckp_override(self, client):
+        pid = f"explain_override_{_uid()}"
+        ckp = {
+            "procedure_id": pid,
+            "version": "1.0.0",
+            "global_config": {},
+            "variables_schema": {},
+            "workflow_graph": {
+                "start_node": "start",
+                "nodes": {
+                    "start": {"type": "sequence", "next_node": "end", "steps": []},
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        await client.post("/api/procedures", json={"ckp_json": ckp})
+
+        override_ckp = {
+            **ckp,
+            "workflow_graph": {
+                "start_node": "start",
+                "nodes": {
+                    "start": {"type": "sequence", "next_node": "review", "steps": []},
+                    "review": {
+                        "type": "human_approval",
+                        "prompt": "Approve?",
+                        "on_approve": "end",
+                        "on_reject": "end",
+                    },
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+
+        resp = await client.post(
+            f"/api/procedures/{pid}/1.0.0/explain",
+            json={"ckp_json": override_ckp},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        node_ids = [node["id"] for node in data["nodes"]]
+        assert "review" in node_ids
+        assert any(edge["from"] == "start" and edge["to"] == "review" for edge in data["edges"])
+
+
+class TestProcedureBuilderDraftAPI:
+    @pytest.mark.asyncio
+    async def test_get_and_update_builder_draft(self, client):
+        pid = f"builder_draft_{_uid()}"
+        ckp = {
+            "procedure_id": pid,
+            "version": "1.0.0",
+            "global_config": {},
+            "variables_schema": {},
+            "workflow_graph": {
+                "start_node": "start",
+                "nodes": {
+                    "start": {"type": "sequence", "next_node": "end", "steps": []},
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+        await client.post("/api/procedures", json={"ckp_json": ckp})
+
+        get_initial = await client.get(f"/api/procedures/{pid}/1.0.0/builder-draft")
+        assert get_initial.status_code == 200
+        assert get_initial.json()["draft"] is None
+
+        draft = {
+            "procedureId": pid,
+            "procedureVersion": "1.0.0",
+            "startNodeId": "start",
+            "nodes": [
+                {
+                    "id": "start",
+                    "kind": "sequence",
+                    "title": "Start",
+                    "position": {"x": 0, "y": 0},
+                    "config": {},
+                    "transitions": [{"key": "next", "targetNodeId": "end"}],
+                },
+                {
+                    "id": "end",
+                    "kind": "terminate",
+                    "title": "End",
+                    "position": {"x": 240, "y": 0},
+                    "config": {"status": "success"},
+                    "transitions": [],
+                },
+            ],
+        }
+        put_resp = await client.put(
+            f"/api/procedures/{pid}/1.0.0/builder-draft",
+            json={"draft": draft},
+        )
+        assert put_resp.status_code == 200
+        put_data = put_resp.json()
+        assert put_data["draft"] == draft
+        assert put_data["updated_at"] is not None
+
+        get_saved = await client.get(f"/api/procedures/{pid}/1.0.0/builder-draft")
+        assert get_saved.status_code == 200
+        saved_data = get_saved.json()
+        assert saved_data["draft"] == draft
+        assert saved_data["updated_at"] is not None

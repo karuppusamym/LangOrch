@@ -42,9 +42,18 @@ export interface Procedure {
 
 export interface ProcedureDetail extends Procedure {
   ckp_json: Record<string, unknown>;
+  builder_draft: Record<string, unknown> | null;
+  builder_draft_updated_at: string | null;
   provenance: Record<string, unknown> | null;
   retrieval_metadata: Record<string, unknown> | null;
   trigger: Record<string, unknown> | null;
+}
+
+export interface ProcedureBuilderDraft {
+  procedure_id: string;
+  version: string;
+  draft: Record<string, unknown> | null;
+  updated_at: string | null;
 }
 
 export interface ProcedurePromoteResponse {

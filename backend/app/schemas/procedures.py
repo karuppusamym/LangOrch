@@ -20,6 +20,12 @@ class ProcedureUpdate(BaseModel):
     ckp_json: dict[str, Any]
 
 
+class ProcedureBuilderDraftUpdate(BaseModel):
+    """Body for PUT /api/procedures/{id}/{version}/builder-draft."""
+
+    draft: dict[str, Any]
+
+
 class ProcedureOut(BaseModel):
     id: int
     procedure_id: str
@@ -40,30 +46,62 @@ class ProcedureOut(BaseModel):
 
 class ProcedureDetail(ProcedureOut):
     ckp_json: dict[str, Any]
+    builder_draft: dict[str, Any] | None = None
+    builder_draft_updated_at: datetime | None = None
     provenance: dict[str, Any] | None = None
     retrieval_metadata: dict[str, Any] | None = None
     trigger: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
+    @staticmethod
+    def _parse_json_field(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
+
     @model_validator(mode="before")
     @classmethod
     def _parse_ckp(cls, data: Any) -> Any:
-        if hasattr(data, "ckp_json") and isinstance(data.ckp_json, str):
-            data.ckp_json = json.loads(data.ckp_json)
-        if hasattr(data, "provenance_json") and isinstance(data.provenance_json, str):
-            data.provenance = json.loads(data.provenance_json)
-        elif hasattr(data, "provenance_json") and data.provenance_json is None:
-            data.provenance = None
-        if hasattr(data, "retrieval_metadata_json") and isinstance(data.retrieval_metadata_json, str):
-            data.retrieval_metadata = json.loads(data.retrieval_metadata_json)
-        elif hasattr(data, "retrieval_metadata_json") and data.retrieval_metadata_json is None:
-            data.retrieval_metadata = None
-        if hasattr(data, "trigger_config_json") and isinstance(data.trigger_config_json, str):
-            data.trigger = json.loads(data.trigger_config_json)
-        elif hasattr(data, "trigger_config_json"):
-            data.trigger = None
-        return data
+        if isinstance(data, dict):
+            payload = dict(data)
+        else:
+            payload = {
+                field_name: getattr(data, field_name)
+                for field_name in ProcedureOut.model_fields
+                if hasattr(data, field_name)
+            }
+            if hasattr(data, "builder_draft_updated_at"):
+                payload["builder_draft_updated_at"] = data.builder_draft_updated_at
+
+        payload["ckp_json"] = cls._parse_json_field(payload.get("ckp_json", getattr(data, "ckp_json", None))) or {}
+        payload["builder_draft"] = cls._parse_json_field(
+            payload.get("builder_draft", payload.get("builder_draft_json", getattr(data, "builder_draft_json", None)))
+        )
+        payload["provenance"] = cls._parse_json_field(
+            payload.get("provenance", payload.get("provenance_json", getattr(data, "provenance_json", None)))
+        )
+        payload["retrieval_metadata"] = cls._parse_json_field(
+            payload.get(
+                "retrieval_metadata",
+                payload.get("retrieval_metadata_json", getattr(data, "retrieval_metadata_json", None)),
+            )
+        )
+        payload["trigger"] = cls._parse_json_field(
+            payload.get("trigger", payload.get("trigger_config_json", getattr(data, "trigger_config_json", None)))
+        )
+        return payload
+
+
+class ProcedureBuilderDraftOut(BaseModel):
+    procedure_id: str
+    version: str
+    draft: dict[str, Any] | None = None
+    updated_at: datetime | None = None
 
 
 class ProcedurePromoteRequest(BaseModel):
