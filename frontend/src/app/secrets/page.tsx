@@ -107,7 +107,7 @@ export default function SecretsPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Secrets</h1>
-            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Manage encrypted secrets and external vault references.</p>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Manage database-backed secrets and provider metadata. Workflow runtime providers are configured separately in procedure secrets settings.</p>
           </div>
           <div className="shrink-0 flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
             <span className="rounded-full border border-neutral-200 px-2.5 py-1 dark:border-neutral-700">Secrets {secrets.length}</span>
@@ -147,7 +147,7 @@ export default function SecretsPage() {
             <thead className="bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
               <tr className="text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
                 <th className="px-4 py-2.5">Name</th>
-                <th className="px-4 py-2.5">Provider</th>
+                <th className="px-4 py-2.5">Provider Hint</th>
                 <th className="px-4 py-2.5">Description</th>
                 <th className="px-4 py-2.5">Tags</th>
                 <th className="px-4 py-2.5">Created By</th>
@@ -216,10 +216,10 @@ export default function SecretsPage() {
               </label>
               <input type="password" value={fValue} onChange={(e) => setFValue(e.target.value)} title="Secret value" aria-label="Secret value"
                 className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" />
-              <p className="text-xs text-neutral-400 mt-1">Values are encrypted at rest with AES-Fernet. Never stored in plaintext.</p>
+              <p className="text-xs text-neutral-400 mt-1">Database-backed values are encrypted at rest when the platform encryption key is configured.</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Provider</label>
+              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Provider Hint</label>
               <select value={fProvider} onChange={(e) => setFProvider(e.target.value)} title="Secret provider" aria-label="Secret provider"
                 className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
                 {Object.entries(PROVIDER_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}

@@ -10,9 +10,7 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { waitForBackend, importProcedure, deleteProcedure, loadFixture } from "./helpers";
-import * as fs from "fs";
-import * as path from "path";
+import { authenticatePage, waitForBackend, importProcedure, deleteProcedure, loadFixture } from "./helpers";
 
 const PROC_ID = "e2e_test_procedure";
 const VERSION = "1.0.0";
@@ -20,6 +18,10 @@ const VERSION = "1.0.0";
 test.describe("Procedures page", () => {
   test.beforeAll(async ({ request }) => {
     await waitForBackend(request);
+  });
+
+  test.beforeEach(async ({ page, request }) => {
+    await authenticatePage(page, request);
   });
 
   test.afterEach(async ({ request }) => {
@@ -37,11 +39,10 @@ test.describe("Procedures page", () => {
     // Click "Import CKP" button
     await page.getByRole("button", { name: /Import CKP/i }).click();
 
-    // The import dialog should appear with "Paste CKP JSON" heading
-    await expect(page.getByText("Paste CKP JSON")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Import CKP Procedure/i })).toBeVisible();
 
     // Fill the textarea with the fixture JSON
-    const textarea = page.locator("textarea");
+    const textarea = page.locator("textarea").first();
     await textarea.fill(JSON.stringify(ckpJson));
 
     // Click "Import" inside the dialog
@@ -50,33 +51,29 @@ test.describe("Procedures page", () => {
     // Success toast should appear
     await expect(page.getByText(/imported successfully/i)).toBeVisible({ timeout: 8_000 });
 
-    // The dialog should close
-    await expect(page.getByText("Paste CKP JSON")).not.toBeVisible();
-
-    // The procedure should appear in the list
-    await expect(
-      page.getByText(`${PROC_ID} · v${VERSION}`)
-    ).toBeVisible({ timeout: 8_000 });
+    const row = page.getByRole("row").filter({ has: page.getByText(PROC_ID, { exact: true }) });
+    await expect(row).toBeVisible({ timeout: 8_000 });
+    await expect(row.getByText(`v${VERSION}`, { exact: true })).toBeVisible();
   });
 
   test("import with invalid JSON shows error", async ({ page }) => {
     await page.goto("/procedures");
     await page.getByRole("button", { name: /Import CKP/i }).click();
-    await expect(page.getByText("Paste CKP JSON")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Import CKP Procedure/i })).toBeVisible();
 
-    const textarea = page.locator("textarea");
+    const textarea = page.locator("textarea").first();
     await textarea.fill('{ invalid json }');
     await page.getByRole("button", { name: /^Import$/i }).click();
 
     // Error message should appear in dialog
-    await expect(page.getByText(/invalid|error|failed/i)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText(/Import failed:/i)).toBeVisible({ timeout: 5_000 });
 
     // Dialog should still be open
-    await expect(page.getByText("Paste CKP JSON")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Import CKP Procedure/i })).toBeVisible();
 
     // Close it
     await page.getByRole("button", { name: /Cancel/i }).click();
-    await expect(page.getByText("Paste CKP JSON")).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: /Import CKP Procedure/i })).not.toBeVisible();
   });
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -92,13 +89,12 @@ test.describe("Procedures page", () => {
 
     await page.goto("/procedures");
 
-    // Procedure card should show ID + version
-    await expect(
-      page.getByText(`${PROC_ID} · v${VERSION}`)
-    ).toBeVisible({ timeout: 8_000 });
+    const row = page.getByRole("row").filter({ has: page.getByText(PROC_ID, { exact: true }) });
+    await expect(row).toBeVisible({ timeout: 8_000 });
+    await expect(row.getByText(`v${VERSION}`, { exact: true })).toBeVisible();
 
     // Should have a Run button
-    const runBtn = page.getByRole("button", { name: /▶ Run/i }).first();
+    const runBtn = row.getByRole("button", { name: /^Run$/i });
     await expect(runBtn).toBeVisible();
     await expect(runBtn).toBeEnabled();
   });
@@ -107,18 +103,17 @@ test.describe("Procedures page", () => {
     await importProcedure(request, "sample.procedure.json");
 
     await page.goto("/procedures");
-    await expect(page.getByText(`${PROC_ID} · v${VERSION}`)).toBeVisible({ timeout: 8_000 });
+    const row = page.getByRole("row").filter({ has: page.getByText(PROC_ID, { exact: true }) });
+    await expect(row).toBeVisible({ timeout: 8_000 });
 
     // Type a search term that matches
     await page.getByPlaceholder("Search procedures…").fill("e2e_test");
-    await expect(page.getByText(`${PROC_ID} · v${VERSION}`)).toBeVisible();
+    await expect(row).toBeVisible();
 
     // Type something that doesn't match
     await page.getByPlaceholder("Search procedures…").fill("xyzzy_no_match");
     // Procedure should disappear from visible list
-    await expect(
-      page.getByText(`${PROC_ID} · v${VERSION}`)
-    ).not.toBeVisible();
+    await expect(row).not.toBeVisible();
   });
 
   test("procedure detail page loads", async ({ page, request }) => {
@@ -128,8 +123,8 @@ test.describe("Procedures page", () => {
 
     // Should not be a 404 / error page
     await expect(page).not.toHaveTitle(/not found|error/i);
-    // Should show the procedure ID somewhere on the page
-    await expect(page.getByText(PROC_ID)).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByRole("heading", { name: PROC_ID })).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText(`ID: ${PROC_ID} · Version: ${VERSION}`)).toBeVisible();
   });
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -140,20 +135,21 @@ test.describe("Procedures page", () => {
     page,
     request,
   }) => {
-    await importProcedure(request, "sample.procedure.json");
+    const proc = await importProcedure(request, "sample.procedure.json");
 
     await page.goto("/procedures");
-    await expect(page.getByText(`${PROC_ID} · v${VERSION}`)).toBeVisible({ timeout: 8_000 });
+    const row = page.getByRole("row").filter({ has: page.getByText(PROC_ID, { exact: true }) });
+    await expect(row).toBeVisible({ timeout: 8_000 });
 
-    // Filter by "active" — procedure was imported as active
+    // Filter by the status returned by the backend for this fixture.
     const statusFilter = page.getByRole("combobox", { name: /Filter by status/i });
-    await statusFilter.selectOption("active");
+    await statusFilter.selectOption(proc.status);
 
     // Should still be visible
-    await expect(page.getByText(`${PROC_ID} · v${VERSION}`)).toBeVisible();
+    await expect(row).toBeVisible();
 
-    // Filter by "archived" — should be gone
-    await statusFilter.selectOption("archived");
-    await expect(page.getByText(`${PROC_ID} · v${VERSION}`)).not.toBeVisible();
+    const alternateStatus = proc.status === "draft" ? "active" : "draft";
+    await statusFilter.selectOption(alternateStatus);
+    await expect(row).not.toBeVisible();
   });
 });

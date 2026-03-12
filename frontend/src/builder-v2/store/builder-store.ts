@@ -6,6 +6,74 @@ const nodeDefinitionMap = Object.fromEntries(
   builderNodeBlueprints.map((definition) => [definition.kind, definition]),
 ) as Record<BuilderNodeKind, (typeof builderNodeBlueprints)[number]>;
 
+function normalizeLegacyProcessingConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const operations = config.operations;
+  if (Array.isArray(operations) && operations.length > 0) {
+    return { ...config };
+  }
+
+  const action = typeof config.action === "string" ? config.action.trim() : "";
+  if (!action) {
+    return { ...config };
+  }
+
+  const legacyInputMapping = config.input_mapping;
+  const legacyInputMappingText = config.inputMapping;
+  const legacyOutputMapping = config.output_mapping;
+  const legacyOutputMappingText = config.outputMapping;
+
+  let normalizedOperation: Record<string, unknown> = { action };
+
+  const mergeMapping = (value: unknown) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      normalizedOperation = { ...normalizedOperation, ...(value as Record<string, unknown>) };
+      return;
+    }
+    if (typeof value === "string" && value.trim()) {
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          normalizedOperation = { ...normalizedOperation, ...(parsed as Record<string, unknown>) };
+        }
+      } catch {
+        // Keep non-JSON strings untouched; they were never reliably executable.
+      }
+    }
+  };
+
+  mergeMapping(legacyInputMapping);
+  mergeMapping(legacyInputMappingText);
+  mergeMapping(legacyOutputMapping);
+  mergeMapping(legacyOutputMappingText);
+
+  const {
+    action: _legacyAction,
+    input_mapping: _legacyInputMapping,
+    inputMapping: _legacyInputMappingText,
+    output_mapping: _legacyOutputMapping,
+    outputMapping: _legacyOutputMappingText,
+    ...rest
+  } = config;
+
+  return {
+    ...rest,
+    operations: [normalizedOperation],
+  };
+}
+
+function normalizeLoadedNode(node: BuilderNodeDraft): BuilderNodeDraft {
+  const normalizedConfig = node.kind === "processing"
+    ? normalizeLegacyProcessingConfig(node.config)
+    : { ...node.config };
+
+  return {
+    ...node,
+    transitions: [...node.transitions],
+    config: normalizedConfig,
+    ui: node.ui ? { ...node.ui } : undefined,
+  };
+}
+
 export function createEmptyDraftDocument(overrides?: Partial<BuilderDraftDocument>): BuilderDraftDocument {
   return {
     procedureId: overrides?.procedureId ?? "reference-procedure",
@@ -168,6 +236,32 @@ export function autoLayoutDraft(draft: BuilderDraftDocument): BuilderDraftDocume
   };
 }
 
+export function duplicateDraftNode(
+  draft: BuilderDraftDocument,
+  sourceNodeId: string,
+  offset = { x: 48, y: 48 },
+): BuilderDraftDocument {
+  const source = draft.nodes.find((node) => node.id === sourceNodeId);
+  if (!source) return draft;
+
+  let nextIndex = draft.nodes.length + 1;
+  let newId = `${source.kind}_${nextIndex}`;
+  while (draft.nodes.some((node) => node.id === newId)) {
+    nextIndex += 1;
+    newId = `${source.kind}_${nextIndex}`;
+  }
+
+  const duplicate: BuilderNodeDraft = {
+    ...source,
+    id: newId,
+    title: `${source.title} (copy)`,
+    position: { x: source.position.x + offset.x, y: source.position.y + offset.y },
+    transitions: source.transitions.map((t) => ({ ...t, targetNodeId: null })),
+  };
+
+  return { ...draft, nodes: [...draft.nodes, duplicate] };
+}
+
 export function setDraftStartNode(draft: BuilderDraftDocument, nodeId: string): BuilderDraftDocument {
   return {
     ...draft,
@@ -178,11 +272,6 @@ export function setDraftStartNode(draft: BuilderDraftDocument, nodeId: string): 
 export function loadDraftDocument(draft: BuilderDraftDocument): BuilderDraftDocument {
   return {
     ...draft,
-    nodes: draft.nodes.map((node) => ({
-      ...node,
-      transitions: [...node.transitions],
-      config: { ...node.config },
-      ui: node.ui ? { ...node.ui } : undefined,
-    })),
+    nodes: draft.nodes.map((node) => normalizeLoadedNode(node)),
   };
 }

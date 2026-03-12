@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import hashlib
 import json
 import logging
@@ -9,7 +10,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, and_, update
+from sqlalchemy import select, and_, update, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compiler.ir import IRTrigger
@@ -140,6 +141,27 @@ async def list_trigger_registrations(
         stmt = stmt.where(TriggerRegistration.enabled.is_(True))
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_latest_trigger_for_procedure(
+    db: AsyncSession,
+    procedure_id: str,
+    *,
+    trigger_type: str | None = None,
+    enabled_only: bool = True,
+) -> TriggerRegistration | None:
+    stmt = select(TriggerRegistration).where(TriggerRegistration.procedure_id == procedure_id)
+    if enabled_only:
+        stmt = stmt.where(TriggerRegistration.enabled.is_(True))
+    if trigger_type:
+        stmt = stmt.where(TriggerRegistration.trigger_type == trigger_type)
+    stmt = stmt.order_by(
+        desc(TriggerRegistration.updated_at),
+        desc(TriggerRegistration.created_at),
+        desc(TriggerRegistration.id),
+    ).limit(1)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 # ── Sync from procedure store ────────────────────────────────────
@@ -295,17 +317,15 @@ def verify_hmac_signature(body: bytes, header_signature: str | None, secret_env_
 
     Expects header in the form ``sha256=<hex>``, and the secret loaded from
     the environment variable named ``secret_env_var``.
-    Returns True when signature is valid OR when no secret is configured.
+    Returns True only when the signature is valid.
     """
     secret_value = os.environ.get(secret_env_var, "")
     if not secret_value:
-        # No secret configured — allow all (dev mode)
-        logger.warning("No webhook secret configured for env var %s — skipping HMAC check", secret_env_var)
-        return True
+        logger.warning("Webhook secret env var %s is not configured", secret_env_var)
+        return False
     if not header_signature:
         return False
     # Strip "sha256=" prefix
     sig = header_signature.removeprefix("sha256=")
-    expected = hashlib.sha256(f"{secret_value}".encode() + body).hexdigest()
-    # Constant-time comparison
-    return hashlib.sha256(sig.encode()).hexdigest() == hashlib.sha256(expected.encode()).hexdigest()
+    expected = hmac.new(secret_value.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)

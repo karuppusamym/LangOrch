@@ -6,12 +6,17 @@ import base64
 import os
 import pytest
 
+from app.db.engine import async_session
+from app.db.models import SecretEntry
+
 from app.services.secrets_service import (
+    CatalogAwareSecretsProvider,
     EnvironmentSecretsProvider,
     SecretsManager,
     configure_secrets_provider,
     get_secrets_manager,
     _secrets_manager,
+    provider_from_config,
 )
 
 
@@ -153,3 +158,72 @@ class TestGlobalSecretsManager:
         m1 = get_secrets_manager()
         m2 = get_secrets_manager()
         assert m1 is m2
+
+
+class TestCatalogAwareSecretsProvider:
+    @pytest.fixture(autouse=True)
+    def reset_global(self):
+        import app.services.secrets_service as mod
+
+        mod._secrets_manager = None
+
+    @pytest.fixture
+    def fernet_key(self, monkeypatch):
+        pytest.importorskip("cryptography.fernet")
+        from cryptography.fernet import Fernet
+
+        key = Fernet.generate_key().decode()
+        monkeypatch.setenv("SECRETS_ENCRYPTION_KEY", key)
+        return key
+
+    @pytest.mark.asyncio
+    async def test_resolves_db_secret_from_catalog(self, fernet_key):
+        from app.api.secrets import _encrypt
+
+        async with async_session() as db:
+            db.add(
+                SecretEntry(
+                    name="catalog_db_secret",
+                    encrypted_value=_encrypt("db-secret-value"),
+                    provider_hint="db",
+                )
+            )
+            await db.commit()
+
+        provider = provider_from_config({}, db_factory=async_session)
+        manager = SecretsManager(provider=provider)
+
+        value = await manager.get_secret("catalog_db_secret")
+        assert value == "db-secret-value"
+
+    @pytest.mark.asyncio
+    async def test_resolves_env_hint_from_catalog_before_plain_env_lookup(self, monkeypatch, fernet_key):
+        from app.api.secrets import _encrypt
+
+        monkeypatch.setenv("LANGORCH_SECRET_CATALOG_ENV_SECRET", "env-secret-value")
+
+        async with async_session() as db:
+            db.add(
+                SecretEntry(
+                    name="catalog_env_secret",
+                    encrypted_value=_encrypt("stored-fallback"),
+                    provider_hint="env",
+                )
+            )
+            await db.commit()
+
+        provider = provider_from_config({"provider": "env_vars"}, db_factory=async_session)
+        manager = SecretsManager(provider=provider)
+
+        value = await manager.get_secret("catalog_env_secret")
+        assert value == "env-secret-value"
+
+    @pytest.mark.asyncio
+    async def test_env_vars_alias_is_supported(self, monkeypatch):
+        monkeypatch.setenv("LANGORCH_SECRET_ALIAS_SECRET", "alias-value")
+
+        provider = provider_from_config({"provider": "env_vars"})
+        manager = SecretsManager(provider=provider)
+
+        value = await manager.get_secret("alias_secret")
+        assert value == "alias-value"

@@ -35,25 +35,43 @@ const outputTemplates: EditorTemplate[] = [
 ];
 
 const stepFields: EditorFieldDefinition[] = [
-  { key: "step_id", label: "Step ID", keyEditable: false, valuePlaceholder: "fetch_customer_profile" },
-  { key: "action", label: "Action", keyEditable: false, valuePlaceholder: "fetch" },
-  { key: "binding_kind", label: "Binding Kind", keyEditable: false, valuePlaceholder: "connector | function | channel" },
-  { key: "binding_ref", label: "Binding Ref", keyEditable: false, valuePlaceholder: "crm.lookup_customer" },
+  { key: "step_id", label: "Step ID", description: "Stable identifier used when this step is referenced in runtime logs or results.", required: true, keyEditable: false, valuePlaceholder: "fetch_customer_profile" },
+  {
+    key: "action",
+    label: "Action",
+    description: "What this step actually does inside the sequence.",
+    required: true,
+    keyEditable: false,
+    valueInput: "select",
+    valueOptions: ["fetch", "transform", "notify", "call_api", "log"],
+    valuePresets: {
+      fetch: { binding_kind: "connector", binding_ref: "data_source" },
+      transform: { binding_kind: "function", binding_ref: "normalize_payload" },
+      notify: { binding_kind: "channel", binding_ref: "email" },
+      call_api: { binding_kind: "connector", binding_ref: "http.default" },
+      log: { binding_kind: "none" },
+    },
+  },
+  { key: "binding_kind", label: "Binding Kind", description: "Select where the step resolves its implementation from.", required: true, keyEditable: false, valueInput: "select", valueOptions: ["connector", "function", "channel", "agent", "none"], visibleWhen: (value) => String(value.action ?? "").trim().length > 0 },
+  { key: "binding_ref", label: "Binding Ref", description: "Registry key or named reference used by the selected binding kind.", required: true, keyEditable: false, valuePlaceholder: "crm.lookup_customer", visibleWhen: (value) => {
+    const bindingKind = String(value.binding_kind ?? "").trim();
+    return bindingKind.length > 0 && bindingKind !== "none";
+  } },
 ];
 
 const logicRuleFields: EditorFieldDefinition[] = [
-  { key: "expression", label: "Expression", keyEditable: false, valuePlaceholder: "priority == 'high'" },
-  { key: "next", label: "Next Node", keyEditable: false, valuePlaceholder: "expedite_path" },
+  { key: "expression", label: "Expression", description: "Boolean condition evaluated to decide whether this rule matches.", required: true, keyEditable: false, valueInput: "textarea", valueRows: 3, valuePlaceholder: "priority == 'high'" },
+  { key: "next", label: "Next Node", description: "Node ID to route to when the expression evaluates to true.", required: true, keyEditable: false, valuePlaceholder: "expedite_path" },
 ];
 
 const verificationRuleFields: EditorFieldDefinition[] = [
-  { key: "expression", label: "Check", keyEditable: false, valuePlaceholder: "customer_email != ''" },
-  { key: "severity", label: "Severity", keyEditable: false, valuePlaceholder: "error | warning" },
+  { key: "expression", label: "Check", description: "Validation expression to run against the current workflow context.", required: true, keyEditable: false, valueInput: "textarea", valueRows: 3, valuePlaceholder: "customer_email != ''" },
+  { key: "severity", label: "Severity", description: "How strongly a failed check should affect execution or operator attention.", required: true, keyEditable: false, valueInput: "select", valueOptions: ["error", "warning", "info"] },
 ];
 
 const branchFields: EditorFieldDefinition[] = [
-  { key: "name", label: "Branch Name", keyEditable: false, valuePlaceholder: "research" },
-  { key: "target", label: "Target Node", keyEditable: false, valuePlaceholder: "research_node" },
+  { key: "name", label: "Branch Name", description: "Label used to identify the branch in the runtime fan-out and results.", required: true, keyEditable: false, valuePlaceholder: "research" },
+  { key: "target", label: "Target Node", description: "Node ID this parallel branch should execute.", required: true, keyEditable: false, valuePlaceholder: "research_node" },
 ];
 
 const mappingFields: EditorFieldDefinition[] = [
@@ -63,9 +81,73 @@ const mappingFields: EditorFieldDefinition[] = [
 ];
 
 const outputFields: EditorFieldDefinition[] = [
-  { key: "result", label: "Result", keyEditable: false, valuePlaceholder: "{{vars.result}}" },
-  { key: "status", label: "Status", keyEditable: false, valuePlaceholder: "success" },
-  { key: "decision", label: "Decision", keyEditable: false, valuePlaceholder: "{{vars.decision}}" },
+  { key: "result", label: "Result", description: "Primary payload returned by this terminal node.", keyEditable: false, valuePlaceholder: "{{vars.result}}" },
+  { key: "status", label: "Status", description: "Final run status emitted when execution terminates here.", keyEditable: false, valuePlaceholder: "success" },
+  { key: "decision", label: "Decision", description: "Decision value surfaced to callers or downstream consumers.", keyEditable: false, valuePlaceholder: "{{vars.decision}}" },
+];
+
+const processingOperationTemplates: EditorTemplate[] = [
+  { label: "Set Variable", value: { action: "set_variable", variable: "result", value: "{{vars.input}}" } },
+  { label: "Log", value: { action: "log", message: "Processing {{run_id}}", level: "INFO" } },
+  { label: "Screenshot", value: { action: "screenshot", name: "capture", output_variable: "screenshot_result" } },
+];
+
+const processingOperationFields: EditorFieldDefinition[] = [
+  {
+    key: "action",
+    label: "Action",
+    description: "Operation the processing node should perform for this item.",
+    required: true,
+    keyEditable: false,
+    valueInput: "select",
+    valueOptions: ["set_variable", "log", "screenshot", "notify", "http_request"],
+    valuePresets: {
+      set_variable: { variable: "result", value: "{{vars.input}}", output_variable: "result" },
+      log: { message: "Processing started", level: "INFO" },
+      screenshot: { name: "capture", output_variable: "screenshot_result" },
+      notify: { message: "Run update" },
+      http_request: { output_variable: "http_result" },
+    },
+  },
+  { key: "variable", label: "Variable", description: "Workflow variable name that will receive the computed value.", required: true, keyEditable: false, valuePlaceholder: "result", visibleWhen: (value) => String(value.action ?? "") === "set_variable" },
+  { key: "value", label: "Value", description: "Literal or templated value assigned into the target variable.", required: true, keyEditable: false, valueInput: "textarea", valueRows: 3, valuePlaceholder: "{{vars.input}}", visibleWhen: (value) => String(value.action ?? "") === "set_variable" },
+  { key: "message", label: "Message", description: "Text payload emitted to logs or notification channels.", required: true, keyEditable: false, valueInput: "textarea", valueRows: 3, valuePlaceholder: "Processing started", visibleWhen: (value) => {
+    const action = String(value.action ?? "");
+    return action === "log" || action === "notify";
+  } },
+  { key: "level", label: "Level", description: "Severity used when the action writes a log event.", required: true, keyEditable: false, valueInput: "select", valueOptions: ["DEBUG", "INFO", "WARNING", "ERROR"], visibleWhen: (value) => String(value.action ?? "") === "log" },
+  { key: "name", label: "Name", description: "Human-readable artifact name for captured screenshots or attachments.", required: true, keyEditable: false, valuePlaceholder: "capture", visibleWhen: (value) => String(value.action ?? "") === "screenshot" },
+  { key: "output_variable", label: "Output Variable", description: "Variable that stores the result produced by this operation.", required: true, keyEditable: false, valuePlaceholder: "result", visibleWhen: (value) => {
+    const action = String(value.action ?? "");
+    return action === "screenshot" || action === "http_request" || action === "set_variable";
+  } },
+];
+
+const transformOperationTemplates: EditorTemplate[] = [
+  { label: "Filter", value: { type: "filter", source_variable: "items", expression: "{{item.active}} == true", output_variable: "filtered_items" } },
+  { label: "Map", value: { type: "map", source_variable: "items", expression: "{{item.name}}", output_variable: "item_names" } },
+  { label: "Aggregate", value: { type: "aggregate", source_variable: "items", expression: "count", output_variable: "item_count", params: { op: "count" } } },
+];
+
+const transformOperationFields: EditorFieldDefinition[] = [
+  {
+    key: "type",
+    label: "Type",
+    description: "Transformation strategy applied to the source collection or value.",
+    required: true,
+    keyEditable: false,
+    valueInput: "select",
+    valueOptions: ["filter", "map", "aggregate"],
+    valuePresets: {
+      filter: { source_variable: "items", expression: "{{item.active}} == true", output_variable: "filtered_items" },
+      map: { source_variable: "items", expression: "{{item.name}}", output_variable: "item_names" },
+      aggregate: { source_variable: "items", expression: "count", output_variable: "item_count", params: { op: "count" } },
+    },
+  },
+  { key: "source_variable", label: "Source Variable", description: "Variable to read before applying the transformation.", required: true, keyEditable: false, valuePlaceholder: "items" },
+  { key: "expression", label: "Expression", description: "Mapping, filter, or aggregate expression evaluated for each source item.", required: true, keyEditable: false, valueInput: "textarea", valueRows: 3, valuePlaceholder: "{{item.name}}" },
+  { key: "output_variable", label: "Output Variable", description: "Variable that receives the transformed result.", required: true, keyEditable: false, valuePlaceholder: "result" },
+  { key: "params", label: "Params", description: "Additional aggregate configuration expressed as JSON.", keyEditable: false, valueInput: "textarea", valueRows: 3, valuePlaceholder: '{"op":"count"}', visibleWhen: (value) => String(value.type ?? "") === "aggregate" },
 ];
 
 export const builderNodeEditorLayouts: Partial<Record<BuilderNodeKind, BuilderNodeEditorSection[]>> = {
@@ -153,8 +235,12 @@ export const builderNodeEditorLayouts: Partial<Record<BuilderNodeKind, BuilderNo
     {
       title: "Loop Control",
       controls: [
+        { kind: "text", label: "Iterator Variable", keys: ["iterator"], validation: { required: true } },
+        { kind: "text", label: "Current Item Variable", keys: ["iterator_variable"], validation: { required: true } },
+        { kind: "text", label: "Index Variable", keys: ["index_variable"] },
+        { kind: "text", label: "Collect Variable", keys: ["collect_variable"] },
         { kind: "number", label: "Max Iterations", keys: ["max_iterations", "loopMaxIterations"] },
-        { kind: "textarea", label: "Continue Condition", keys: ["continue_condition", "loopContinueCondition"], rows: 3 },
+        { kind: "checkbox", label: "Continue On Error", keys: ["continue_on_error"], defaultValue: false },
       ],
     },
   ],
@@ -163,6 +249,7 @@ export const builderNodeEditorLayouts: Partial<Record<BuilderNodeKind, BuilderNo
       title: "Execution",
       controls: [
         { kind: "checkbox", label: "Wait for all branches", keys: ["parallelWaitAll", "wait_all"], defaultValue: true },
+        { kind: "select", label: "Branch Failure", keys: ["branch_failure"], defaultValue: "continue", options: ["continue", "fail"] },
       ],
     },
     {
@@ -183,41 +270,35 @@ export const builderNodeEditorLayouts: Partial<Record<BuilderNodeKind, BuilderNo
   ],
   processing: [
     {
-      title: "Processing",
+      title: "Operations",
       controls: [
-        { kind: "text", label: "Action", keys: ["action"], validation: { required: true } },
-      ],
-    },
-    {
-      title: "Input Mapping",
-      controls: [
-        { kind: "object", label: "Input Mapping", keys: ["input_mapping", "inputMapping"], fields: mappingFields, templates: mappingTemplates },
-      ],
-    },
-    {
-      title: "Output Mapping",
-      controls: [
-        { kind: "object", label: "Output Mapping", keys: ["output_mapping", "outputMapping"], fields: outputFields, templates: outputTemplates },
+        {
+          kind: "object-list",
+          label: "Operations",
+          keys: ["operations"],
+          newItem: { action: "", output_variable: "" },
+          addItemLabel: "Add Operation",
+          fields: processingOperationFields,
+          templates: processingOperationTemplates,
+          validation: { minItems: 1, message: "Processing nodes need at least one operation." },
+        },
       ],
     },
   ],
   transform: [
     {
-      title: "Transform",
+      title: "Transformations",
       controls: [
-        { kind: "text", label: "Transformer", keys: ["transformer"], validation: { required: true } },
-      ],
-    },
-    {
-      title: "Input Mapping",
-      controls: [
-        { kind: "object", label: "Input Mapping", keys: ["input_mapping", "inputMapping"], fields: mappingFields, templates: mappingTemplates },
-      ],
-    },
-    {
-      title: "Output Mapping",
-      controls: [
-        { kind: "object", label: "Output Mapping", keys: ["output_mapping", "outputMapping"], fields: outputFields, templates: outputTemplates },
+        {
+          kind: "object-list",
+          label: "Transformations",
+          keys: ["transformations"],
+          newItem: { type: "", source_variable: "", expression: "", output_variable: "" },
+          addItemLabel: "Add Transformation",
+          fields: transformOperationFields,
+          templates: transformOperationTemplates,
+          validation: { minItems: 1, message: "Transform nodes need at least one transformation." },
+        },
       ],
     },
   ],

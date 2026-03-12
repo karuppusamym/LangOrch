@@ -140,17 +140,19 @@ def _parse_cron(cron_expr: str) -> dict[str, str]:
     Supports standard 5-field cron: ``minute hour day month day_of_week``.
     """
     parts = cron_expr.strip().split()
-    if len(parts) == 5:
-        return {
-            "minute": parts[0],
-            "hour": parts[1],
-            "day": parts[2],
-            "month": parts[3],
-            "day_of_week": parts[4],
-        }
-    # Fallback — pass raw as 'minute' (will likely error, but at least surfaces the value)
-    logger.warning("Unexpected cron expression format: %s", cron_expr)
-    return {"minute": parts[0] if parts else "*"}
+    if len(parts) != 5:
+        raise ValueError(f"Cron expression must have exactly 5 fields: {cron_expr}")
+
+    from apscheduler.triggers.cron import CronTrigger  # type: ignore[import]
+
+    CronTrigger.from_crontab(cron_expr, timezone="UTC")
+    return {
+        "minute": parts[0],
+        "hour": parts[1],
+        "day": parts[2],
+        "month": parts[3],
+        "day_of_week": parts[4],
+    }
 
 
 async def _fire_scheduled_trigger(procedure_id: str, version: str) -> None:

@@ -129,6 +129,7 @@ class UpdateSecretBody(BaseModel):
     value: str | None = None
     description: str | None = None
     tags: list[str] | None = None
+    provider_hint: str | None = None
 
 
 def _to_out(s: SecretEntry, *, include_value: bool = False) -> dict:
@@ -230,6 +231,8 @@ async def update_secret(
         entry.description = body.description
     if body.tags is not None:
         entry.tags_json = json.dumps(body.tags)
+    if body.provider_hint is not None:
+        entry.provider_hint = body.provider_hint
     entry.updated_by = principal.identity
     await db.flush()
     await db.refresh(entry)

@@ -276,8 +276,10 @@ async def test_sla_breach_webhook(client):
     from app.services import case_service
 
     async with async_session() as db:
-        await case_service.check_sla_breaches(db)
+        breached_ids = await case_service.mark_sla_breaches(db)
         await db.commit()
+
+    assert case_id in breached_ids
 
     await asyncio.sleep(0.2)
 
@@ -296,9 +298,8 @@ async def test_sla_breach_webhook(client):
             .all()
         )
 
-    # May or may not have breach depending on implementation
-    # This tests the webhook infrastructure is ready
-    assert isinstance(deliveries, list)
+    assert len(deliveries) == 1
+    assert deliveries[0].status == "pending"
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ interface InspectorPanelProps {
   selectedNodeDefinition: BuilderNodeRegistryEntry | null;
   configEditorValue: string;
   configEditorError: string | null;
+  nodeIssues?: { errors: string[]; warnings: string[] };
   onEditorValidationChange?: (errors: string[]) => void;
   onUpdateNode: (patch: Partial<BuilderNodeDraft>) => void;
   onUpdateConfig: (patch: Record<string, unknown>) => void;
@@ -223,6 +224,7 @@ export function InspectorPanel({
   selectedNodeDefinition,
   configEditorValue,
   configEditorError,
+  nodeIssues,
   onEditorValidationChange,
   onUpdateNode,
   onUpdateConfig,
@@ -270,6 +272,23 @@ export function InspectorPanel({
           {draft.startNodeId === selectedNode.id ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">start node</span> : null}
         </div>
       </div>
+
+      {((nodeIssues?.errors.length ?? 0) > 0 || (nodeIssues?.warnings.length ?? 0) > 0) ? (
+        <div className="rounded-2xl border border-neutral-200 bg-white p-3 space-y-1.5">
+          {nodeIssues?.errors.map((msg, i) => (
+            <div key={`err-${i}`} className="flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">
+              <span className="mt-0.5 shrink-0 font-bold">✕</span>
+              <span>{msg}</span>
+            </div>
+          ))}
+          {nodeIssues?.warnings.map((msg, i) => (
+            <div key={`warn-${i}`} className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              <span className="mt-0.5 shrink-0 font-bold">!</span>
+              <span>{msg}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <InspectorSection
         title="Identity"

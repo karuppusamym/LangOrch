@@ -18,6 +18,7 @@ import {
   addDraftNode,
   addDraftTransition,
   autoLayoutDraft,
+  duplicateDraftNode,
   loadDraftDocument,
   removeDraftNode,
   removeDraftTransition,
@@ -46,6 +47,10 @@ interface BuilderShellProps {
 }
 
 const WORKSPACE_DOCK_HEIGHT_STEPS = [168, 192, 216, 240, 264, 288, 312, 336, 360] as const;
+const INSPECTOR_WIDTH_STEPS = [320, 360, 400, 440, 480, 520] as const;
+const INSPECTOR_WIDTH_MIN = 320;
+const INSPECTOR_WIDTH_MAX = 520;
+const INSPECTOR_WIDTH_DEFAULT = 360;
 
 function getWorkspaceDockHeightClass(height: number) {
   const closestHeight = WORKSPACE_DOCK_HEIGHT_STEPS.reduce((closest, candidate) => (
@@ -71,6 +76,27 @@ function getWorkspaceDockHeightClass(height: number) {
       return "h-[336px]";
     default:
       return "h-[360px]";
+  }
+}
+
+function getInspectorWidthClass(width: number) {
+  const closestWidth = INSPECTOR_WIDTH_STEPS.reduce((closest, candidate) => (
+    Math.abs(candidate - width) < Math.abs(closest - width) ? candidate : closest
+  ));
+
+  switch (closestWidth) {
+    case 320:
+      return "w-[320px]";
+    case 360:
+      return "w-[360px]";
+    case 400:
+      return "w-[400px]";
+    case 440:
+      return "w-[440px]";
+    case 480:
+      return "w-[480px]";
+    default:
+      return "w-[520px]";
   }
 }
 
@@ -107,13 +133,18 @@ export function BuilderShell({
   const [workspacePanelsHeight, setWorkspacePanelsHeight] = useState(168);
   const [leftRailOpen, setLeftRailOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorWidth, setInspectorWidth] = useState(INSPECTOR_WIDTH_DEFAULT);
   const [maximizeCanvas, setMaximizeCanvas] = useState(false);
   const [isWideWorkspace, setIsWideWorkspace] = useState(false);
   const [paletteFilter, setPaletteFilter] = useState("");
   const [outlineFilter, setOutlineFilter] = useState("");
   const [savedDraftSnapshot, setSavedDraftSnapshot] = useState(() => JSON.stringify(loadDraftDocument(initialDraft)));
   const [savedWorkflowSnapshot, setSavedWorkflowSnapshot] = useState(() => JSON.stringify(draftDocumentToCkpWorkflow(loadDraftDocument(initialDraft))));
+  const [clipboardNodeId, setClipboardNodeId] = useState<string | null>(null);
+  const [canvasSearchQuery, setCanvasSearchQuery] = useState("");
   const dockResizeStateRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const inspectorResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const initialWorkflowGraphString = useMemo(
     () => JSON.stringify(draftDocumentToCkpWorkflow(loadDraftDocument(initialDraft))),
@@ -146,6 +177,14 @@ export function BuilderShell({
     }
     return counts;
   }, [validation.errors, validation.warnings]);
+
+  const selectedNodeIssues = useMemo(() => {
+    if (!selectedNodeId) return undefined;
+    const errors = validation.errors.filter((e) => e.nodeId === selectedNodeId).map((e) => e.message);
+    const warnings = validation.warnings.filter((w) => w.nodeId === selectedNodeId).map((w) => w.message);
+    if (errors.length === 0 && warnings.length === 0) return undefined;
+    return { errors, warnings };
+  }, [selectedNodeId, validation.errors, validation.warnings]);
 
   const filteredNodeDefinitions = useMemo(() => {
     const query = paletteFilter.trim().toLowerCase();
@@ -188,7 +227,7 @@ export function BuilderShell({
     if (!runOverlay) {
       return null;
     }
-    const isActive = ["created", "pending", "running", "waiting_approval"].includes(runOverlay.status);
+    const isActive = ["created", "pending", "running", "waiting_approval", "paused"].includes(runOverlay.status);
     return {
       label: isActive ? "recent run active" : "recent run",
       className: isActive ? "bg-sky-100 text-sky-700" : runOverlay.status === "failed" ? "bg-red-100 text-red-700" : "bg-neutral-100 text-neutral-700",
@@ -241,13 +280,54 @@ export function BuilderShell({
   const isWorkflowDirty = currentWorkflowGraphString !== savedWorkflowSnapshot;
   const isDirty = isDraftDirty || isWorkflowDirty;
   const workspaceDockHeightClass = useMemo(() => getWorkspaceDockHeightClass(workspacePanelsHeight), [workspacePanelsHeight]);
+  const inspectorWidthClass = useMemo(() => getInspectorWidthClass(inspectorWidth), [inspectorWidth]);
 
   useBuilderKeyboardShortcuts({
     canUndo: canUndo && !saving && !savingDraft,
     canRedo: canRedo && !saving && !savingDraft,
     onUndo: undoDraftChange,
     onRedo: redoDraftChange,
+    onCopy: selectedNodeId ? () => setClipboardNodeId(selectedNodeId) : undefined,
+    onPaste: clipboardNodeId
+      ? () => {
+          applyDraftChange((current) => {
+            const next = duplicateDraftNode(current, clipboardNodeId);
+            const pasted = next.nodes[next.nodes.length - 1];
+            if (pasted) setSelectedNodeId(pasted.id);
+            return next;
+          });
+        }
+      : undefined,
+    onDuplicate: selectedNodeId
+      ? () => {
+          applyDraftChange((current) => {
+            const next = duplicateDraftNode(current, selectedNodeId);
+            const duped = next.nodes[next.nodes.length - 1];
+            if (duped) setSelectedNodeId(duped.id);
+            return next;
+          });
+        }
+      : undefined,
   });
+
+  // Auto-save draft with 3-second debounce when draft changes
+  useEffect(() => {
+    if (!onSaveDraft || !isDraftDirty || savingDraft) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      const result = onSaveDraft(draft);
+      const snapshot = JSON.stringify(draft);
+      if (result instanceof Promise) {
+        void result.then(() => setSavedDraftSnapshot(snapshot));
+      } else {
+        setSavedDraftSnapshot(snapshot);
+      }
+    }, 3000);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDraftString, onSaveDraft, savingDraft]);
 
   useEffect(() => {
     const nextDraft = loadDraftDocument(initialDraft);
@@ -260,6 +340,30 @@ export function BuilderShell({
     setGuidedEditorErrors([]);
     setFitViewToken((current) => current + 1);
   }, [initialDraft, resetDraftHistory]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const storedWidth = window.localStorage.getItem("builder-v2:inspector-width");
+    if (!storedWidth) {
+      return;
+    }
+
+    const parsedWidth = Number(storedWidth);
+    if (Number.isFinite(parsedWidth)) {
+      setInspectorWidth(Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, parsedWidth)));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem("builder-v2:inspector-width", String(inspectorWidth));
+  }, [inspectorWidth]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -398,6 +502,36 @@ export function BuilderShell({
     window.addEventListener("pointerup", handlePointerUp);
   }
 
+  function handleInspectorResizeStart(event: React.PointerEvent<HTMLDivElement>) {
+    inspectorResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: inspectorWidth,
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (!inspectorResizeStateRef.current || typeof window === "undefined") {
+        return;
+      }
+
+      const nextWidth = inspectorResizeStateRef.current.startWidth + (inspectorResizeStateRef.current.startX - moveEvent.clientX);
+      const maxWidth = Math.min(INSPECTOR_WIDTH_MAX, Math.round(window.innerWidth * 0.42));
+      const boundedWidth = Math.min(maxWidth, Math.max(INSPECTOR_WIDTH_MIN, nextWidth));
+      const snappedWidth = INSPECTOR_WIDTH_STEPS.reduce((closest, candidate) => (
+        Math.abs(candidate - boundedWidth) < Math.abs(closest - boundedWidth) ? candidate : closest
+      ));
+      setInspectorWidth(snappedWidth);
+    };
+
+    const handlePointerUp = () => {
+      inspectorResizeStateRef.current = null;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }
+
   return (
     <div className="flex min-h-[calc(100vh-4rem)] flex-col bg-neutral-50">
       <BuilderHeaderBar
@@ -513,6 +647,15 @@ export function BuilderShell({
               ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <label className="sr-only" htmlFor="builder-v2-canvas-search-shell">Search canvas</label>
+              <input
+                id="builder-v2-canvas-search-shell"
+                type="search"
+                value={canvasSearchQuery}
+                onChange={(e) => setCanvasSearchQuery(e.target.value)}
+                placeholder="Search nodes…"
+                className="rounded-xl border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-700 outline-none focus:border-yellow-400 focus:ring-1 focus:ring-yellow-200 w-[140px]"
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -557,6 +700,8 @@ export function BuilderShell({
               selectedNodeId={selectedNodeId}
               runOverlay={runOverlay}
               fitViewToken={fitViewToken}
+              issuesByNodeId={issuesByNodeId}
+              canvasSearchQuery={canvasSearchQuery}
               onSelectNode={(nodeId) => {
                 setSelectedNodeId(nodeId);
                 if (!isWideWorkspace) {
@@ -569,6 +714,31 @@ export function BuilderShell({
               )}
               onNodePositionCommit={(positions) => applyDraftChange((current) => updateDraftNodePositions(current, positions))}
               onConnectTransition={handleConnectTransition}
+              onDeleteNode={(nodeId) => {
+                applyDraftChange((current) => removeDraftNode(current, nodeId));
+                if (selectedNodeId === nodeId) setSelectedNodeId(null);
+              }}
+              onSetStartNode={(nodeId) => applyDraftChange((current) => setDraftStartNode(current, nodeId))}
+              onDropNode={(kind, position) => {
+                applyDraftChange((current) => {
+                  const nextDraft = addDraftNode(current, kind);
+                  const newNode = nextDraft.nodes[nextDraft.nodes.length - 1];
+                  if (!newNode) return nextDraft;
+                  return updateDraftNodePositions(nextDraft, [{ id: newNode.id, position }]);
+                });
+                setFitViewToken((token) => token);
+              }}
+              onDuplicateNode={(nodeId) => {
+                applyDraftChange((current) => {
+                  const next = duplicateDraftNode(current, nodeId);
+                  const duped = next.nodes[next.nodes.length - 1];
+                  if (duped) setSelectedNodeId(duped.id);
+                  return next;
+                });
+              }}
+              onDeleteEdge={(sourceNodeId, transitionKey) => {
+                applyDraftChange((current) => removeDraftTransition(current, sourceNodeId, transitionKey));
+              }}
             />
           </div>
 
@@ -598,17 +768,34 @@ export function BuilderShell({
           ) : null}
         </main>
 
+        {!maximizeCanvas && isWideWorkspace ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize inspector"
+            onPointerDown={handleInspectorResizeStart}
+            className="z-20 hidden w-2 shrink-0 cursor-col-resize items-stretch justify-center border-l border-neutral-200 bg-white text-[10px] font-medium uppercase tracking-widest text-neutral-300 transition hover:text-neutral-500 2xl:flex"
+          >
+            <div className="my-3 w-px rounded-full bg-neutral-200" />
+          </div>
+        ) : null}
+
         <aside
           className={maximizeCanvas
             ? "hidden"
             : isWideWorkspace
-            ? "z-20 w-[288px] overflow-auto border-l border-neutral-200 bg-white p-2.5"
+            ? `z-20 shrink-0 overflow-auto border-l border-neutral-200 bg-white p-3 ${inspectorWidthClass}`
             : inspectorOpen
-              ? "absolute inset-y-0 right-0 z-20 w-[min(288px,calc(100vw-3rem))] overflow-auto border-l border-neutral-200 bg-white p-2.5 shadow-2xl"
+              ? "absolute inset-y-0 right-0 z-20 w-[calc(100vw-1.5rem)] max-w-[360px] overflow-auto border-l border-neutral-200 bg-white p-3 shadow-2xl"
               : "hidden"}
         >
           <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Inspector</p>
+            {isWideWorkspace ? (
+              <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-[10px] font-medium text-neutral-500">
+                {inspectorWidth}px
+              </span>
+            ) : null}
             {!isWideWorkspace ? (
               <button
                 type="button"
@@ -625,6 +812,7 @@ export function BuilderShell({
             selectedNodeDefinition={selectedNodeDefinition}
             configEditorValue={configEditorValue}
             configEditorError={configEditorError}
+            nodeIssues={selectedNodeIssues}
             onEditorValidationChange={setGuidedEditorErrors}
             onUpdateNode={(patch) => {
               if (!selectedNode) return;

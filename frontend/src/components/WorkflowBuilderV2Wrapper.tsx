@@ -75,7 +75,7 @@ export default function WorkflowBuilderV2Wrapper({
 
     void loadLatestRun();
     intervalId = setInterval(() => {
-      if (["created", "pending", "running", "waiting_approval"].includes(latestRun?.status ?? "")) {
+      if (["created", "pending", "running", "waiting_approval", "paused"].includes(latestRun?.status ?? "")) {
         void loadLatestRun();
       }
     }, 5000);

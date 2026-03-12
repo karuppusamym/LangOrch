@@ -123,7 +123,7 @@ function buildNodeStateMap(
       map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "failed" };
     } else if (runStatus === "completed") {
       map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "completed" };
-    } else if (runStatus === "waiting_approval" && map[currentNodeId]?.state !== "failed") {
+    } else if (["waiting_approval", "paused"].includes(runStatus) && map[currentNodeId]?.state !== "failed") {
       map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "paused" };
     } else if (["running", "created", "pending"].includes(runStatus) && map[currentNodeId]?.state !== "failed") {
       map[currentNodeId] = { ...(map[currentNodeId] ?? {}), state: "current" };

@@ -76,7 +76,7 @@ const WEBHOOK_EVENT_OPTIONS = [
 
 function fmtDate(value: string | null | undefined) {
   if (!value) return "-";
-  const dt = new Date(value);
+  const dt = new Date(/(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`);
   return Number.isNaN(dt.getTime()) ? value : dt.toLocaleString();
 }
 
@@ -290,6 +290,12 @@ function CasesPageContent() {
   }
 
   useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    setTab(isTabKey(requestedTab) ? requestedTab : "cases");
+    setUrlStateHydrated(true);
+  }, [searchParams]);
+
+  useEffect(() => {
     void Promise.all([
       listProjects().then(setProjects),
       listProcedures().then(setProcedures),
@@ -397,6 +403,68 @@ function CasesPageContent() {
       setLoading(false);
     }
   }
+
+  async function loadSelectedCaseActivity(caseId: string) {
+    try {
+      const [caseEvents, caseRuns] = await Promise.all([
+        listCaseEvents(caseId, 200),
+        listRuns({ case_id: caseId, limit: 100, order: "desc" }),
+      ]);
+      if (selectedCaseId === caseId) {
+        setEvents(caseEvents);
+        setRuns(caseRuns);
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to load case activity", "error");
+    }
+  }
+
+  useEffect(() => {
+    if (!urlStateHydrated) return;
+
+    if (tab === "cases") {
+      void loadCases();
+      return;
+    }
+
+    if (tab === "queue") {
+      void loadQueue();
+      return;
+    }
+
+    if (tab === "sla") {
+      void loadPolicies();
+      return;
+    }
+
+    void loadWebhooks();
+  }, [
+    urlStateHydrated,
+    tab,
+    caseProjectFilter,
+    caseStatusFilter,
+    queueProjectFilter,
+    queueUnassigned,
+    queueTerminal,
+    slaProjectFilter,
+    webhookProjectFilter,
+    dlqSubscriptionFilter,
+    dlqEventFilter,
+    dlqCaseFilter,
+    dlqPage,
+    dlqPageSize,
+    dlqSortBy,
+    dlqSortDir,
+  ]);
+
+  useEffect(() => {
+    if (!selectedCaseId) {
+      setEvents([]);
+      setRuns([]);
+      return;
+    }
+    void loadSelectedCaseActivity(selectedCaseId);
+  }, [selectedCaseId]);
 
   async function handleReplayDelivery(deliveryId: string) {
     setReplayingDeliveryId(deliveryId);
@@ -591,8 +659,7 @@ function CasesPageContent() {
       await updateCase(caseId, patch);
       await loadCases();
       if (selectedCaseId === caseId) {
-        setEvents(await listCaseEvents(caseId, 200));
-        setRuns(await listRuns({ case_id: caseId, limit: 100, order: "desc" }));
+        await loadSelectedCaseActivity(caseId);
       }
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to update case", "error");
@@ -723,8 +790,7 @@ function CasesPageContent() {
       );
       toast(`Run started for case: ${run.run_id.slice(0, 8)}...`, "success");
       setRunModalOpen(false);
-      const updatedRuns = await listRuns({ case_id: runModalCase.case_id, limit: 100, order: "desc" });
-      setRuns(updatedRuns);
+      await loadSelectedCaseActivity(runModalCase.case_id);
     } catch (err) {
       if (isNotFoundError(err)) {
         toast("Case not found. It may have been deleted. Please refresh the page.", "error");

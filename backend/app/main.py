@@ -1028,6 +1028,7 @@ async def lifespan(app: FastAPI):
         async with _asm() as _db:
             _count = await _sync_t(_db)
             await _db.commit()
+        await _trigger_scheduler.sync_schedules()
         if _count:
             logger.info("Auto-synced %d trigger registrations from procedures", _count)
     except Exception:

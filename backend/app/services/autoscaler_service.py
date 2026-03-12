@@ -73,11 +73,15 @@ async def check_pool_saturation_events(
 
 async def get_queue_depth_by_pool(
     db: AsyncSession,
-) -> dict[str, int]:
+) -> dict[str, float]:
     """Get current queue depth grouped by agent pool.
     
     Returns:
-        Dictionary mapping pool_id to queue depth
+        Dictionary mapping pool_id to queue depth.
+
+        When a channel has multiple online pools, each queued run is apportioned
+        across those pools by aggregate concurrency capacity rather than being
+        dropped. This keeps autoscaling signals meaningful in multi-pool setups.
     """
     from app.db.models import RunJob
 
@@ -114,16 +118,19 @@ async def get_queue_depth_by_pool(
 
     agent_rows = (
         await db.execute(
-            select(AgentInstance.channel, AgentInstance.pool_id)
+            select(AgentInstance.channel, AgentInstance.pool_id, AgentInstance.concurrency_limit)
             .where(AgentInstance.status == "online")
             .where(AgentInstance.pool_id.is_not(None))
         )
     ).all()
 
-    channel_to_pools: dict[str, set[str]] = defaultdict(set)
-    for channel, pool_id in agent_rows:
-        if isinstance(channel, str) and channel and isinstance(pool_id, str) and pool_id:
-            channel_to_pools[channel.lower()].add(pool_id)
+    channel_to_pool_capacity: dict[str, dict[str, float]] = defaultdict(dict)
+    for channel, pool_id, concurrency_limit in agent_rows:
+        if not (isinstance(channel, str) and channel and isinstance(pool_id, str) and pool_id):
+            continue
+        normalized_channel = channel.lower()
+        current_capacity = channel_to_pool_capacity[normalized_channel].get(pool_id, 0.0)
+        channel_to_pool_capacity[normalized_channel][pool_id] = current_capacity + max(float(concurrency_limit or 1), 1.0)
     
     stmt = (
         select(Run.run_id, Run.last_node_id, Procedure.ckp_json)
@@ -138,7 +145,7 @@ async def get_queue_depth_by_pool(
     result = await db.execute(stmt)
     rows = result.all()
 
-    queue_depth: dict[str, int] = defaultdict(int)
+    queue_depth: dict[str, float] = defaultdict(float)
 
     for _run_id, last_node_id, ckp_json in rows:
         if not isinstance(ckp_json, str) or not ckp_json:
@@ -146,9 +153,16 @@ async def get_queue_depth_by_pool(
         channel = _extract_channel_from_ckp_json(ckp_json, last_node_id)
         if not channel:
             continue
-        pool_ids = channel_to_pools.get(channel, set())
-        if len(pool_ids) == 1:
-            queue_depth[next(iter(pool_ids))] += 1
+        pool_capacities = channel_to_pool_capacity.get(channel, {})
+        if not pool_capacities:
+            continue
+
+        total_capacity = sum(pool_capacities.values())
+        if total_capacity <= 0:
+            continue
+
+        for pool_id, capacity in pool_capacities.items():
+            queue_depth[pool_id] += capacity / total_capacity
     
     return dict(queue_depth)
 

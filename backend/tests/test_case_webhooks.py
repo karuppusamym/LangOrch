@@ -47,6 +47,102 @@ async def test_case_webhook_subscription_crud(client):
 
 
 @pytest.mark.asyncio
+async def test_mark_sla_breaches_updates_case_and_queues_webhook(client):
+    from sqlalchemy import select
+
+    from app.db.engine import async_session
+    from app.db.models import Case, CaseEvent, CaseWebhookDelivery
+    from app.services import case_service
+
+    case_type = f"sla_type_{_uid()}"
+    breach_status = f"breach_review_{_uid()}"
+
+    policy_resp = await client.post(
+        "/api/cases/sla-policies",
+        json={
+            "name": f"SLA breach {_uid()}",
+            "case_type": case_type,
+            "priority": "high",
+            "due_minutes": 30,
+            "breach_status": breach_status,
+            "enabled": True,
+        },
+    )
+    assert policy_resp.status_code == 201
+    policy_id = policy_resp.json()["policy_id"]
+
+    webhook_resp = await client.post(
+        "/api/cases/webhooks",
+        json={
+            "event_type": "case_sla_breached",
+            "target_url": "https://sla-breach.invalid/hook",
+            "enabled": True,
+        },
+    )
+    assert webhook_resp.status_code == 201
+    subscription_id = webhook_resp.json()["subscription_id"]
+
+    case_resp = await client.post(
+        "/api/cases",
+        json={
+            "title": f"SLA Breach {_uid()}",
+            "case_type": case_type,
+            "priority": "high",
+            "sla_due_at": "2025-01-01T00:00:00",
+        },
+    )
+    assert case_resp.status_code == 201
+    case_id = case_resp.json()["case_id"]
+
+    async with async_session() as db:
+        breached_ids = await case_service.mark_sla_breaches(db)
+        await db.commit()
+
+    assert case_id in breached_ids
+
+    async with async_session() as db:
+        case_row = await db.get(Case, case_id)
+        assert case_row is not None
+        assert case_row.status == breach_status
+        assert case_row.sla_breached_at is not None
+
+        breach_events = list(
+            (
+                await db.execute(
+                    select(CaseEvent).where(
+                        CaseEvent.case_id == case_id,
+                        CaseEvent.event_type == "case_sla_breached",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(breach_events) == 1
+
+        deliveries = list(
+            (
+                await db.execute(
+                    select(CaseWebhookDelivery).where(
+                        CaseWebhookDelivery.case_id == case_id,
+                        CaseWebhookDelivery.subscription_id == subscription_id,
+                        CaseWebhookDelivery.event_type == "case_sla_breached",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(deliveries) == 1
+        assert deliveries[0].status == "pending"
+
+    delete_webhook_resp = await client.delete(f"/api/cases/webhooks/{subscription_id}")
+    assert delete_webhook_resp.status_code == 204
+    delete_policy_resp = await client.delete(f"/api/cases/sla-policies/{policy_id}")
+    assert delete_policy_resp.status_code == 204
+
+
+@pytest.mark.asyncio
 async def test_dispatch_case_event_webhooks_with_filters_and_signature(monkeypatch):
     from app.db.engine import async_session
     from app.services import case_webhook_service

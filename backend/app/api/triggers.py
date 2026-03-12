@@ -9,6 +9,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import Principal
+from app.auth.roles import require_role
 from app.db.engine import get_db
 from app.schemas.triggers import (
     TriggerFireOut,
@@ -48,16 +50,17 @@ async def receive_webhook(
     # Read raw body (needed for HMAC + dedupe hash)
     body = await request.body()
 
-    # Find the latest enabled trigger registration for this procedure
-    all_regs = await trigger_service.list_trigger_registrations(db, enabled_only=True)
-    candidates = [r for r in all_regs if r.procedure_id == procedure_id]
-    if not candidates:
+    reg = await trigger_service.get_latest_trigger_for_procedure(
+        db,
+        procedure_id,
+        trigger_type="webhook",
+        enabled_only=True,
+    )
+    if not reg:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No active trigger registration found for procedure '{procedure_id}'",
+            detail=f"No active webhook trigger registration found for procedure '{procedure_id}'",
         )
-    # Pick latest version
-    reg = candidates[-1]
 
     # HMAC verification
     if reg.webhook_secret:
@@ -136,6 +139,7 @@ async def fire_trigger_manual(
     procedure_id: str,
     version: str,
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_role("operator")),
 ):
     """Create a run via the trigger system, tagged as trigger_type=manual."""
     reg = await trigger_service.get_trigger(db, procedure_id, version)
@@ -170,7 +174,10 @@ async def fire_trigger_manual(
     response_model=list[TriggerRegistrationOut],
     summary="List all trigger registrations",
 )
-async def list_triggers(db: AsyncSession = Depends(get_db)):
+async def list_triggers(
+    db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_role("operator")),
+):
     return await trigger_service.list_trigger_registrations(db)
 
 
@@ -179,7 +186,12 @@ async def list_triggers(db: AsyncSession = Depends(get_db)):
     response_model=TriggerRegistrationOut | None,
     summary="Get trigger registration for a procedure version (null if none registered)",
 )
-async def get_trigger(procedure_id: str, version: str, db: AsyncSession = Depends(get_db)):
+async def get_trigger(
+    procedure_id: str,
+    version: str,
+    db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_role("operator")),
+):
     return await trigger_service.get_trigger(db, procedure_id, version)
 
 
@@ -194,6 +206,7 @@ async def upsert_trigger(
     version: str,
     body: TriggerRegistrationCreate,
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_role("manager")),
 ):
     reg = await trigger_service.upsert_trigger(
         db,
@@ -216,7 +229,12 @@ async def upsert_trigger(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Disable a trigger registration",
 )
-async def delete_trigger(procedure_id: str, version: str, db: AsyncSession = Depends(get_db)):
+async def delete_trigger(
+    procedure_id: str,
+    version: str,
+    db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_role("manager")),
+):
     found = await trigger_service.deregister_trigger(db, procedure_id, version)
     if not found:
         raise HTTPException(status_code=404, detail="Trigger registration not found")
@@ -227,7 +245,10 @@ async def delete_trigger(procedure_id: str, version: str, db: AsyncSession = Dep
     "/sync",
     summary="Sync trigger registrations from all procedures with trigger_config_json",
 )
-async def sync_triggers(db: AsyncSession = Depends(get_db)):
+async def sync_triggers(
+    db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_role("manager")),
+):
     """Re-read all procedures and register/update triggers from their CKP trigger blocks."""
     count = await trigger_service.sync_triggers_from_procedures(db)
     await db.commit()

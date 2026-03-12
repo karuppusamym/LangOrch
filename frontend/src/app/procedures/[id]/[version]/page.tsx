@@ -20,6 +20,16 @@ type ReleaseReadinessState = {
   checkedVersion: string | null;
 };
 
+type TriggerFormState = {
+  trigger_type: string;
+  schedule: string;
+  webhook_secret: string;
+  event_source: string;
+  dedupe_window_seconds: number;
+  max_concurrent_runs: string;
+  enabled: boolean;
+};
+
 function getNextReleaseChannel(channel: string | null | undefined): ReleaseChannel | null {
   const normalized = (channel ?? "dev") as ReleaseChannel;
   if (normalized === "dev") return "qa";
@@ -32,6 +42,46 @@ function releaseChannelBadgeClass(channel: string | null | undefined): string {
   if (normalized === "prod") return "bg-emerald-100 text-emerald-700 border-emerald-200";
   if (normalized === "qa") return "bg-amber-100 text-amber-700 border-amber-200";
   return "bg-sky-100 text-sky-700 border-sky-200";
+}
+
+function isLikelyCronExpression(value: string): boolean {
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  return parts.every((part) => /^[\d*/,-]+$/.test(part));
+}
+
+function getTriggerFormError(triggerForm: TriggerFormState): string | null {
+  if (triggerForm.dedupe_window_seconds < 0) {
+    return "Dedupe window must be 0 or greater.";
+  }
+
+  if (triggerForm.max_concurrent_runs.trim()) {
+    const parsed = Number(triggerForm.max_concurrent_runs);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return "Max concurrent runs must be a whole number greater than 0.";
+    }
+  }
+
+  if (triggerForm.trigger_type === "scheduled") {
+    if (!triggerForm.schedule.trim()) {
+      return "Scheduled triggers require a cron expression.";
+    }
+    if (!isLikelyCronExpression(triggerForm.schedule)) {
+      return "Cron expression must contain exactly 5 UTC fields.";
+    }
+  }
+
+  if (triggerForm.trigger_type === "webhook" && !triggerForm.webhook_secret.trim()) {
+    return "Webhook triggers require a secret env var name for HMAC verification.";
+  }
+
+  if ((triggerForm.trigger_type === "event" || triggerForm.trigger_type === "file_watch") && !triggerForm.event_source.trim()) {
+    return triggerForm.trigger_type === "file_watch"
+      ? "File watch triggers require a watched file path."
+      : "Event triggers require an event source.";
+  }
+
+  return null;
 }
 
 /* ── Simple line-level diff helper ─────────────────────────── */
@@ -128,7 +178,7 @@ export default function ProcedureVersionDetailPage() {
   const [triggerFetched, setTriggerFetched] = useState(false);
   const [triggerSaving, setTriggerSaving] = useState(false);
   const [triggerFiring, setTriggerFiring] = useState(false);
-  const [triggerForm, setTriggerForm] = useState({
+  const [triggerForm, setTriggerForm] = useState<TriggerFormState>({
     trigger_type: "webhook" as string,
     schedule: "",
     webhook_secret: "",
@@ -157,6 +207,7 @@ export default function ProcedureVersionDetailPage() {
     checkedVersion: null,
   });
   const { toast } = useToast();
+  const triggerValidationError = getTriggerFormError(triggerForm);
 
   useEffect(() => {
     const t = searchParams.get("tab");
@@ -1206,7 +1257,7 @@ export default function ProcedureVersionDetailPage() {
               <h3 className="text-sm font-semibold text-neutral-900">Trigger Configuration</h3>
               <p className="mt-0.5 text-xs text-neutral-400">
                 Register an automated trigger for this procedure version. Scheduled triggers use cron
-                syntax; webhooks accept POST requests with optional HMAC-SHA256 signature verification.
+                syntax; webhooks require HMAC-SHA256 verification; event and file-watch triggers require a source.
               </p>
             </div>
             {triggerReg && (
@@ -1250,6 +1301,7 @@ export default function ProcedureVersionDetailPage() {
                     placeholder="e.g. 0 9 * * 1-5  (weekdays at 9am)"
                     className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-mono focus:border-sky-500 focus:outline-none"
                   />
+                  <p className="mt-1 text-[10px] text-neutral-400">Use exactly 5 fields: minute hour day month day_of_week.</p>
                 </div>
               )}
 
@@ -1258,7 +1310,7 @@ export default function ProcedureVersionDetailPage() {
                 <>
                   <div>
                     <label htmlFor="trigger_webhook_secret" className="mb-1 block text-xs font-medium text-neutral-600">
-                      Webhook Secret Env Var <span className="text-neutral-400">(optional — env var name holding HMAC key)</span>
+                      Webhook Secret Env Var <span className="text-red-500">*</span> <span className="text-neutral-400">(env var name holding the HMAC key)</span>
                     </label>
                     <input
                       id="trigger_webhook_secret"
@@ -1282,14 +1334,17 @@ export default function ProcedureVersionDetailPage() {
               )}
 
               {/* Event source */}
-              {triggerForm.trigger_type === "event" && (
+              {(triggerForm.trigger_type === "event" || triggerForm.trigger_type === "file_watch") && (
                 <div>
-                  <label htmlFor="trigger_event_source" className="mb-1 block text-xs font-medium text-neutral-600">Event Source <span className="text-neutral-400">(Kafka topic / SQS queue)</span></label>
+                  <label htmlFor="trigger_event_source" className="mb-1 block text-xs font-medium text-neutral-600">
+                    {triggerForm.trigger_type === "file_watch" ? "Watch Path" : "Event Source"} <span className="text-red-500">*</span>
+                    <span className="text-neutral-400"> {triggerForm.trigger_type === "file_watch" ? "(file or directory path)" : "(Kafka topic / SQS queue)"}</span>
+                  </label>
                   <input
                     id="trigger_event_source"
                     value={triggerForm.event_source}
                     onChange={(e) => setTriggerForm((f) => ({ ...f, event_source: e.target.value }))}
-                    placeholder="e.g. orders.created"
+                    placeholder={triggerForm.trigger_type === "file_watch" ? "e.g. C:/data/inbox/orders.json" : "e.g. orders.created"}
                     className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
                   />
                 </div>
@@ -1334,17 +1389,27 @@ export default function ProcedureVersionDetailPage() {
                 <label htmlFor="trigger_enabled" className="text-sm text-neutral-700">Enabled</label>
               </div>
 
+              {triggerValidationError && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                  {triggerValidationError}
+                </div>
+              )}
+
               {/* Action bar */}
               <div className="flex flex-wrap gap-2 pt-2 border-t border-neutral-100">
                 <button
                   onClick={async () => {
+                    if (triggerValidationError) {
+                      toast(triggerValidationError, "error");
+                      return;
+                    }
                     setTriggerSaving(true);
                     try {
                       const reg = await upsertTrigger(procedureId, version, {
                         trigger_type: triggerForm.trigger_type,
-                        schedule: triggerForm.schedule || null,
-                        webhook_secret: triggerForm.webhook_secret || null,
-                        event_source: triggerForm.event_source || null,
+                        schedule: triggerForm.schedule.trim() || null,
+                        webhook_secret: triggerForm.webhook_secret.trim() || null,
+                        event_source: triggerForm.event_source.trim() || null,
                         dedupe_window_seconds: triggerForm.dedupe_window_seconds,
                         max_concurrent_runs: triggerForm.max_concurrent_runs ? Number(triggerForm.max_concurrent_runs) : null,
                         enabled: triggerForm.enabled,
@@ -1357,7 +1422,7 @@ export default function ProcedureVersionDetailPage() {
                       setTriggerSaving(false);
                     }
                   }}
-                  disabled={triggerSaving}
+                  disabled={triggerSaving || !!triggerValidationError}
                   className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50"
                 >
                   {triggerSaving ? "Saving…" : triggerReg ? "Update Trigger" : "Register Trigger"}

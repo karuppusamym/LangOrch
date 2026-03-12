@@ -7,6 +7,9 @@ interface BuilderKeyboardShortcutsOptions {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  onCopy?: () => void;
+  onPaste?: () => void;
+  onDuplicate?: () => void;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -27,6 +30,9 @@ export function useBuilderKeyboardShortcuts({
   canRedo,
   onUndo,
   onRedo,
+  onCopy,
+  onPaste,
+  onDuplicate,
 }: BuilderKeyboardShortcutsOptions) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -52,6 +58,24 @@ export function useBuilderKeyboardShortcuts({
       if (isRedoShortcut && canRedo) {
         event.preventDefault();
         onRedo();
+        return;
+      }
+
+      if (key === "c" && onCopy) {
+        event.preventDefault();
+        onCopy();
+        return;
+      }
+
+      if (key === "v" && onPaste) {
+        event.preventDefault();
+        onPaste();
+        return;
+      }
+
+      if (key === "d" && onDuplicate) {
+        event.preventDefault();
+        onDuplicate();
       }
     }
 
@@ -59,5 +83,5 @@ export function useBuilderKeyboardShortcuts({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [canRedo, canUndo, onRedo, onUndo]);
+  }, [canRedo, canUndo, onRedo, onUndo, onCopy, onPaste, onDuplicate]);
 }

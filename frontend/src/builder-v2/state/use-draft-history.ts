@@ -18,8 +18,28 @@ function cloneDraft(draft: BuilderDraftDocument): BuilderDraftDocument {
   return loadDraftDocument(draft);
 }
 
+/**
+ * Structural fingerprint — much faster than JSON.stringify for large graphs.
+ * Captures start node, node count, each node's id/kind/title/config-keys/transitions,
+ * and skips position changes (those are recorded via recordHistory:false).
+ */
+function draftFingerprint(draft: BuilderDraftDocument): string {
+  const parts: string[] = [draft.startNodeId ?? "", String(draft.nodes.length)];
+  for (const node of draft.nodes) {
+    const configKeys = Object.keys(node.config).sort().join(",");
+    const configValues = Object.values(node.config)
+      .map((v) => (v === null || v === undefined ? "" : String(v)))
+      .join("|");
+    const transitions = node.transitions
+      .map((t) => `${t.key}:${t.targetNodeId ?? ""}`)
+      .join(";");
+    parts.push(`${node.id}|${node.kind}|${node.title}|${node.description ?? ""}|${node.agent ?? ""}|${configKeys}=${configValues}|${transitions}`);
+  }
+  return parts.join("\n");
+}
+
 function hasMeaningfulChange(currentDraft: BuilderDraftDocument, nextDraft: BuilderDraftDocument): boolean {
-  return JSON.stringify(currentDraft) !== JSON.stringify(nextDraft);
+  return draftFingerprint(currentDraft) !== draftFingerprint(nextDraft);
 }
 
 export function useDraftHistory(initialDraft: BuilderDraftDocument) {

@@ -74,8 +74,8 @@ export function ckpToRf(
         : (node.branches as string) ?? "",
       loopMaxIterations: node.max_iterations as number | undefined,
       loopContinueCondition: (node.continue_condition as string) ?? "",
-      parallelWaitAll: node.wait_all !== undefined ? !!(node.wait_all as boolean) : true,
-      logicDefaultNext: (node.default_next as string) ?? "",
+      parallelWaitAll: node.wait_strategy !== undefined ? node.wait_strategy !== "any" : node.wait_all !== undefined ? !!(node.wait_all as boolean) : true,
+      logicDefaultNext: (node.default_next_node as string) ?? (node.default_next as string) ?? "",
       action: (node.action as string) ?? "",
       inputMapping: node.input_mapping ? JSON.stringify(node.input_mapping, null, 2) : "",
       outputMapping: node.output_mapping ? JSON.stringify(node.output_mapping, null, 2) : "",
@@ -114,12 +114,16 @@ export function ckpToRf(
         on_error,
         on_failure,
         default_next,
+        default_next_node,
         loop_body,
+        body_node,
         branches,
         orchestration_mode,
         max_iterations,
         continue_condition,
         wait_all,
+        wait_strategy,
+        branch_failure,
         action,
         input_mapping,
         output_mapping,
@@ -169,12 +173,14 @@ export function ckpToRf(
     if (node.on_fail) addEdgeFromCkp(id, node.on_fail, "fail");
     if (node.on_error) addEdgeFromCkp(id, node.on_error, "error");
     if (node.on_failure) addEdgeFromCkp(id, node.on_failure, "error");
-    if (node.default_next) addEdgeFromCkp(id, node.default_next, "default");
-    if (node.loop_body) addEdgeFromCkp(id, node.loop_body, "loop body");
+    if (node.default_next_node || node.default_next) addEdgeFromCkp(id, node.default_next_node ?? node.default_next, "default");
+    if (node.body_node || node.loop_body) addEdgeFromCkp(id, node.body_node ?? node.loop_body, "loop body");
 
     if (Array.isArray(node.branches)) {
-      for (const branch of node.branches as Array<{ name?: string; entry_node?: string }>) {
-        if (branch.entry_node) addEdgeFromCkp(id, branch.entry_node, branch.name ? `branch:${branch.name}` : "branch");
+      for (const branch of node.branches as Array<{ name?: string; branch_id?: string; entry_node?: string; start_node?: string }>) {
+        const target = branch.start_node ?? branch.entry_node;
+        const label = branch.name ?? branch.branch_id;
+        if (target) addEdgeFromCkp(id, target, label ? `branch:${label}` : "branch");
       }
     }
 

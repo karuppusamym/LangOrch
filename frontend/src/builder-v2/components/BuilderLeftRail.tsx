@@ -206,8 +206,13 @@ export function BuilderLeftRail({
                         {definitions.map((definition) => (
                           <button
                             key={definition.kind}
+                            draggable
+                            onDragStart={(event) => {
+                              event.dataTransfer.setData("application/builder-node-kind", definition.kind);
+                              event.dataTransfer.effectAllowed = "copy";
+                            }}
                             onClick={() => onAddNode(definition.kind)}
-                            className="flex w-full items-start gap-2 rounded-xl border border-neutral-200 px-2 py-1.5 text-left hover:border-neutral-300 hover:bg-neutral-50"
+                            className="flex w-full items-start gap-2 rounded-xl border border-neutral-200 px-2 py-1.5 text-left hover:border-neutral-300 hover:bg-neutral-50 cursor-grab active:cursor-grabbing"
                           >
                             <span className="pt-0.5 text-sm text-neutral-700">{TYPE_ICONS[definition.kind] ?? "●"}</span>
                             <span className="min-w-0 flex-1">

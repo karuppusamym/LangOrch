@@ -26,7 +26,24 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any
 
+from sqlalchemy import select
+
 logger = logging.getLogger("langorch.secrets")
+
+
+def _normalize_provider_type(raw: str | None) -> str:
+    value = (raw or "env").strip().lower()
+    aliases = {
+        "env_vars": "env",
+        "environment": "env",
+        "hashicorp_vault": "vault",
+        "aws_secrets_manager": "aws",
+        "azure_key_vault": "azure",
+        "database": "db",
+        "catalog": "db",
+        "platform": "db",
+    }
+    return aliases.get(value, value)
 
 
 
@@ -453,10 +470,134 @@ class CachingSecretsProvider(SecretsProvider):
             self._cache.pop(key, None)
 
 
+class CatalogAwareSecretsProvider(SecretsProvider):
+    """Resolve secrets from the platform catalog before falling back to another provider."""
+
+    def __init__(
+        self,
+        db_factory,
+        inner: SecretsProvider | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> None:
+        self.db_factory = db_factory
+        self.inner = inner
+        self.config = config or {}
+        self._hint_providers: dict[str, SecretsProvider] = {}
+
+    async def _get_catalog_entry(self, key: str):
+        from app.db.models import SecretEntry
+
+        async with self.db_factory() as db:
+            result = await db.execute(select(SecretEntry).where(SecretEntry.name == key))
+            return result.scalar_one_or_none()
+
+    def _provider_for_hint(self, hint: str) -> SecretsProvider | None:
+        normalized = _normalize_provider_type(hint)
+        if normalized == "db":
+            return None
+        provider = self._hint_providers.get(normalized)
+        if provider is None:
+            provider = _provider_for_type(normalized, self.config)
+            self._hint_providers[normalized] = provider
+        return provider
+
+    @staticmethod
+    def _decrypt_value(encrypted_value: str) -> str:
+        from app.api.secrets import _decrypt
+
+        return _decrypt(encrypted_value)
+
+    async def _resolve_catalog_entry(self, entry) -> str | None:
+        hint = _normalize_provider_type(getattr(entry, "provider_hint", None) or "db")
+        if hint == "db":
+            return self._decrypt_value(entry.encrypted_value)
+
+        provider = self._provider_for_hint(hint)
+        if provider is not None:
+            value = await provider.get_secret(entry.name)
+            if value is not None:
+                return value
+            logger.warning(
+                "Catalog secret '%s' with provider_hint='%s' did not resolve from external provider; falling back to stored value if available",
+                entry.name,
+                hint,
+            )
+
+        if getattr(entry, "encrypted_value", None):
+            try:
+                return self._decrypt_value(entry.encrypted_value)
+            except Exception as exc:
+                logger.warning("Failed to decrypt fallback value for catalog secret '%s': %s", entry.name, exc)
+        return None
+
+    async def get_secret(self, key: str) -> str | None:
+        entry = await self._get_catalog_entry(key)
+        if entry is not None:
+            value = await self._resolve_catalog_entry(entry)
+            if value is not None:
+                return value
+
+        if self.inner is None:
+            return None
+        return await self.inner.get_secret(key)
+
+    async def list_secrets(self) -> list[str]:
+        names: set[str] = set()
+        if self.inner is not None:
+            names.update(await self.inner.list_secrets())
+
+        from app.db.models import SecretEntry
+
+        async with self.db_factory() as db:
+            result = await db.execute(select(SecretEntry.name).order_by(SecretEntry.name))
+            names.update(result.scalars().all())
+        return sorted(names)
+
+
+def _provider_for_type(provider_type: str, config: dict[str, Any]) -> SecretsProvider:
+    normalized = _normalize_provider_type(provider_type)
+
+    if normalized == "env":
+        return EnvironmentSecretsProvider(
+            prefix=config.get("prefix", "LANGORCH_SECRET_")
+        )
+
+    if normalized == "vault":
+        return VaultSecretsProvider(
+            vault_url=config.get("vault_url"),
+            vault_token=config.get("vault_token"),
+            mount_point=config.get("mount_point", "secret"),
+            path_prefix=config.get("path_prefix", "langorch"),
+            role_id=config.get("role_id"),
+            secret_id=config.get("secret_id"),
+            kv_version=int(config.get("kv_version", 2)),
+            namespace=config.get("namespace"),
+        )
+
+    if normalized == "aws":
+        return AWSSecretsManagerProvider(
+            region_name=config.get("region_name"),
+            profile_name=config.get("profile_name"),
+            endpoint_url=config.get("endpoint_url"),
+            secret_field=config.get("secret_field"),
+        )
+
+    if normalized == "azure":
+        return AzureKeyVaultProvider(
+            vault_url=config.get("vault_url"),
+            client_id=config.get("client_id"),
+            tenant_id=config.get("tenant_id"),
+            client_secret=config.get("client_secret"),
+        )
+
+    logger.warning("Unknown secrets provider type '%s', falling back to env", normalized)
+    return EnvironmentSecretsProvider()
+
+
 # ── Factory ────────────────────────────────────────────────────
 
 
-def provider_from_config(config: dict[str, Any]) -> SecretsProvider:
+def provider_from_config(config: dict[str, Any], db_factory=None) -> SecretsProvider:
     """Build a ``SecretsProvider`` from a ``secrets_config`` dict.
 
     Supported ``type`` values and their required/optional keys:
@@ -483,47 +624,23 @@ def provider_from_config(config: dict[str, Any]) -> SecretsProvider:
     ``cache_ttl`` (any type)
         When present and > 0, wraps the provider in ``CachingSecretsProvider``.
     """
-    provider_type = (config.get("type") or "env").lower()
+    provider_type = _normalize_provider_type(config.get("type") or config.get("provider") or "env")
     cache_ttl: int = int(config.get("cache_ttl", 0))
 
     provider: SecretsProvider
 
-    if provider_type == "env":
-        provider = EnvironmentSecretsProvider(
-            prefix=config.get("prefix", "LANGORCH_SECRET_")
-        )
-
-    elif provider_type in ("vault", "hashicorp_vault"):
-        provider = VaultSecretsProvider(
-            vault_url=config.get("vault_url"),
-            vault_token=config.get("vault_token"),
-            mount_point=config.get("mount_point", "secret"),
-            path_prefix=config.get("path_prefix", "langorch"),
-            role_id=config.get("role_id"),
-            secret_id=config.get("secret_id"),
-            kv_version=int(config.get("kv_version", 2)),
-            namespace=config.get("namespace"),
-        )
-
-    elif provider_type in ("aws", "aws_secrets_manager"):
-        provider = AWSSecretsManagerProvider(
-            region_name=config.get("region_name"),
-            profile_name=config.get("profile_name"),
-            endpoint_url=config.get("endpoint_url"),
-            secret_field=config.get("secret_field"),
-        )
-
-    elif provider_type in ("azure", "azure_key_vault"):
-        provider = AzureKeyVaultProvider(
-            vault_url=config.get("vault_url"),
-            client_id=config.get("client_id"),
-            tenant_id=config.get("tenant_id"),
-            client_secret=config.get("client_secret"),
-        )
-
+    if provider_type == "db":
+        if db_factory is None:
+            logger.warning("Secrets provider type 'db' requested without a db_factory; falling back to env")
+            provider = EnvironmentSecretsProvider(
+                prefix=config.get("prefix", "LANGORCH_SECRET_")
+            )
+        else:
+            provider = CatalogAwareSecretsProvider(db_factory=db_factory, inner=None, config=config)
     else:
-        logger.warning("Unknown secrets provider type '%s', falling back to env", provider_type)
-        provider = EnvironmentSecretsProvider()
+        provider = _provider_for_type(provider_type, config)
+        if db_factory is not None:
+            provider = CatalogAwareSecretsProvider(db_factory=db_factory, inner=provider, config=config)
 
     if cache_ttl > 0:
         provider = CachingSecretsProvider(provider, ttl_seconds=cache_ttl)

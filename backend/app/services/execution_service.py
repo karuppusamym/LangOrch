@@ -19,7 +19,7 @@ from app.runtime.graph_builder import build_graph
 from app.runtime.state import OrchestratorState
 from app.db.models import RunEvent
 from app.services import approval_service, run_service
-from app.services.secrets_service import get_secrets_manager, configure_secrets_provider, EnvironmentSecretsProvider, VaultSecretsProvider, invalidate_secrets_cache, provider_from_config
+from app.services.secrets_service import SecretsManager, invalidate_secrets_cache, provider_from_config
 from app.utils.metrics import record_run_started, record_run_completed
 from app.utils.run_cancel import RunCancelledError, register as _cancel_register, deregister as _cancel_deregister
 from app.runtime.executor_dispatch import clear_run_affinity
@@ -448,21 +448,17 @@ async def execute_run(run_id: str, db_factory) -> None:
             # Phase 2: Load secrets from configured provider
             secrets_dict = {}
             secrets_config = ir.global_config.get("secrets_config", {})
-            provider_type = secrets_config.get("provider", "env_vars")
+            provider_type = secrets_config.get("provider") or secrets_config.get("type") or "env"
             
             try:
-                # Configure secrets provider based on CKP global_config.secrets_config.
-                # provider_from_config() supports all four provider types:
-                # env / hashicorp_vault / aws_secrets_manager / azure_key_vault
-                # and wraps with CachingSecretsProvider when cache_ttl > 0.
-                _provider = provider_from_config(secrets_config)
-                configure_secrets_provider(_provider)
+                # Build a per-run secrets provider so concurrent runs do not mutate a global singleton.
+                _provider = provider_from_config(secrets_config, db_factory=db_factory)
+                secrets_manager = SecretsManager(provider=_provider)
                 logger.info("Configured secrets provider: type=%s", provider_type)
                 
                 # Load secrets referenced in CKP
                 secret_references = secrets_config.get("secret_references", {})
                 if secret_references:
-                    secrets_manager = get_secrets_manager()
                     for secret_key, secret_ref in secret_references.items():
                         # secret_ref could be a string (key name) or dict with metadata
                         lookup_key = secret_ref if isinstance(secret_ref, str) else secret_ref.get("key", secret_key)

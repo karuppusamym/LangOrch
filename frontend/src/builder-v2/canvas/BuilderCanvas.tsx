@@ -18,7 +18,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 
-import type { BuilderDraftDocument, BuilderNodeDraft } from "@/builder-v2/reference-contract";
+import type { BuilderDraftDocument, BuilderNodeDraft, BuilderNodeKind } from "@/builder-v2/reference-contract";
 import { edgeColor } from "@/builder-v2/legacy/transforms";
 import { DEFAULT_NODE_THEME, TYPE_BG, TYPE_ICONS, TYPE_THEME } from "@/builder-v2/legacy/catalog";
 import type { BuilderNodeExecutionState, BuilderRunOverlay } from "@/builder-v2/execution/run-overlay";
@@ -28,10 +28,17 @@ interface BuilderCanvasProps {
   selectedNodeId: string | null;
   runOverlay?: BuilderRunOverlay | null;
   fitViewToken?: number;
+  issuesByNodeId?: Map<string, { errors: number; warnings: number }>;
+  canvasSearchQuery?: string;
   onSelectNode: (nodeId: string | null) => void;
   onNodePositionPreview: (positions: Array<{ id: string; position: { x: number; y: number } }>) => void;
   onNodePositionCommit: (positions: Array<{ id: string; position: { x: number; y: number } }>) => void;
   onConnectTransition: (connection: Connection) => void;
+  onDeleteNode?: (nodeId: string) => void;
+  onSetStartNode?: (nodeId: string) => void;
+  onDropNode?: (kind: BuilderNodeKind, position: { x: number; y: number }) => void;
+  onDuplicateNode?: (nodeId: string) => void;
+  onDeleteEdge?: (sourceNodeId: string, transitionKey: string) => void;
 }
 
 function mapNodePositions(nodes: Array<Node<CanvasNodeData>>) {
@@ -44,6 +51,8 @@ interface CanvasNodeData extends Record<string, unknown> {
   runState: BuilderNodeExecutionState;
   runStatus: string | null;
   loopCount?: string;
+  issueCount: { errors: number; warnings: number };
+  isHighlighted: boolean;
 }
 
 const CANVAS_NODE_WIDTH = 164;
@@ -101,6 +110,8 @@ function DraftNodeCard({ data, selected }: NodeProps<Node<CanvasNodeData>>) {
   const theme = TYPE_THEME[node.kind] ?? DEFAULT_NODE_THEME;
   const icon = TYPE_ICONS[node.kind] ?? "●";
   const runBadge = getRunBadge(data.runState, data.runStatus);
+  const hasErrors = data.issueCount.errors > 0;
+  const hasWarnings = data.issueCount.warnings > 0;
 
   return (
     <>
@@ -110,8 +121,22 @@ function DraftNodeCard({ data, selected }: NodeProps<Node<CanvasNodeData>>) {
         className="!h-[10px] !w-[10px] !border-2 !border-white !bg-neutral-300"
       />
       <div
-        className={`relative w-[164px] rounded-[18px] border-2 bg-white shadow-sm transition ${getRunStateClass(data.runState, selected, theme.border)}`}
+        className={`relative w-[164px] rounded-[18px] border-2 bg-white shadow-sm transition ${getRunStateClass(data.runState, selected, theme.border)}${data.isHighlighted ? " ring-2 ring-yellow-400 ring-offset-1" : ""}`}
       >
+        {(hasErrors || hasWarnings) && (
+          <div className="absolute -right-1.5 -top-1.5 z-10 flex gap-0.5">
+            {hasErrors ? (
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[8px] font-bold text-white shadow">
+                {data.issueCount.errors}
+              </span>
+            ) : null}
+            {hasWarnings && !hasErrors ? (
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[8px] font-bold text-white shadow">
+                {data.issueCount.warnings}
+              </span>
+            ) : null}
+          </div>
+        )}
         <div className={`h-1 rounded-t-[16px] ${theme.accent}`} />
         <div className="p-2">
           <div className="flex items-start justify-between gap-3">
@@ -210,22 +235,110 @@ function DraftNodeCard({ data, selected }: NodeProps<Node<CanvasNodeData>>) {
 
 const nodeTypes = { builderNode: DraftNodeCard };
 
+function ContextMenuOverlay({
+  nodeId,
+  x,
+  y,
+  isStart,
+  onSetStartNode,
+  onDeleteNode,
+  onDuplicateNode,
+  onClose,
+}: {
+  nodeId: string;
+  x: number;
+  y: number;
+  isStart: boolean;
+  onSetStartNode?: (id: string) => void;
+  onDeleteNode?: (id: string) => void;
+  onDuplicateNode?: (id: string) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.style.setProperty("top", `${y}px`);
+      ref.current.style.setProperty("left", `${x}px`);
+    }
+  }, [x, y]);
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      className="fixed z-50 min-w-[156px] overflow-hidden rounded-2xl border border-neutral-200 bg-white py-1 shadow-2xl"
+    >
+      <p className="truncate border-b border-neutral-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-neutral-400">
+        {nodeId}
+      </p>
+      {!isStart && onSetStartNode ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => { onSetStartNode(nodeId); onClose(); }}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+        >
+          <span className="text-emerald-600">●</span> Set as Start Node
+        </button>
+      ) : null}
+      {onDuplicateNode ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => { onDuplicateNode(nodeId); onClose(); }}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+        >
+          <span className="text-indigo-500">⧉</span> Duplicate Node
+        </button>
+      ) : null}
+      {onDeleteNode ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => { onDeleteNode(nodeId); onClose(); }}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+        >
+          <span>✕</span> Delete Node
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+interface ContextMenu {
+  nodeId: string;
+  x: number;
+  y: number;
+  isStart: boolean;
+}
+
 export function BuilderCanvas({
   draft,
   selectedNodeId,
   runOverlay = null,
   fitViewToken = 0,
+  issuesByNodeId,
+  canvasSearchQuery = "",
   onSelectNode,
   onNodePositionPreview,
   onNodePositionCommit,
   onConnectTransition,
+  onDeleteNode,
+  onSetStartNode,
+  onDropNode,
+  onDuplicateNode,
+  onDeleteEdge,
 }: BuilderCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hasInitializedViewportRef = useRef(false);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<Node<CanvasNodeData>, Edge> | null>(null);
   const [zoomPercent, setZoomPercent] = useState(100);
-  const derivedNodes = useMemo<Node<CanvasNodeData>[]>(() => (
-    draft.nodes.map((node) => ({
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+
+  const derivedNodes = useMemo<Node<CanvasNodeData>[]>(() => {
+    const query = canvasSearchQuery.trim().toLowerCase();
+    return draft.nodes.map((node) => ({
       id: node.id,
       type: "builderNode",
       position: node.position,
@@ -236,9 +349,13 @@ export function BuilderCanvas({
         runState: runOverlay?.nodeStates[node.id]?.state ?? "idle",
         runStatus: runOverlay?.nodeStates[node.id] ? runOverlay.status : null,
         loopCount: runOverlay?.nodeStates[node.id]?.loopCount,
+        issueCount: issuesByNodeId?.get(node.id) ?? { errors: 0, warnings: 0 },
+        isHighlighted: query.length > 0 && [node.id, node.title, node.kind, node.description ?? ""].some((v) =>
+          v.toLowerCase().includes(query),
+        ),
       },
-    }))
-  ), [draft.nodes, draft.startNodeId, runOverlay, selectedNodeId]);
+    }));
+  }, [draft.nodes, draft.startNodeId, runOverlay, selectedNodeId, issuesByNodeId, canvasSearchQuery]);
   const [canvasNodes, setCanvasNodes] = useState<Node<CanvasNodeData>[]>(derivedNodes);
 
   useEffect(() => {
@@ -434,6 +551,88 @@ export function BuilderCanvas({
     setZoomPercent(Math.round((reactFlowInstance.getZoom?.() ?? 1) * 100));
   }, [reactFlowInstance]);
 
+  // Delete key removes selected node; Escape deselects
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || ["input", "textarea", "select"].includes(target.tagName.toLowerCase()))
+      ) {
+        return;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedNodeId && onDeleteNode) {
+        event.preventDefault();
+        onDeleteNode(selectedNodeId);
+      }
+      if (event.key === "Escape") {
+        setContextMenu(null);
+        onSelectNode(null);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedNodeId, onDeleteNode, onSelectNode]);
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!contextMenu) return;
+    function handleClick() { setContextMenu(null); }
+    window.addEventListener("click", handleClick, { capture: true });
+    return () => window.removeEventListener("click", handleClick, { capture: true });
+  }, [contextMenu]);
+
+  function handleConnectWithGuard(connection: Connection) {
+    // Prevent self-loops
+    if (connection.source === connection.target) return;
+    // Prevent duplicate edges on the same handle
+    const alreadyConnected = draft.nodes
+      .find((n) => n.id === connection.source)
+      ?.transitions.some((t) => t.key === (connection.sourceHandle ?? "next") && t.targetNodeId === connection.target);
+    if (alreadyConnected) return;
+    onConnectTransition(connection);
+  }
+
+  function handleNodeContextMenu(event: React.MouseEvent, node: Node<CanvasNodeData>) {
+    event.preventDefault();
+    setContextMenu({
+      nodeId: node.id,
+      x: event.clientX,
+      y: event.clientY,
+      isStart: draft.startNodeId === node.id,
+    });
+    onSelectNode(node.id);
+  }
+
+  function handleEdgeClick(_event: React.MouseEvent, edge: Edge) {
+    if (!onDeleteEdge) return;
+    // Edge id format: `${sourceId}-${transitionKey}-${targetId}`
+    const parts = edge.id.split("-");
+    if (parts.length < 2) return;
+    const sourceId = edge.source;
+    const transitionKey = edge.sourceHandle ?? "next";
+    onDeleteEdge(sourceId, transitionKey);
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (!reactFlowInstance || !onDropNode) return;
+    const kind = event.dataTransfer.getData("application/builder-node-kind") as BuilderNodeKind | "";
+    if (!kind) return;
+    const bounds = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
+    const position = reactFlowInstance.screenToFlowPosition({
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    });
+    onDropNode(kind, position);
+  }
+
   return (
     <div ref={containerRef} className="relative h-full w-full">
       <div className="pointer-events-none absolute inset-x-3 top-3 z-10 flex items-start justify-between gap-2">
@@ -442,6 +641,16 @@ export function BuilderCanvas({
           <p className="mt-0.5 text-[11px] text-neutral-500">Drag nodes freely, then fit or zoom when you need a tighter view.</p>
         </div>
         <div className="pointer-events-auto flex items-center gap-1 rounded-2xl border border-neutral-200/80 bg-white/92 p-1 shadow-lg backdrop-blur">
+          <label className="sr-only" htmlFor="builder-v2-canvas-search">Search nodes</label>
+          <input
+            id="builder-v2-canvas-search"
+            type="search"
+            value={canvasSearchQuery}
+            readOnly
+            placeholder="Search…"
+            className="w-[80px] rounded-xl border border-neutral-200 bg-white px-2 py-1.5 text-[11px] text-neutral-700 outline-none focus:border-yellow-400 focus:w-[120px] transition-all"
+            onFocus={(e) => e.currentTarget.select()}
+          />
           <label className="sr-only" htmlFor="builder-v2-canvas-jump">Jump to node</label>
           <select
             id="builder-v2-canvas-jump"
@@ -524,14 +733,18 @@ export function BuilderCanvas({
           onNodePositionCommit(mapNodePositions(finalNodes));
         }}
         onNodeClick={(_, node) => onSelectNode(node.id)}
-        onPaneClick={() => onSelectNode(null)}
+        onPaneClick={() => { onSelectNode(null); setContextMenu(null); }}
         onMoveEnd={(_, viewport) => setZoomPercent(Math.round(viewport.zoom * 100))}
-        onConnect={onConnectTransition}
+        onConnect={handleConnectWithGuard}
         defaultEdgeOptions={{ animated: false }}
         onlyRenderVisibleElements
         minZoom={0.34}
         maxZoom={1.8}
         className="bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,0.08),_transparent_35%),linear-gradient(180deg,#fcfcfd_0%,#f4f4f5_100%)]"
+        onNodeContextMenu={handleNodeContextMenu}
+        onEdgeClick={onDeleteEdge ? handleEdgeClick : undefined}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.1} color="#d4d4d8" />
         <MiniMap
@@ -541,6 +754,20 @@ export function BuilderCanvas({
           className="!bottom-4 !bg-white/95 !border !border-neutral-200 !rounded-xl !shadow-lg"
         />
       </ReactFlow>
+
+      {/* Right-click context menu — portal-style fixed overlay */}
+      {contextMenu ? (
+        <ContextMenuOverlay
+          nodeId={contextMenu.nodeId}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          isStart={contextMenu.isStart}
+          onSetStartNode={onSetStartNode}
+          onDeleteNode={onDeleteNode}
+          onDuplicateNode={onDuplicateNode}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
