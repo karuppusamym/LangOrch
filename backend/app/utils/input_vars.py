@@ -81,6 +81,11 @@ def validate_input_vars(
         if not isinstance(meta, dict):
             continue
 
+        # Skip fields that are injected by the runtime — callers cannot supply them.
+        _origin = meta.get("origin", "")
+        if _origin in ("system_generated", "system_captured"):
+            continue
+
         value = vars_.get(key)
         is_required: bool = bool(meta.get("required", False))
         field_type: str | None = meta.get("type")

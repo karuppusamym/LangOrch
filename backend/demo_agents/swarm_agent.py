@@ -73,12 +73,9 @@ class ExecuteRequest(BaseModel):
 async def _set_agent_status(status: str) -> None:
     url = f"{SETTINGS.orchestrator_url}/api/agents/{SETTINGS.agent_id}"
     payload: dict[str, Any] = {"status": status}
-    if status == "online":
-        payload["capabilities"] = CAPABILITIES
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.put(url, json=payload)
-            if resp.status_code == 404 and status == "online":
+            if status == "online":
                 register_url = f"{SETTINGS.orchestrator_url}/api/agents"
                 register_payload = {
                     "agent_id": SETTINGS.agent_id,
@@ -90,10 +87,10 @@ async def _set_agent_status(status: str) -> None:
                     "pool_id": SETTINGS.pool_id,
                     "capabilities": CAPABILITIES,
                 }
-                reg_resp = await client.post(register_url, json=register_payload)
-                reg_resp.raise_for_status()
-                logger.info("Agent '%s' auto-registered.", SETTINGS.agent_id)
+                resp = await client.post(register_url, json=register_payload)
+                resp.raise_for_status()
             else:
+                resp = await client.put(url, json=payload)
                 resp.raise_for_status()
             logger.info("Agent '%s' marked %s.", SETTINGS.agent_id, status)
     except Exception as exc:

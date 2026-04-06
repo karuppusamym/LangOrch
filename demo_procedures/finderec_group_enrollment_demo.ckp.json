@@ -1,0 +1,570 @@
+{
+  "procedure_id": "finderec-group-enrollment-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "effective_date": "2026-04-04",
+  "description": "End-to-end browser automation for findeREC.com: homepage → pricing → Family & Friends plan → organization info form → admin user setup → general org details → continue to payment.",
+
+  "global_config": {
+    "execution_mode": "production",
+    "timeout_ms": 360000,
+    "screenshot_on_fail": true,
+    "retry_policy": {
+      "max_retries": 2,
+      "retry_delay_ms": 2000,
+      "backoff_multiplier": 1.5
+    },
+    "recovery": {
+      "enabled": true,
+      "screenshot_on_failure": true,
+      "screenshot_path": "{{artifacts_base_dir}}/{{run_id}}/recovery_{{step_id}}_{{timestamp}}.png",
+      "strategies": {
+        "dom_query": {
+          "enabled": true,
+          "description": "On selector timeout, extract all interactive elements from the live DOM (inputs, buttons, links, selects, roles) and re-attempt match against the element_description hint",
+          "dom_scope": "input, button, a, select, textarea, [role='button'], [role='combobox'], [role='listbox'], [role='option'], [role='tab'], [tabindex]",
+          "max_candidates": 50
+        },
+        "accessibility_tree": {
+          "enabled": true,
+          "description": "Pull the Playwright accessibility snapshot and locate the node whose name/role matches element_description",
+          "interesting_only": true
+        },
+        "ai_locate": {
+          "enabled": true,
+          "description": "Send the current page screenshot + element_description to the AI to identify coordinates or a refined CSS selector",
+          "model": "vision",
+          "max_attempts": 2
+        }
+      },
+      "fallback_order": ["dom_query", "accessibility_tree", "ai_locate"],
+      "on_all_strategies_failed": "abort"
+    }
+  },
+
+  "variables_schema": {
+    "required": {
+      "group_info_state": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "south carolina",
+        "description": "State typed into the autocomplete on the group-info page"
+      },
+      "group_info_state_option": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "SOUTH CAROLINA",
+        "description": "Autocomplete suggestion text to click for state"
+      },
+      "group_info_city": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "charleston",
+        "description": "City typed into the autocomplete on the group-info page"
+      },
+      "group_info_city_option": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "CHARLESTON",
+        "description": "Autocomplete suggestion text to click for city"
+      },
+      "group_info_org_name": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "Harborview Community Network",
+        "description": "Organization name on the group-info form"
+      },
+      "admin_first_name": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "Ariana"
+      },
+      "admin_last_name": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "Coleman"
+      },
+      "admin_email": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "harborview.ops@example.com"
+      },
+      "admin_phone": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "8434102786"
+      },
+      "admin_password": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "#Harbor2026#",
+        "description": "Admin account password"
+      },
+      "general_org_name": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "Harborview Community Network",
+        "description": "Organization name on the general details page"
+      },
+      "general_address_line1": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "88 Cooper River Ct"
+      },
+      "general_zip": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "29403"
+      },
+      "general_phone": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "8434102786"
+      },
+      "general_state_option": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "South Carolina",
+        "description": "State option text to select on the general org details form"
+      },
+      "general_city_option": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "Charleston",
+        "description": "City option text to select on the general org details form"
+      },
+      "artifacts_base_dir": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "c:/Users/karup/AGProjects/LangOrch/artifacts",
+        "description": "Root artifacts folder — override per environment"
+      }
+    },
+    "optional": {
+      "screenshot_homepage":   { "type": "object", "origin": "system_captured" },
+      "screenshot_pricing":    { "type": "object", "origin": "system_captured" },
+      "screenshot_group_info": { "type": "object", "origin": "system_captured" },
+      "screenshot_admin_form": { "type": "object", "origin": "system_captured" },
+      "screenshot_general":    { "type": "object", "origin": "system_captured" },
+      "screenshot_payment":    { "type": "object", "origin": "system_captured" },
+      "run_id": {
+        "type": "string",
+        "origin": "system_generated",
+        "description": "Unique run identifier injected at execution time (e.g. 2026-04-04_143021_abc123)"
+      }
+    }
+  },
+
+  "workflow_graph": {
+    "start_node": "homepage_join",
+    "nodes": {
+
+      "homepage_join": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Open findeREC homepage, take screenshot, open hamburger menu on the right, then click Join Now.",
+        "steps": [
+          {
+            "step_id": "navigate_homepage",
+            "action": "navigate",
+            "url": "https://finderec.com/"
+          },
+          {
+            "step_id": "wait_homepage_loaded",
+            "action": "wait_for_element",
+            "target": "nav, header",
+            "timeout_ms": 15000
+          },
+          {
+            "step_id": "screenshot_homepage",
+            "action": "screenshot",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/finderec_01_homepage.png",
+            "output_variable": "screenshot_homepage"
+          },
+          {
+            "step_id": "click_hamburger_menu",
+            "action": "click",
+            "target": "button.navbar-toggler, button[aria-label='Toggle navigation'], button[aria-label*='menu'], button[aria-label*='Menu'], .hamburger, .menu-toggle, [class*='hamburger'], [class*='navbar-toggle'], button:has(span.navbar-toggler-icon)"
+          },
+         {
+            "step_id": "navigate__pricing_page",
+            "action": "navigate",
+            "url": "https://finderec.com/pricing"
+          },
+          {
+            "step_id": "wait_pricing_loaded",
+            "action": "wait_for_element",
+            "target": "nav, header",
+            "timeout_ms": 15000
+          }
+        ],
+        "next_node": "pricing_select_plan"
+      },
+
+      "pricing_select_plan": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "On the pricing page, scroll to Family & Friends Group and click its Join Now.",
+        "steps": [
+          {
+            "step_id": "wait_pricing_loaded",
+            "action": "wait_for_element",
+            "target": "h1, h2",
+            "timeout_ms": 15000
+          },
+          {
+            "step_id": "screenshot_pricing",
+            "action": "screenshot",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/finderec_02_pricing.png",
+            "output_variable": "screenshot_pricing"
+          },
+          {
+            "step_id": "wait_family_friends_join_btn",
+            "action": "wait_for_element",
+            "target": "a[href*='preSelectedBillId=22'], a[href*='preSelectedBillType=plan'][href*='22']",
+            "timeout_ms": 15000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 3000 }
+          },
+          {
+            "step_id": "click_family_friends_join_now",
+            "action": "click",
+            "target": "a[href*='preSelectedBillId=22'], a[href*='preSelectedBillType=plan'][href*='22']",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          }
+        ],
+        "next_node": "group_info_form"
+      },
+
+      "group_info_form": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Page: /group/erec-group-info — select Organization card (radio), fill State custom-dropdown, City custom-dropdown, Organization Name, agree to Terms & Privacy, then Continue.",
+        "steps": [
+          {
+            "step_id": "wait_group_type_cards",
+            "action": "wait_for_element",
+            "target": "h3:has-text('Organization')",
+            "timeout_ms": 15000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 3000 }
+          },
+          {
+            "step_id": "click_organization_card",
+            "action": "click",
+            "target": "label[for='org'], input#org, .card:has(h3:has-text('Organization')), label:has(h3:has-text('Organization')), div:has(> h3:has-text('Organization')), [class*='group-type']:has-text('Organization'), h3:has-text('Organization')",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "wait_after_org_card_click",
+            "action": "wait",
+            "duration_ms": 2000
+          },
+          {
+            "step_id": "wait_state_ng_select",
+            "action": "wait_for_element",
+            "target": "select#stateName, select[name='stateName'], #select2-stateName-container, [aria-labelledby*='stateName']",
+            "timeout_ms": 20000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 3000 }
+          },
+          {
+            "step_id": "click_state_dropdown_trigger",
+            "action": "select_option",
+            "target": "select#stateName, select[name='stateName']",
+            "label": "{{group_info_state_option}}",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "wait_after_state_select",
+            "action": "wait",
+            "duration_ms": 2000
+          },
+          {
+            "step_id": "click_city_dropdown_trigger",
+            "action": "wait_for_element",
+            "target": "select#cityName, select[name='cityName'], #select2-cityName-container, [aria-labelledby*='cityName']",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "select_city_option",
+            "action": "select_option",
+            "target": "select#cityName, select[name='cityName']",
+            "label": "{{group_info_city_option}}",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "click_org_name_field",
+            "action": "click",
+            "target": "input#organisation-name, input[name='org_name'], input[name*='organization'], input[name*='orgName'], input[id*='organization'], input[placeholder*='Organization']",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1000 }
+          },
+          {
+            "step_id": "type_org_name",
+            "action": "type",
+            "target": "input#organisation-name, input[name='org_name'], input[name*='organization'], input[name*='orgName'], input[id*='organization'], input[placeholder*='Organization']",
+            "value": "{{group_info_org_name}}"
+          },
+          {
+            "step_id": "click_terms_checkbox",
+            "action": "click",
+            "target": "label:has-text('Terms of Service'), input[type='checkbox']:near(:text('Terms of Service'))"
+          },
+          {
+            "step_id": "click_privacy_checkbox",
+            "action": "click",
+            "target": "label:has-text('Privacy Policy'), input[type='checkbox']:near(:text('Privacy Policy'))"
+          },
+          {
+            "step_id": "screenshot_group_info",
+            "action": "screenshot",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/finderec_03_group_info.png",
+            "output_variable": "screenshot_group_info"
+          },
+          {
+            "step_id": "click_continue",
+            "action": "click",
+            "target": "button#submitBtn, button:has-text('Continue'), a:has-text('Continue')",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          }
+        ],
+        "next_node": "admin_user_form"
+      },
+
+      "admin_user_form": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Page: /group/group-admin — fill My User Information (first name, last name, email, phone, password x2) then Save and Continue.",
+        "steps": [
+          {
+            "step_id": "wait_admin_form",
+            "action": "wait_for_element",
+            "target": "input[name='admin_org_name'], input#organisation-name, input[name='first_name'], input#first_name",
+            "timeout_ms": 15000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 3000 }
+          },
+          {
+            "step_id": "type_admin_org_name",
+            "action": "type",
+            "target": "input[name='admin_org_name'], input#organisation-name",
+            "value": "{{group_info_org_name}}"
+          },
+          {
+            "step_id": "type_first_name",
+            "action": "type",
+            "target": "input[name='first_name'], input#first_name, input[name='firstName'], input[placeholder*='First'], input[id*='firstName']",
+            "value": "{{admin_first_name}}"
+          },
+          {
+            "step_id": "type_last_name",
+            "action": "type",
+            "target": "input[name='last_name'], input#last_name, input[name='lastName'], input[placeholder*='Last'], input[id*='lastName']",
+            "value": "{{admin_last_name}}"
+          },
+          {
+            "step_id": "type_email",
+            "action": "type",
+            "target": "input[type='email'], input[name='email'], input[name='emailId'], input[placeholder*='Email']",
+            "value": "{{admin_email}}"
+          },
+          {
+            "step_id": "type_primary_phone",
+            "action": "type",
+            "target": "input[name='primary_phone'], input#primary_phone, input[type='tel'], input[name*='phone'], input[name*='Phone'], input[placeholder*='Phone']",
+            "value": "{{admin_phone}}"
+          },
+          {
+            "step_id": "type_password",
+            "action": "type",
+            "target": "input[name='password'], input[id='password'], input[placeholder*='Password']:not([placeholder*='Confirm']):not([placeholder*='confirm'])",
+            "value": "{{admin_password}}"
+          },
+          {
+            "step_id": "type_confirm_password",
+            "action": "type",
+            "target": "input[name='confirm_password'], input#confirm_password, input[name='confirmPassword'], input[id='confirmPassword'], input[placeholder*='Confirm'], input[placeholder*='confirm']",
+            "value": "{{admin_password}}"
+          },
+          {
+            "step_id": "wait_admin_submit_enabled",
+            "action": "wait_for_function",
+            "expression": "() => { const btn = document.querySelector(\"button#submitBtn, button[type='submit']\"); return !!btn && !btn.disabled; }",
+            "timeout_ms": 45000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 2000 }
+          },
+          {
+            "step_id": "screenshot_admin_form",
+            "action": "screenshot",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/finderec_04_admin_form.png",
+            "output_variable": "screenshot_admin_form"
+          },
+          {
+            "step_id": "click_save_and_continue_admin",
+            "action": "click",
+            "target": "button#submitBtn, button:has-text('Save and Continue'), button:has-text('Save and continue'), button:has-text('Save & Continue')",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "wait_general_page_url",
+            "action": "wait_for_url",
+            "url": "**/group/erec-general",
+            "timeout_ms": 30000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 2000 }
+          }
+        ],
+        "next_node": "general_org_form"
+      },
+
+      "general_org_form": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Page: /group/erec-general — fill org name, category, address, state (dropdown), city (dropdown), zip, phone, then Save and Continue.",
+        "steps": [
+          {
+            "step_id": "wait_general_form",
+            "action": "wait_for_element",
+            "target": "input#organisation-name, input[name='admin_org_name'], input[name='org_name'], input[name*='organization'], input[name*='orgName'], input[name*='Organization'], input[id*='organization'], input[placeholder*='Organization']",
+            "timeout_ms": 30000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 3000 }
+          },
+          {
+            "step_id": "clear_and_type_org_name",
+            "action": "type",
+            "target": "input#organisation-name, input[name='admin_org_name'], input[name='org_name'], input[name*='organization'], input[name*='orgName'], input[name*='Organization'], input[id*='organization'], input[placeholder*='Organization']",
+            "value": "{{general_org_name}}"
+          },
+          {
+            "step_id": "select_category_option",
+            "action": "select_option",
+            "target": "select#category_id, select[name='category_id']",
+            "label": "Business-Small Business",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "type_address_line1",
+            "action": "type",
+            "target": "input#address_line1, input[name='address_line1'], input[name*='address'], input[name*='Address'], input[id*='address'], input[placeholder*='Address']",
+            "value": "{{general_address_line1}}"
+          },
+          {
+            "step_id": "select_state_option",
+            "action": "select_option",
+            "target": "select#stateName, select[name='state']",
+            "label": "{{group_info_state_option}}",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "wait_after_state_select_general",
+            "action": "wait",
+            "duration_ms": 1500
+          },
+          {
+            "step_id": "wait_city_select",
+            "action": "wait_for_element",
+            "target": "select#schoolCity, select[name='city']",
+            "timeout_ms": 15000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "select_city_option_general",
+            "action": "select_option",
+            "target": "select#schoolCity, select[name='city']",
+            "label": "{{group_info_city_option}}",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          },
+          {
+            "step_id": "type_zipcode",
+            "action": "type",
+            "target": "input#zip_code, input[name='zip_code'], input[name*='zip'], input[name*='Zip'], input[id*='zip'], input[placeholder*='Zip']",
+            "value": "{{general_zip}}"
+          },
+          {
+            "step_id": "type_org_phone",
+            "action": "type",
+            "target": "input#primary_phone_number, input[name='primary_phone_number'], input[type='tel'], input[name*='phone'], input[name*='Phone'], input[placeholder*='Phone']",
+            "value": "{{general_phone}}"
+          },
+          {
+            "step_id": "wait_general_submit_enabled",
+            "action": "wait_for_function",
+            "expression": "() => { const btn = document.querySelector(\"button#submitBtn, button[type='submit']\"); return !!btn && !btn.disabled; }",
+            "timeout_ms": 30000,
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 1, "retry_delay_ms": 2000 }
+          },
+          {
+            "step_id": "screenshot_general_form",
+            "action": "screenshot",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/finderec_05_general_form.png",
+            "output_variable": "screenshot_general"
+          },
+          {
+            "step_id": "click_save_and_continue_general",
+            "action": "click",
+            "target": "button:has-text('Save and Continue'), button:has-text('Save and continue'), button:has-text('Save & Continue')",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          }
+        ],
+        "next_node": "payment_continue"
+      },
+
+      "payment_continue": {
+        "agent": "WEB",
+        "type": "sequence",
+        "description": "Wait 10 seconds for the page to settle after saving, take screenshot, then click Continue to Payment.",
+        "steps": [
+          {
+            "step_id": "wait_10_seconds",
+            "action": "wait",
+            "duration_ms": 10000
+          },
+          {
+            "step_id": "screenshot_before_payment",
+            "action": "screenshot",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/finderec_06_before_payment.png",
+            "output_variable": "screenshot_payment"
+          },
+          {
+            "step_id": "click_continue_to_payment",
+            "action": "click",
+            "target": "button:has-text('Continue to Payment'), a:has-text('Continue to Payment'), button:has-text('Continue To Payment'), a:has-text('Proceed to Payment')",
+            "retry_on_failure": true,
+            "retry_config": { "max_retries": 2, "retry_delay_ms": 1500 }
+          }
+        ],
+        "next_node": "done"
+      },
+
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "screenshot_homepage":   "{{screenshot_homepage}}",
+          "screenshot_pricing":    "{{screenshot_pricing}}",
+          "screenshot_group_info": "{{screenshot_group_info}}",
+          "screenshot_admin_form": "{{screenshot_admin_form}}",
+          "screenshot_general":    "{{screenshot_general}}",
+          "screenshot_payment":    "{{screenshot_payment}}"
+        }
+      }
+
+    }
+  }
+}

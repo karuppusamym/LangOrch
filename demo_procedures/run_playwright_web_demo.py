@@ -8,7 +8,7 @@ import requests
 
 
 BASE_URL = "http://localhost:8000/api"
-PROCEDURE_FILE = Path(r"c:\Users\karup\AGProjects\LangOrch\demo_procedures\web_playwright_real_demo.ckp.json")
+PROCEDURE_FILE = Path(r"c:\Users\karup\AGProjects\LangOrch\demo_procedures\web_playwright_duckduckgo_search_demo.ckp.json")
 
 
 def ensure_backend() -> None:
@@ -31,15 +31,15 @@ def upsert_playwright_agent() -> dict:
         "concurrency_limit": 2,
         "resource_key": "web_playwright_default",
         "capabilities": [
-            "navigate",
-            "click",
-            "type",
-            "wait_for_element",
-            "extract_text",
-            "extract_table_data",
-            "screenshot",
-            "close",
-            "wait"
+            {"name": "navigate", "type": "tool"},
+            {"name": "click", "type": "tool"},
+            {"name": "type", "type": "tool"},
+            {"name": "wait_for_element", "type": "tool"},
+            {"name": "extract_text", "type": "tool"},
+            {"name": "extract_table_data", "type": "tool"},
+            {"name": "screenshot", "type": "tool"},
+            {"name": "close", "type": "tool"},
+            {"name": "wait", "type": "tool"}
         ]
     }
 
@@ -91,7 +91,7 @@ def create_run(procedure_id: str, version: str) -> dict:
         "procedure_id": procedure_id,
         "procedure_version": version,
         "input_vars": {
-            "target_url": "https://example.com"
+            "search_query": "LangChain"
         }
     }
     response = requests.post(f"{BASE_URL}/runs", json=payload, timeout=10)

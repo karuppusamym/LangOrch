@@ -91,6 +91,9 @@ def validate_ir(ir: IRProcedure) -> list[str]:
                 target = getattr(payload, attr, None)
                 if target and target not in all_node_ids:
                     errors.append(f"Node '{nid}': {attr} '{target}' not found.")
+            for decision_key, target_node in (payload.routes or {}).items():
+                if target_node not in all_node_ids:
+                    errors.append(f"Node '{nid}': routes['{decision_key}'] target '{target_node}' not found.")
 
         elif isinstance(payload, IRSubflowPayload):
             if payload.next_node_id and payload.next_node_id not in all_node_ids:
@@ -170,6 +173,7 @@ def validate_ir(ir: IRProcedure) -> list[str]:
                     t = getattr(p, attr, None)
                     if t:
                         edges.append(t)
+                edges.extend((p.routes or {}).values())
             elif isinstance(p, IRSubflowPayload):
                 if p.next_node_id:
                     edges.append(p.next_node_id)

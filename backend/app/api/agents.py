@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,7 +59,12 @@ async def probe_capabilities(base_url: str = Query(..., description="Agent base 
 
 
 @router.post("", response_model=AgentInstanceOut, status_code=201)
-async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(get_db), _principal: Principal = Depends(require_role("operator"))):
+async def register_agent(
+    body: AgentInstanceCreate,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    _principal: Principal = Depends(require_role("operator")),
+):
     agent_id = body.agent_id or f"{body.channel}_{body.name.replace(' ', '_').lower()}"
     resource_key = body.resource_key or f"{body.channel}_default"
 
@@ -67,6 +72,25 @@ async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(g
     resolved_caps = body.capabilities
     if not resolved_caps:
         resolved_caps = await _probe_capabilities(body.base_url)
+
+    result = await db.execute(select(AgentInstance).where(AgentInstance.agent_id == agent_id))
+    existing = result.scalar_one_or_none()
+    serialized_caps = json.dumps([c.model_dump() if hasattr(c, 'model_dump') else c for c in resolved_caps]) if resolved_caps else None
+
+    if existing:
+        existing.name = body.name
+        existing.channel = body.channel
+        existing.base_url = body.base_url
+        existing.concurrency_limit = body.concurrency_limit
+        existing.resource_key = resource_key
+        existing.pool_id = body.pool_id
+        existing.capabilities = serialized_caps
+        existing.status = "online"
+        existing.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+        await db.refresh(existing)
+        response.status_code = 200
+        return existing
 
     inst = AgentInstance(
         agent_id=agent_id,
@@ -76,7 +100,7 @@ async def register_agent(body: AgentInstanceCreate, db: AsyncSession = Depends(g
         concurrency_limit=body.concurrency_limit,
         resource_key=resource_key,
         pool_id=body.pool_id,
-        capabilities=json.dumps([c.model_dump() if hasattr(c, 'model_dump') else c for c in resolved_caps]) if resolved_caps else None,
+        capabilities=serialized_caps,
     )
     db.add(inst)
     await db.flush()

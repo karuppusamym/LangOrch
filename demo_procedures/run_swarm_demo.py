@@ -182,7 +182,7 @@ def main() -> None:
     print("[2/6] Checking swarm agent health...")
     agent_health = ensure_swarm_agent_health()
     print(f"✓ Swarm agent is healthy")
-    print(f"      Capabilities: {', '.join(cap['name'] for cap in agent_health.get('capabilities', []))}")
+    print(f"      Capabilities: {', '.join(cap['name'] if isinstance(cap, dict) and 'name' in cap else str(cap) for cap in agent_health.get('capabilities', []))}")
 
     print("[3/6] Registering swarm agent in orchestrator...")
     agent = upsert_swarm_agent()

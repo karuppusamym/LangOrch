@@ -17,6 +17,7 @@ export default function ApprovalsPage() {
   const [filter, setFilter] = useState<"all" | "pending" | "resolved">("pending");
   const [activeApproval, setActiveApproval] = useState<Approval | null>(null);
   const [decisionType, setDecisionType] = useState<"approved" | "rejected" | null>(null);
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [approverName, setApproverName] = useState(() => {
     const user = getUser();
@@ -55,10 +56,10 @@ export default function ApprovalsPage() {
     if (typeof window !== "undefined") localStorage.setItem("approver_name", name);
   }
 
-  async function handleDecision(approvalId: string, decision: "approved" | "rejected") {
+  async function handleDecision(approvalId: string, decision: string) {
     try {
       await submitApprovalDecision(approvalId, decision, approverName.trim() || "ui_user", comment || undefined);
-      toast(`Approval ${decision}`, "success");
+      toast(`Decision submitted: ${decision}`, "success");
       await loadApprovals();
     } catch (err) {
       console.error(err);
@@ -66,6 +67,7 @@ export default function ApprovalsPage() {
     } finally {
       setActiveApproval(null);
       setDecisionType(null);
+      setSelectedOption(null);
       setComment("");
     }
   }
@@ -85,208 +87,131 @@ export default function ApprovalsPage() {
   });
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] space-y-4 bg-neutral-50 p-6">
-      <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Approvals Workspace</p>
-            <h1 className="mt-1 text-3xl font-bold text-neutral-900 dark:text-neutral-100">Approval Reports</h1>
-            <p className="mt-1 max-w-3xl text-sm text-neutral-500 dark:text-neutral-400">
-              Review active approvals, decision latency, stale waits, and the full approval flow per run.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-            <span className="rounded-full bg-emerald-50 px-3 py-1.5 font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-              Live approval stream
-            </span>
-            {staleApprovals.length > 0 && (
-              <span className="rounded-full bg-neutral-100 px-3 py-1.5 font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                {staleApprovals.length} stale waiting records
-              </span>
-            )}
-          </div>
-        </div>
+    <div className="min-h-[calc(100vh-4rem)] space-y-6 bg-neutral-50 p-6">
+      <div>
+        <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">Approvals</h1>
+        <p className="mt-0.5 text-sm text-neutral-500 dark:text-neutral-400">Human-in-the-loop approval requests</p>
+      </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <StatCard label="Actionable" value={String(actionableApprovals.length)} detail="Pending approvals on active runs" tone="amber" />
-          <StatCard label="Overdue" value={String(overdueApprovals.length)} detail="Pending beyond their expiry window" tone="red" />
-          <StatCard label="Resolved" value={`${approvedCount}/${rejectedCount}`} detail="Approved / rejected decisions" tone="emerald" />
-          <StatCard label="Avg Response" value={avgDecisionMinutes != null ? `${avgDecisionMinutes.toFixed(1)} min` : "-"} detail="Mean time from request to decision" tone="blue" />
-        </div>
-      </section>
-
-      <div className="rounded-2xl border border-neutral-200 bg-white p-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Approver</label>
-            <input
-              value={approverName}
-              onChange={(e) => saveApproverName(e.target.value)}
-              placeholder="name used for decisions"
-              className="w-52 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-sm text-neutral-900 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
-            />
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-              <span className="rounded-full border px-2 py-1">Pending {actionableApprovals.length}</span>
-              <span className="rounded-full border px-2 py-1">Resolved {resolvedApprovals.length}</span>
-              <span className="rounded-full border px-2 py-1">Stale {staleApprovals.length}</span>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
-            <FilterButton label={`Pending (${actionableApprovals.length})`} active={filter === "pending"} onClick={() => setFilter("pending")} />
-            <FilterButton label={`Resolved (${resolvedApprovals.length})`} active={filter === "resolved"} onClick={() => setFilter("resolved")} />
-            <FilterButton label={`All (${approvals.length})`} active={filter === "all"} onClick={() => setFilter("all")} />
-          </div>
-        </div>
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <label className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Your name</label>
+        <input
+          value={approverName}
+          onChange={(e) => saveApproverName(e.target.value)}
+          placeholder="Used when recording decisions"
+          className="w-48 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-sm text-neutral-900 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+        />
       </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
         </div>
-      ) : filtered.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-neutral-300 p-16 text-center text-sm text-neutral-400 dark:border-neutral-700">
-          {filter === "pending" ? "No actionable approvals remain." : filter === "resolved" ? "No resolved approvals yet." : "No approvals found."}
-        </div>
       ) : (
-        <div className="space-y-3">
-          {filtered.map((approval) => {
-            const overdue = isOverdueApproval(approval);
-            const actionable = isActionableApproval(approval);
-            const commentText = getApprovalComment(approval);
-            const contextEntries = Object.entries(approval.context_data ?? {}).slice(0, 4);
-            const runTerminal = isTerminalRunStatus(approval.run_status);
-            return (
-              <article
-                key={approval.approval_id}
-                className={`rounded-2xl border p-4 shadow-sm transition-shadow hover:shadow-md ${overdue
-                  ? "border-red-200 bg-red-50/80 dark:border-red-900/40 dark:bg-red-950/20"
-                  : actionable
-                    ? "border-amber-200 bg-amber-50/70 dark:border-amber-900/40 dark:bg-amber-950/20"
-                    : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"}`}
-              >
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_240px] xl:items-start">
-                  <div className="min-w-0 space-y-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <ApprovalStatusBadge status={approval.status} />
-                      <FlowTag label={approval.decision_type.replace(/_/g, " ")} tone="violet" />
-                      {approval.run_status && (
-                        <FlowTag label={`Run ${approval.run_status.replace(/_/g, " ")}`} tone={runTerminal ? "neutral" : approval.run_status === "waiting_approval" ? "amber" : "blue"} />
-                      )}
-                      {overdue && <FlowTag label="Overdue" tone="red" />}
-                      {approval.options?.length ? <FlowTag label={`${approval.options.length} option${approval.options.length === 1 ? "" : "s"}`} tone="emerald" /> : null}
-                      {contextEntries.length ? <FlowTag label={`${contextEntries.length} context fields`} tone="blue" /> : null}
-                    </div>
-
-                    <div>
-                      <p className="text-base font-semibold text-neutral-900 dark:text-neutral-100">{approval.prompt}</p>
-                      <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                        Requested {formatTimestamp(approval.created_at)} on node <span className="font-mono">{approval.node_id}</span>
-                      </p>
-                    </div>
-
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <MetricTile label="Requested" value={formatTimestamp(approval.created_at)} subvalue={formatDistance(approval.created_at)} />
-                      <MetricTile
-                        label={approval.status === "pending" ? "Waiting" : "Resolved"}
-                        value={approval.status === "pending" ? (approval.expires_at ? `Due ${formatTimestamp(approval.expires_at)}` : "No expiry") : formatTimestamp(approval.decided_at)}
-                        subvalue={approval.status === "pending" ? (approval.expires_at ? formatDistance(approval.created_at, approval.expires_at) : "Awaiting a human decision") : getDecisionLatency(approval)}
-                      />
-                      <MetricTile
-                        label="Run"
-                        value={approval.run_status ? approval.run_status.replace(/_/g, " ") : "Unknown"}
-                        subvalue={runTerminal ? "Run already finished" : approval.status === "pending" ? "Decision can still resume execution" : "Decision already applied"}
-                      />
-                    </div>
-
-                    <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/40">
-                      <div className="flex flex-wrap items-center gap-2 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-                        <span>Approval Flow</span>
-                        {approval.decided_by && <span className="normal-case tracking-normal">by {approval.decided_by}</span>}
-                      </div>
-                      <div className="mt-3 grid gap-2 md:grid-cols-3">
-                        <FlowStep title="1. Requested" tone="blue" detail={formatTimestamp(approval.created_at)} supporting={`Run ${approval.run_id.slice(0, 12)}...`} />
-                        <FlowStep
-                          title="2. Waiting"
-                          tone={overdue ? "red" : "amber"}
-                          detail={approval.status === "pending" ? (approval.expires_at ? `Until ${formatTimestamp(approval.expires_at)}` : "Open-ended") : getDecisionLatency(approval)}
-                          supporting={runTerminal && approval.status === "pending" ? "Run is terminal; this record is stale" : approval.status === "pending" ? "Still waiting on approval" : "Decision received"}
-                        />
-                        <FlowStep
-                          title="3. Outcome"
-                          tone={approval.status === "approved" ? "emerald" : approval.status === "rejected" ? "red" : "neutral"}
-                          detail={approval.status === "pending" ? "Pending" : approval.status.replace(/_/g, " ")}
-                          supporting={approval.decided_at ? formatTimestamp(approval.decided_at) : "No decision yet"}
-                        />
-                      </div>
-                    </div>
-
-                    {contextEntries.length > 0 && (
-                      <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-3 dark:border-sky-900/40 dark:bg-sky-950/20">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">Context Snapshot</p>
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          {contextEntries.map(([key, value]) => (
-                            <div key={key} className="rounded-lg bg-white/80 p-2.5 dark:bg-neutral-900/60">
-                              <p className="text-[11px] font-medium uppercase tracking-wide text-sky-600 dark:text-sky-400">{key}</p>
-                              <p className="mt-1 break-words text-sm text-neutral-700 dark:text-neutral-200">{compactValue(value)}</p>
-                            </div>
-                          ))}
+        <>
+          {/* Pending Approvals */}
+          <section>
+            <div className="mb-3 flex items-center gap-2">
+              <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">Pending Approvals</h2>
+              {actionableApprovals.length > 0 && (
+                <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                  {actionableApprovals.length}
+                </span>
+              )}
+            </div>
+            {actionableApprovals.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-neutral-200 bg-white p-10 text-center text-sm text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900">
+                No pending approvals — all clear.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {actionableApprovals.map((approval) => {
+                  const contextEntries = Object.entries(approval.context_data ?? {}).slice(0, 6);
+                  return (
+                    <div key={approval.approval_id}
+                      className="rounded-2xl border border-amber-200 bg-amber-50/80 p-5 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/20">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                              {formatNodeTitle(approval.node_id)}
+                            </h3>
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Pending</span>
+                          </div>
+                          <p className="mt-1 text-sm text-neutral-700 dark:text-neutral-300">{approval.prompt}</p>
+                          {contextEntries.length > 0 && (
+                            <pre className="mt-3 max-h-36 overflow-auto rounded-lg border border-amber-100 bg-white/70 p-3 text-xs text-neutral-600 dark:border-amber-900/30 dark:bg-neutral-900/60 dark:text-neutral-300">
+                              {JSON.stringify(Object.fromEntries(contextEntries), null, 2)}
+                            </pre>
+                          )}
+                          <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+                            Requested {formatDistance(approval.created_at)} ago
+                            {approval.expires_at && (
+                              <span className="ml-1.5 text-amber-600 dark:text-amber-400">· due {formatTimestamp(approval.expires_at)}</span>
+                            )}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                          <Link href={`/runs/${approval.run_id}`}
+                            className="rounded-full border border-neutral-200 bg-white px-4 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+                            View Run
+                          </Link>
+                          <button
+                            onClick={() => { setActiveApproval(approval); setDecisionType("approved"); setSelectedOption(null); setComment(""); }}
+                            className="rounded-full bg-neutral-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200">
+                            Review
+                          </button>
                         </div>
                       </div>
-                    )}
-
-                    {(commentText || approval.decision_payload) && (
-                      <div className="rounded-2xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-950/60">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Decision Record</p>
-                        {commentText && <p className="mt-2 text-sm text-neutral-700 dark:text-neutral-200">{commentText}</p>}
-                        {approval.decision_payload && (
-                          <pre className="mt-3 max-h-48 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">{JSON.stringify(approval.decision_payload, null, 2)}</pre>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="w-full shrink-0">
-                    <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/50">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Actions</p>
-                      <div className="mt-3 space-y-2 text-sm">
-                        <Link href={`/approvals/${approval.approval_id}`} className="block rounded-lg border border-neutral-200 bg-white px-3 py-2 text-center font-medium text-blue-600 hover:bg-blue-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-blue-300 dark:hover:bg-blue-950/30">
-                          Open detail report
-                        </Link>
-                        <Link href={`/runs/${approval.run_id}`} className="block rounded-lg border border-neutral-200 bg-white px-3 py-2 text-center font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800">
-                          Open run history
-                        </Link>
-                        {approval.status === "pending" && (
-                          <>
-                            <button
-                              onClick={() => {
-                                setActiveApproval(approval);
-                                setDecisionType("approved");
-                                setComment("");
-                              }}
-                              className="w-full rounded-lg bg-green-600 px-4 py-2 font-medium text-white hover:bg-green-700"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              onClick={() => {
-                                setActiveApproval(approval);
-                                setDecisionType("rejected");
-                                setComment("");
-                              }}
-                              className="w-full rounded-lg border border-red-300 px-4 py-2 font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30"
-                            >
-                              Reject
-                            </button>
-                          </>
-                        )}
-                      </div>
                     </div>
-                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Recent History */}
+          {resolvedApprovals.length > 0 && (
+            <section>
+              <h2 className="mb-3 text-base font-semibold text-neutral-900 dark:text-neutral-100">Recent History</h2>
+              <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+                <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {resolvedApprovals.slice(0, 20).map((approval) => {
+                    const commentText = getApprovalComment(approval);
+                    const isApproved = approval.status === "approved";
+                    return (
+                      <div key={approval.approval_id} className="flex items-start gap-4 px-5 py-4">
+                        <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${isApproved ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400" : "bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400"}`}>
+                          {isApproved ? (
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>
+                          ) : (
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{formatNodeTitle(approval.node_id)}</span>
+                            <ApprovalStatusBadge status={approval.status} />
+                          </div>
+                          <p className="mt-0.5 line-clamp-1 text-xs text-neutral-500 dark:text-neutral-400">{approval.prompt}</p>
+                          <p className="mt-0.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+                            {approval.decided_by && <span>decided by {approval.decided_by} · </span>}
+                            {formatTimestamp(approval.decided_at)}
+                            {commentText && <span> · &ldquo;{commentText}&rdquo;</span>}
+                          </p>
+                        </div>
+                        <Link href={`/runs/${approval.run_id}`}
+                          className="shrink-0 text-xs font-medium text-sky-600 hover:underline dark:text-sky-400">
+                          View Run
+                        </Link>
+                      </div>
+                    );
+                  })}
                 </div>
-              </article>
-            );
-          })}
-        </div>
+              </div>
+            </section>
+          )}
+        </>
       )}
 
       {activeApproval && decisionType && (
@@ -300,7 +225,7 @@ export default function ApprovalsPage() {
             </div>
             <div className="space-y-5 p-6">
               <div>
-                <p className="text-base font-medium text-neutral-900 dark:text-neutral-100">{activeApproval.prompt}</p>
+                <p className="whitespace-pre-wrap text-base font-medium text-neutral-900 dark:text-neutral-100">{activeApproval.prompt}</p>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-neutral-500 dark:text-neutral-400">
                   <span className="rounded-full bg-neutral-100 px-2.5 py-1 dark:bg-neutral-800">Run {activeApproval.run_id.slice(0, 12)}...</span>
                   <span className="rounded-full bg-neutral-100 px-2.5 py-1 font-mono dark:bg-neutral-800">Node {activeApproval.node_id}</span>
@@ -320,11 +245,22 @@ export default function ApprovalsPage() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Available options</p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {activeApproval.options.map((option) => (
-                      <span key={option} className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                      <button
+                        key={option}
+                        onClick={() => setSelectedOption(option)}
+                        className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                          selectedOption === option
+                            ? "border-blue-500 bg-blue-600 text-white"
+                            : "border-neutral-200 bg-neutral-50 text-neutral-700 hover:border-blue-300 hover:bg-blue-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:border-blue-600 dark:hover:bg-blue-950/30"
+                        }`}
+                      >
                         {option}
-                      </span>
+                      </button>
                     ))}
                   </div>
+                  {!selectedOption && (
+                    <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Select an option above before confirming.</p>
+                  )}
                 </div>
               ) : null}
 
@@ -340,8 +276,18 @@ export default function ApprovalsPage() {
                 </div>
                 <div>
                   <label className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300">Decision summary</label>
-                  <div className={`rounded-lg border px-3 py-2 text-sm font-medium ${decisionType === "approved" ? "border-green-200 bg-green-50 text-green-700 dark:border-green-900/40 dark:bg-green-950/20 dark:text-green-300" : "border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300"}`}>
-                    {decisionType === "approved" ? "The run will resume on approval." : "The run will resume on rejection handling."}
+                  <div className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                    selectedOption
+                      ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300"
+                      : decisionType === "approved"
+                      ? "border-green-200 bg-green-50 text-green-700 dark:border-green-900/40 dark:bg-green-950/20 dark:text-green-300"
+                      : "border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300"
+                  }`}>
+                    {selectedOption
+                      ? `Decision: "${selectedOption}" — run will resume on this route.`
+                      : decisionType === "approved"
+                      ? "The run will resume on approval."
+                      : "The run will resume on rejection handling."}
                   </div>
                 </div>
               </div>
@@ -363,14 +309,27 @@ export default function ApprovalsPage() {
                 onClick={() => {
                   setActiveApproval(null);
                   setDecisionType(null);
+                  setSelectedOption(null);
                 }}
                 className="rounded-lg px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
               >
                 Cancel
               </button>
               <button
-                onClick={() => handleDecision(activeApproval.approval_id, decisionType)}
-                className={`rounded-lg px-4 py-2 text-sm font-medium text-white ${decisionType === "approved" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"}`}
+                onClick={() => {
+                  const decision = activeApproval.options?.length
+                    ? (selectedOption ?? decisionType ?? "approved")
+                    : (decisionType ?? "approved");
+                  handleDecision(activeApproval.approval_id, decision);
+                }}
+                disabled={!!(activeApproval.options?.length && !selectedOption)}
+                className={`rounded-lg px-4 py-2 text-sm font-medium text-white ${
+                  activeApproval.options?.length && !selectedOption
+                    ? "cursor-not-allowed bg-neutral-400"
+                    : decisionType === "approved"
+                    ? "bg-green-600 hover:bg-green-700"
+                    : "bg-red-600 hover:bg-red-700"
+                }`}
               >
                 Confirm {decisionType === "approved" ? "approval" : "rejection"}
               </button>
@@ -380,6 +339,10 @@ export default function ApprovalsPage() {
       )}
     </div>
   );
+}
+
+function formatNodeTitle(nodeId: string): string {
+  return nodeId.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function isTerminalRunStatus(runStatus: string | null | undefined): boolean {

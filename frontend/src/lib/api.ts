@@ -299,7 +299,7 @@ export async function getApproval(id: string): Promise<Approval> {
 
 export async function submitApprovalDecision(
   id: string,
-  decision: "approved" | "rejected",
+  decision: string,
   decidedBy: string,
   comment?: string
 ): Promise<Approval> {

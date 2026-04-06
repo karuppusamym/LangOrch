@@ -37,11 +37,18 @@ router = APIRouter(tags=["secrets"])
 # ── Fernet helpers ─────────────────────────────────────────────────────────────
 
 def _get_fernet():
-    """Build a Fernet instance from SECRETS_ENCRYPTION_KEY env var.
+    """Build a Fernet instance from SECRETS_ENCRYPTION_KEY.
 
-    If the key is not set, returns None.
+    Checks os.environ first, then falls back to the Settings model which
+    loads it from .env via pydantic-settings.  Returns None if not set.
     """
     raw_key = os.environ.get("SECRETS_ENCRYPTION_KEY")
+    if not raw_key:
+        try:
+            from app.config import settings as _settings
+            raw_key = _settings.SECRETS_ENCRYPTION_KEY
+        except Exception:
+            pass
     if not raw_key:
         return None
     try:

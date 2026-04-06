@@ -145,9 +145,14 @@ def _parse_sequence(d: dict) -> IRSequencePayload:
 
 
 def _parse_step(s: dict) -> IRStep:
-    # Collect all step params except known meta fields
+    # Collect all step params except known meta fields.
+    # NOTE: timeout_ms is intentionally NOT excluded — it must be forwarded
+    # to external agents (e.g. web agent's wait_for_element) so they use the
+    # CKP-specified timeout rather than their internal default.
+    # The orchestrator also reads step.timeout_ms (set below) for its own
+    # asyncio.wait_for wrapper — so both get the correct value.
     meta_keys = {
-        "step_id", "action", "timeout_ms", "wait_ms", "wait_after_ms",
+        "step_id", "action", "wait_ms", "wait_after_ms",
         "retry_on_failure", "retry_config", "output_variable", "screenshot_on_complete",
         "idempotency_key", "workflow_dispatch_mode",
     }
@@ -183,9 +188,11 @@ def _parse_error_handler(eh: dict) -> IRErrorHandler:
 
 
 def _parse_logic(d: dict) -> IRLogicPayload:
+    # Accept both "branches" (TypeScript/CKP convention) and "rules" (legacy)
+    branch_list = d.get("branches") or d.get("rules") or []
     rules = [
         IRLogicRule(condition_expr=r["condition"], next_node_id=r["next_node"])
-        for r in d.get("rules", [])
+        for r in branch_list
     ]
     return IRLogicPayload(rules=rules, default_next_node_id=d.get("default_next_node"))
 
@@ -217,7 +224,8 @@ def _parse_parallel(d: dict) -> IRParallelPayload:
 
 
 def _parse_processing(d: dict) -> IRProcessingPayload:
-    ops = [IRProcessingOp(action=o.get("action", ""), params=o) for o in d.get("operations", [])]
+    # Use 'type' if present (e.g. type: "api_call"), fall back to 'action'
+    ops = [IRProcessingOp(action=o.get("type") or o.get("action", ""), params=o) for o in d.get("operations", [])]
     return IRProcessingPayload(operations=ops, next_node_id=d.get("next_node"))
 
 
@@ -268,6 +276,7 @@ def _parse_human_approval(d: dict) -> IRHumanApprovalPayload:
         on_approve=d.get("on_approve"),
         on_reject=d.get("on_reject"),
         on_timeout=d.get("on_timeout"),
+        routes=d.get("routes") or {},
     )
 
 

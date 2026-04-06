@@ -366,6 +366,13 @@ def _add_conditional_routing(
             t = getattr(ir_node.payload, attr, None)
             if t:
                 destinations[t] = t
+        # routes dict values are also valid destinations
+        for t in (ir_node.payload.routes or {}).values():
+            if t:
+                destinations[t] = t
+        # fallback next_node
+        if ir_node.next_node_id:
+            destinations[ir_node.next_node_id] = ir_node.next_node_id
 
     elif ir_node.type == "loop" and isinstance(ir_node.payload, IRLoopPayload):
         if ir_node.payload.body_node_id:

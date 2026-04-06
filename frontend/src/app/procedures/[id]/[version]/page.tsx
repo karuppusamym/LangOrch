@@ -251,9 +251,10 @@ export default function ProcedureVersionDetailPage() {
       if (report.nodes.length === 0) {
         issues.push("Workflow does not compile into any executable nodes.");
       }
-      if (report.variables.missing_inputs.length > 0) {
-        issues.push(`Missing required inputs: ${report.variables.missing_inputs.join(", ")}`);
-      }
+      // Note: report.variables.missing_inputs is intentionally NOT checked here.
+      // missing_inputs lists required vars absent from the *preview* input_vars (which
+      // are always empty during a static readiness check). A procedure declaring required
+      // inputs is correct; missing test values is not a promotion blocker.
 
       const nextState: ReleaseReadinessState = {
         status: issues.length > 0 ? "blocked" : "ready",

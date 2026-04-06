@@ -321,8 +321,8 @@ async def patch_config(
         await db.rollback()
         for attr, previous_value in previous_values.items():
             object.__setattr__(settings, attr, previous_value)
-        logger.warning("Failed to persist config patch; reverted in-memory updates: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to persist configuration changes") from exc
+        logger.warning("Failed to persist config patch; reverted in-memory updates", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to persist configuration changes: {type(exc).__name__}: {exc}") from exc
 
     return _build_config_out()
 

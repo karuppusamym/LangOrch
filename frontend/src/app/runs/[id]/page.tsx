@@ -853,6 +853,14 @@ export default function RunDetailPage() {
             : <InfoCard label="Last Node" value={run.last_node_id ?? "—"} />}
       </div>
 
+      {/* Who ran / trigger info */}
+      {(run.triggered_by || run.trigger_type) && (
+        <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-2.5 text-xs text-neutral-600">
+          {run.triggered_by && <span>Ran by: <strong className="text-neutral-900">{run.triggered_by}</strong></span>}
+          {run.trigger_type && <span>Trigger: <strong className="text-neutral-900">{run.trigger_type}</strong></span>}
+        </div>
+      )}
+
       {/* LLM token usage */}
       {(run.total_prompt_tokens != null || run.total_completion_tokens != null) && (
         <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-2.5 text-xs text-sky-800">
@@ -1114,8 +1122,9 @@ export default function RunDetailPage() {
               ) : (
                 <div className="space-y-2">
                   {artifacts.map((a) => {
-                    const isPreviewable = /\.(json|txt|log|md|csv|xml|yaml|yml)$/i.test(a.uri) || a.kind === "json" || a.kind === "text" || a.kind === "log";
-                    const isImage = /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(a.uri) || a.kind === "screenshot" || a.kind === "image";
+                    const isMemoryUri = a.uri.startsWith("memory://");
+                    const isPreviewable = !isMemoryUri && (/\.(json|txt|log|md|csv|xml|yaml|yml)$/i.test(a.uri) || a.kind === "json" || a.kind === "text" || a.kind === "log");
+                    const isImage = !isMemoryUri && (/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(a.uri) || a.kind === "screenshot" || a.kind === "image");
                     return (
                       <div key={a.artifact_id} className="rounded-2xl border border-neutral-100 p-3">
                         <div className="flex items-center justify-between">
@@ -1123,12 +1132,18 @@ export default function RunDetailPage() {
                             <p className="text-xs font-medium text-neutral-900">{a.kind}</p>
                             <p className="truncate text-xs text-neutral-500">{a.node_id ? `node: ${a.node_id}` : "—"}{a.step_id ? ` | step: ${a.step_id}` : ""}</p>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <a href={a.uri} target="_blank" rel="noreferrer" className="text-xs text-sky-600 hover:underline">Open</a>
-                            <a href={a.uri} download className="rounded-full border border-neutral-200 px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-100">↓ Download</a>
-                          </div>
+                          {!isMemoryUri && (
+                            <div className="flex items-center gap-2">
+                              <a href={a.uri} target="_blank" rel="noreferrer" className="text-xs text-sky-600 hover:underline">Open</a>
+                              <a href={a.uri} download className="rounded-full border border-neutral-200 px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-100">↓ Download</a>
+                            </div>
+                          )}
                         </div>
-                        {/* Inline preview */}
+                        {/* Memory-only artifact (agent captured but didn't persist to disk) */}
+                        {isMemoryUri && (
+                          <p className="mt-2 text-xs text-amber-600">Captured in agent memory — not persisted to storage (run in non-dry-run mode with Playwright to save)</p>
+                        )}
+                        {/* Inline image preview */}
                         {isImage && (
                           <div className="mt-2 rounded-2xl border border-neutral-100 bg-neutral-50 p-2">
                             <img src={a.uri} alt={a.kind} className="max-h-48 rounded" />

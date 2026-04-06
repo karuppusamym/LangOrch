@@ -25,8 +25,21 @@ def build_approval_interrupt_payload(node: IRNode, state: OrchestratorState) -> 
 def resolve_approval_next_node(
     node: IRNode, decision: str
 ) -> str | None:
-    """Given an approval decision, return the next_node_id to route to."""
+    """Given an approval decision, return the next_node_id to route to.
+
+    Resolution order:
+      1. ``payload.routes[decision]``  — explicit per-value mapping (custom flows)
+      2. ``on_approve`` / ``on_reject`` / ``on_timeout`` — standard binary keys
+      3. ``node.next_node_id``         — fallback catch-all
+    """
     payload: IRHumanApprovalPayload = node.payload
+
+    # 1. Custom routes map takes priority
+    routes = getattr(payload, "routes", None) or {}
+    if decision in routes:
+        return routes[decision]
+
+    # 2. Standard approve/reject/timeout aliases
     mapping = {
         "approved": payload.on_approve,
         "approve": payload.on_approve,
@@ -35,4 +48,8 @@ def resolve_approval_next_node(
         "timed_out": payload.on_timeout,
         "timeout": payload.on_timeout,
     }
-    return mapping.get(decision, payload.on_reject)
+    if decision in mapping and mapping[decision] is not None:
+        return mapping[decision]
+
+    # 3. Fall back to on_reject → node.next_node_id
+    return payload.on_reject or node.next_node_id

@@ -1,7 +1,9 @@
 {
-  "id": "demo_case_triage_with_swarm",
+  "procedure_id": "demo_case_triage_with_swarm",
+  "name": "Demo Case Triage with Swarm",
   "description": "Demo: Intake, triage with swarm agent, and route based on result.",
-  "version": 1,
+  "status": "draft",
+  "version": 2,
   "nodes": [
     {
       "id": "collect_context",
@@ -56,5 +58,22 @@
     {"id": "legal_handler", "type": "sequence", "steps": [{"action": "notify.legal_team"}]},
     {"id": "support_handler", "type": "sequence", "steps": [{"action": "notify.support_team"}]}
   ],
-  "entry": "collect_context"
+  "entry": "collect_context",
+  "workflow_graph": {
+    "start_node": "collect_context",
+    "nodes": [
+      {"id": "collect_context", "type": "sequence", "next": "triage_swarm"},
+      {"id": "triage_swarm", "type": "sequence", "next": "route_case"},
+      {"id": "route_case", "type": "logic", "branches": [
+        {"condition": "{{variables.swarm_result.recommended_route}} == 'finance_specialist_queue'", "next": "finance_handler"},
+        {"condition": "{{variables.swarm_result.recommended_route}} == 'security_incident_queue'", "next": "security_handler"},
+        {"condition": "{{variables.swarm_result.recommended_route}} == 'legal_review_queue'", "next": "legal_handler"},
+        {"condition": "true", "next": "support_handler"}
+      ]},
+      {"id": "finance_handler", "type": "sequence"},
+      {"id": "security_handler", "type": "sequence"},
+      {"id": "legal_handler", "type": "sequence"},
+      {"id": "support_handler", "type": "sequence"}
+    ]
+  }
 }

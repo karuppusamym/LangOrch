@@ -5,12 +5,12 @@ $ErrorActionPreference = "Stop"
 # Use this script when you want to watch the browser while a workflow runs.
 # -------------------------------------------------------------------------
 $env:WEB_AGENT_DRY_RUN = "false"
-$env:WEB_AGENT_HEADLESS = "false"   # <-- key difference: browser window is visible
+$env:WEB_AGENT_HEADLESS = "false"  # <-- key difference: browser window is visible
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " LangOrch Playwright Agent (VISIBLE)    " -ForegroundColor Cyan
-Write-Host " http://127.0.0.1:9000  — real browser  " -ForegroundColor Cyan
+Write-Host " http://127.0.0.1:9000  -- real browser  " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Browser window will open when the first workflow step runs." -ForegroundColor Green

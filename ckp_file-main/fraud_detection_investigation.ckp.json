@@ -1,0 +1,995 @@
+{
+  "procedure_id": "fraud_detection_investigation",
+  "version": "1.1.0",
+  "status": "active",
+  "effective_date": "2026-04-04",
+  "description": "End-to-end fraud detection and investigation pipeline. Triggered per transaction event; runs parallel signal collection, LLM-based behavioral analysis, risk scoring, and routes to human analyst review or auto-decision based on risk band.",
+  "trigger": {
+    "type": "webhook",
+    "webhook_secret": "{{secrets.webhook_signing_secret}}",
+    "webhook_config": {
+      "endpoint": "/webhooks/fraud/transaction",
+      "authentication": {
+        "type": "hmac_sha256",
+        "secret_ref": "webhook_signing_secret"
+      },
+      "allowed_sources": [
+        "transaction-monitor-service",
+        "core-banking-gw"
+      ]
+    }
+  },
+  "retrieval_metadata": {
+    "primary_intents": [
+      "detect fraudulent transactions",
+      "investigate suspicious activity",
+      "freeze compromised account",
+      "file suspicious activity report",
+      "risk score transaction"
+    ],
+    "negative_intents": [
+      "process normal payment",
+      "approve routine transfer"
+    ],
+    "business_domain": "finance",
+    "applicability": {
+      "application_names": [
+        "Core Banking System",
+        "Fraud Risk API",
+        "CRM",
+        "Compliance Portal"
+      ],
+      "account_types": [
+        "fraud_analyst",
+        "compliance_officer",
+        "risk_manager"
+      ],
+      "channel": [
+        "api",
+        "web"
+      ]
+    },
+    "keywords": [
+      "fraud",
+      "AML",
+      "risk score",
+      "suspicious",
+      "freeze",
+      "SAR",
+      "chargeback",
+      "velocity",
+      "anomaly"
+    ]
+  },
+  "global_config": {
+    "screenshot_on_fail": false,
+    "max_retries": 2,
+    "retry_delay_ms": 1500,
+    "timeout_ms": 120000,
+    "on_failure": "audit_and_alert_node",
+    "logging_level": "INFO",
+    "telemetry_enabled": true,
+    "checkpoint_strategy": "critical_nodes_only",
+    "checkpoint_storage": "database",
+    "resume_on_failure": true,
+    "checkpoint_retention_days": 90,
+    "execution_mode": "production",
+    "audit_config": {
+      "enabled": true,
+      "audit_level": "detailed",
+      "storage_location": "compliance_audit_store",
+      "retention_days": 2555,
+      "include_sensitive_data": false
+    },
+    "secrets_config": {
+      "provider": "azure_keyvault",
+      "vault_url": "https://mycompany-vault.vault.azure.net",
+      "secret_references": {
+        "fraud_api_key": "fraud-risk-api-key",
+        "crm_api_key": "crm-service-api-key",
+        "core_banking_key": "core-banking-api-key",
+        "compliance_portal_key": "compliance-portal-api-key",
+        "webhook_signing_secret": "fraud-webhook-hmac-secret"
+      }
+    },
+    "service_endpoints": {
+      "CORE_BANKING_URL": "http://localhost:3001/api/banking",
+      "CRM_URL": "http://localhost:3001/api/crm",
+      "FRAUD_RISK_API_URL": "http://localhost:3001/api/fraud",
+      "NOTIFICATION_URL": "http://localhost:3001/api/notify",
+      "COMPLIANCE_PORTAL_URL": "http://localhost:3001/api/compliance",
+      "ONCALL_SERVICE_URL": "http://localhost:3001/api/oncall",
+      "SUPPORT_PHONE": "+1-800-555-0100"
+    }
+  },
+  "variables_schema": {
+    "required": {
+      "transaction_id": {
+        "type": "string",
+        "description": "Unique transaction identifier from core banking",
+        "origin": "user_strict"
+      },
+      "account_id": {
+        "type": "string",
+        "description": "Account holder ID originating the transaction",
+        "origin": "user_strict"
+      },
+      "transaction_amount": {
+        "type": "number",
+        "description": "Transaction amount in base currency",
+        "origin": "user_strict",
+        "validation": {
+          "min": 0.01
+        }
+      },
+      "transaction_currency": {
+        "type": "string",
+        "description": "ISO 4217 currency code",
+        "origin": "user_strict",
+        "validation": {
+          "regex": "^[A-Z]{3}$"
+        }
+      },
+      "merchant_id": {
+        "type": "string",
+        "description": "Merchant or payee identifier",
+        "origin": "user_strict"
+      },
+      "channel": {
+        "type": "string",
+        "description": "Transaction channel: online | atm | pos | wire",
+        "origin": "user_strict",
+        "validation": {
+          "allowed_values": [
+            "online",
+            "atm",
+            "pos",
+            "wire",
+            "mobile"
+          ]
+        }
+      }
+    },
+    "optional": {
+      "device_fingerprint": {
+        "type": "string",
+        "origin": "user_lazy",
+        "description": "Device fingerprint hash from client"
+      },
+      "ip_address": {
+        "type": "string",
+        "origin": "user_lazy",
+        "description": "Originating IP address"
+      },
+      "geolocation": {
+        "type": "object",
+        "origin": "user_lazy",
+        "description": "Lat/lon from client or IP resolution"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "collect_transaction_context",
+    "nodes": {
+      "collect_transaction_context": {
+        "title": "Collect Transaction Context",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Fetch full transaction record, customer profile, and 90-day history from core banking and CRM.",
+        "is_checkpoint": true,
+        "steps": [
+          {
+            "step_id": "fetch_transaction",
+            "action": "api.get",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "output_variable": "transaction"
+          },
+          {
+            "step_id": "fetch_customer_profile",
+            "action": "api.get",
+            "url": "{{config.CRM_URL}}/customers/{{input.account_id}}",
+            "headers": {
+              "Authorization": "Bearer {{secrets.crm_api_key}}"
+            },
+            "output_variable": "customer_profile"
+          },
+          {
+            "step_id": "fetch_transaction_history",
+            "action": "api.get",
+            "url": "{{config.CORE_BANKING_URL}}/accounts/{{input.account_id}}/transactions?days=90&limit=200",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "output_variable": "transaction_history"
+          },
+          {
+            "step_id": "fetch_linked_accounts",
+            "action": "api.get",
+            "url": "{{config.CORE_BANKING_URL}}/accounts/{{input.account_id}}/linked",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "output_variable": "linked_accounts"
+          }
+        ],
+        "tags": ["data-collection", "api", "core-banking", "crm", "checkpoint"],
+        "next_node": "parallel_signal_collection"
+      },
+      "parallel_signal_collection": {
+        "title": "Parallel Signal Collection",
+        "type": "parallel",
+        "description": "Simultaneously run all fraud signal checks: velocity, geo-anomaly, device fingerprint, and watchlist screening.",
+        "branches": [
+          {
+            "branch_id": "velocity_check",
+            "start_node": "run_velocity_check"
+          },
+          {
+            "branch_id": "geo_anomaly_check",
+            "start_node": "run_geo_anomaly_check"
+          },
+          {
+            "branch_id": "device_check",
+            "start_node": "run_device_fingerprint_check"
+          },
+          {
+            "branch_id": "watchlist_screen",
+            "start_node": "run_watchlist_screening"
+          }
+        ],
+        "wait_strategy": "all",
+        "branch_failure": "continue",
+        "tags": ["parallel", "signals", "fraud-detection"],
+        "next_node": "llm_behavioral_analysis"
+      },
+      "run_velocity_check": {
+        "title": "Velocity Check",
+        "type": "processing",
+        "agent": "API",
+        "description": "Check for rapid successive transactions (velocity attack signal) using the fraud risk API.",
+        "operations": [
+          {
+            "type": "api_call",
+            "method": "POST",
+            "url": "{{config.FRAUD_RISK_API_URL}}/signals/velocity",
+            "headers": {
+              "Authorization": "Bearer {{secrets.fraud_api_key}}"
+            },
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "transaction_id": "{{input.transaction_id}}",
+              "amount": "{{input.transaction_amount}}",
+              "currency": "{{input.transaction_currency}}",
+              "channel": "{{input.channel}}",
+              "history_window_hours": 1
+            },
+            "output_variable": "velocity_signal"
+          }
+        ],
+        "tags": ["signal", "velocity", "fraud-detection", "api"],
+        "next_node": null
+      },
+      "run_geo_anomaly_check": {
+        "title": "Geo Anomaly Check",
+        "type": "processing",
+        "agent": "API",
+        "description": "Detect geolocation anomalies — impossible travel, high-risk country, first-time location.",
+        "operations": [
+          {
+            "type": "api_call",
+            "method": "POST",
+            "url": "{{config.FRAUD_RISK_API_URL}}/signals/geo_anomaly",
+            "headers": {
+              "Authorization": "Bearer {{secrets.fraud_api_key}}"
+            },
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "ip_address": "{{input.ip_address}}",
+              "geolocation": "{{input.geolocation}}",
+              "transaction_history": "{{variables.transaction_history}}"
+            },
+            "output_variable": "geo_signal"
+          }
+        ],
+        "tags": ["signal", "geolocation", "fraud-detection", "api"],
+        "next_node": null
+      },
+      "run_device_fingerprint_check": {
+        "title": "Device Fingerprint Check",
+        "type": "processing",
+        "agent": "API",
+        "description": "Match device fingerprint against known-good devices for this account and shared fraud blacklists.",
+        "operations": [
+          {
+            "type": "api_call",
+            "method": "POST",
+            "url": "{{config.FRAUD_RISK_API_URL}}/signals/device",
+            "headers": {
+              "Authorization": "Bearer {{secrets.fraud_api_key}}"
+            },
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "device_fingerprint": "{{input.device_fingerprint}}",
+              "ip_address": "{{input.ip_address}}"
+            },
+            "output_variable": "device_signal"
+          }
+        ],
+        "tags": ["signal", "device", "fraud-detection", "api"],
+        "next_node": null
+      },
+      "run_watchlist_screening": {
+        "title": "Watchlist Screening",
+        "type": "processing",
+        "agent": "API",
+        "description": "Screen merchant and customer against OFAC, PEP, and internal fraud watchlists.",
+        "operations": [
+          {
+            "type": "api_call",
+            "method": "POST",
+            "url": "{{config.FRAUD_RISK_API_URL}}/signals/watchlist",
+            "headers": {
+              "Authorization": "Bearer {{secrets.fraud_api_key}}"
+            },
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "merchant_id": "{{input.merchant_id}}",
+              "customer_name": "{{variables.customer_profile.full_name}}",
+              "lists": [
+                "ofac",
+                "pep",
+                "internal_blocklist",
+                "compromised_merchants"
+              ]
+            },
+            "output_variable": "watchlist_signal"
+          }
+        ],
+        "tags": ["signal", "watchlist", "ofac", "pep", "aml", "api"],
+        "next_node": null
+      },
+      "llm_behavioral_analysis": {
+        "title": "LLM Behavioral Analysis",
+        "type": "llm_action",
+        "agent": "LLMAgent",
+        "description": "LLM agent synthesizes all signals with 90-day history to produce a narrative risk assessment and composite risk score 0-100.",
+        "is_checkpoint": true,
+        "prompt": "You are a senior fraud analyst AI. Analyze the following data and return a JSON risk assessment.\n\nTransaction:\n- ID: {{input.transaction_id}}\n- Amount: {{input.transaction_amount}} {{input.transaction_currency}}\n- Channel: {{input.channel}}\n- Merchant: {{input.merchant_id}}\n\nCustomer Profile:\n{{variables.customer_profile}}\n\nFraud Signals:\n- Velocity signal: {{variables.velocity_signal}}\n- Geo anomaly signal: {{variables.geo_signal}}\n- Device signal: {{variables.device_signal}}\n- Watchlist screening: {{variables.watchlist_signal}}\n\nTransaction History (90 days, up to 200 transactions):\n{{variables.transaction_history}}\n\nReturn ONLY valid JSON with this exact schema:\n{\n  \"risk_score\": <integer 0-100>,\n  \"risk_band\": <\"low\"|\"medium\"|\"high\"|\"critical\">,\n  \"top_signals\": [<list of up to 5 string signal descriptions>],\n  \"behavioral_summary\": <string, max 300 chars>,\n  \"recommended_action\": <\"auto_approve\"|\"challenge_customer\"|\"analyst_review\"|\"freeze_and_escalate\">,\n  \"confidence\": <float 0.0-1.0>,\n  \"watchlist_hit\": <boolean>,\n  \"impossible_travel_detected\": <boolean>\n}",
+        "model": "gpt-4o",
+        "temperature": 0.1,
+        "max_tokens": 800,
+        "outputs": {
+          "risk_assessment": "{{llm_response}}"
+        },
+        "tags": ["llm", "risk-scoring", "behavioral-analysis", "checkpoint", "gpt-4o"],
+        "next_node": "aggregate_risk_score"
+      },
+      "aggregate_risk_score": {
+        "title": "Aggregate Risk Score",
+        "type": "transform",
+        "description": "Flatten LLM assessment into top-level variables for use in routing logic.",
+        "transformations": [
+          {
+            "type": "map",
+            "source_variable": "risk_assessment",
+            "expression": "risk_assessment.risk_score",
+            "output_variable": "risk_score"
+          },
+          {
+            "type": "map",
+            "source_variable": "risk_assessment",
+            "expression": "risk_assessment.risk_band",
+            "output_variable": "risk_band"
+          },
+          {
+            "type": "map",
+            "source_variable": "risk_assessment",
+            "expression": "risk_assessment.recommended_action",
+            "output_variable": "recommended_action"
+          },
+          {
+            "type": "map",
+            "source_variable": "risk_assessment",
+            "expression": "risk_assessment.watchlist_hit",
+            "output_variable": "watchlist_hit"
+          }
+        ],
+        "tags": ["transform", "risk-score", "routing-prep"],
+        "next_node": "route_by_risk_band"
+      },
+      "route_by_risk_band": {
+        "title": "Route by Risk Band",
+        "type": "logic",
+        "description": "Route to the appropriate response track based on risk band and watchlist status.",
+        "rules": [
+          {
+            "condition": "{{variables.watchlist_hit}} == true",
+            "next_node": "freeze_and_escalate"
+          },
+          {
+            "condition": "{{variables.risk_band}} == 'critical'",
+            "next_node": "freeze_and_escalate"
+          },
+          {
+            "condition": "{{variables.risk_band}} == 'high'",
+            "next_node": "freeze_transaction_pending_review"
+          },
+          {
+            "condition": "{{variables.risk_band}} == 'medium'",
+            "next_node": "challenge_customer"
+          }
+        ],
+        "tags": ["logic", "routing", "risk-band"],
+        "default_next_node": "auto_approve_transaction"
+      },
+      "auto_approve_transaction": {
+        "title": "Auto-Approve Transaction",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Low risk: approve transaction, log outcome, and close case.",
+        "steps": [
+          {
+            "step_id": "release_transaction",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}/approve",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "approved_by": "fraud_engine_auto",
+              "risk_score": "{{variables.risk_score}}"
+            },
+            "output_variable": "approval_result"
+          },
+          {
+            "step_id": "log_auto_approval",
+            "action": "api.post",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases",
+            "headers": {
+              "Authorization": "Bearer {{secrets.fraud_api_key}}"
+            },
+            "body": {
+              "transaction_id": "{{input.transaction_id}}",
+              "account_id": "{{input.account_id}}",
+              "outcome": "auto_approved",
+              "risk_score": "{{variables.risk_score}}",
+              "risk_band": "{{variables.risk_band}}",
+              "assessment": "{{variables.risk_assessment}}"
+            },
+            "output_variable": "case_log"
+          }
+        ],
+        "tags": ["approve", "low-risk", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "challenge_customer": {
+        "title": "Challenge Customer",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Medium risk: hold transaction, send step-up authentication challenge to customer (OTP/biometric).",
+        "steps": [
+          {
+            "step_id": "hold_transaction",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}/hold",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "reason": "fraud_step_up_challenge",
+              "hold_duration_minutes": 30
+            },
+            "output_variable": "hold_result"
+          },
+          {
+            "step_id": "send_customer_challenge",
+            "action": "api.post",
+            "url": "{{config.NOTIFICATION_URL}}/auth/step-up-challenge",
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "transaction_id": "{{input.transaction_id}}",
+              "channel": "sms_and_push",
+              "reason": "Unusual transaction detected — please verify",
+              "timeout_minutes": 30
+            },
+            "output_variable": "challenge_result"
+          },
+          {
+            "step_id": "open_challenge_case",
+            "action": "api.post",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases",
+            "body": {
+              "transaction_id": "{{input.transaction_id}}",
+              "outcome": "customer_challenged",
+              "risk_score": "{{variables.risk_score}}",
+              "risk_band": "medium",
+              "challenge_sent": true
+            },
+            "output_variable": "case_log"
+          }
+        ],
+        "tags": ["medium-risk", "step-up-auth", "notification", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "freeze_transaction_pending_review": {
+        "title": "Freeze & Queue for Analyst Review",
+        "type": "sequence",
+        "agent": "API",
+        "description": "High risk: freeze the transaction immediately, notify the customer, and route to analyst queue.",
+        "is_checkpoint": true,
+        "steps": [
+          {
+            "step_id": "freeze_transaction",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}/freeze",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "reason": "high_risk_fraud_hold",
+              "initiated_by": "fraud_engine"
+            },
+            "output_variable": "freeze_result"
+          },
+          {
+            "step_id": "notify_customer_hold",
+            "action": "api.post",
+            "url": "{{config.NOTIFICATION_URL}}/notifications/send",
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "template": "fraud_transaction_held",
+              "params": {
+                "amount": "{{input.transaction_amount}}",
+                "currency": "{{input.transaction_currency}}",
+                "merchant": "{{input.merchant_id}}"
+              }
+            }
+          },
+          {
+            "step_id": "create_investigation_case",
+            "action": "api.post",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases",
+            "body": {
+              "transaction_id": "{{input.transaction_id}}",
+              "account_id": "{{input.account_id}}",
+              "status": "pending_analyst_review",
+              "risk_score": "{{variables.risk_score}}",
+              "risk_band": "high",
+              "assessment": "{{variables.risk_assessment}}",
+              "signals": {
+                "velocity": "{{variables.velocity_signal}}",
+                "geo": "{{variables.geo_signal}}",
+                "device": "{{variables.device_signal}}",
+                "watchlist": "{{variables.watchlist_signal}}"
+              }
+            },
+            "output_variable": "fraud_case"
+          }
+        ],
+        "tags": ["high-risk", "freeze", "analyst-queue", "checkpoint", "api"],
+        "next_node": "analyst_review_decision"
+      },
+      "analyst_review_decision": {
+        "title": "Analyst Review Decision",
+        "type": "human_approval",
+        "description": "Fraud analyst reviews all signals and the LLM behavioral summary, then decides.",
+        "prompt": "FRAUD INVESTIGATION — Transaction {{input.transaction_id}}\n\nAmount: {{input.transaction_amount}} {{input.transaction_currency}}\nChannel: {{input.channel}} | Merchant: {{input.merchant_id}}\nAccount: {{input.account_id}} | Customer: {{variables.customer_profile.full_name}}\n\nRisk Score: {{variables.risk_score}} / 100  ({{variables.risk_band}})\n\nBehavioral Summary:\n{{variables.risk_assessment.behavioral_summary}}\n\nTop Signals:\n{{variables.risk_assessment.top_signals}}\n\nAction: Please review and make a decision.",
+        "decision_type": "select_option",
+        "options": [
+          "Approve — Release transaction",
+          "Reject — Block transaction",
+          "Escalate to compliance — Freeze account + file SAR"
+        ],
+        "approval_level": "standard",
+        "timeout_ms": 14400000,
+        "timeout_action": "escalate",
+        "escalation_contact": "fraud-manager@company.com",
+        "on_timeout": "freeze_and_escalate",
+        "context_data": {
+          "transaction": "{{variables.transaction}}",
+          "customer_profile": "{{variables.customer_profile}}",
+          "risk_assessment": "{{variables.risk_assessment}}",
+          "signals": {
+            "velocity": "{{variables.velocity_signal}}",
+            "geo": "{{variables.geo_signal}}",
+            "device": "{{variables.device_signal}}",
+            "watchlist": "{{variables.watchlist_signal}}"
+          }
+        },
+        "on_approve": "release_after_analyst_review",
+        "on_reject": "block_transaction",
+        "next_node": "audit_and_alert_node",
+        "routes": {
+          "Approve — Release transaction": "release_after_analyst_review",
+          "Reject — Block transaction": "block_transaction",
+          "Escalate to compliance — Freeze account + file SAR": "freeze_and_escalate"
+        },
+        "tags": ["human-approval", "analyst", "decision-gate"]
+      },
+      "release_after_analyst_review": {
+        "title": "Release — Analyst Approved",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Analyst approved: release the frozen transaction and close the case.",
+        "steps": [
+          {
+            "step_id": "release_frozen_transaction",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}/approve",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "approved_by": "fraud_analyst",
+              "analyst_notes": "{{variables.approval_decision.notes}}"
+            },
+            "output_variable": "release_result"
+          },
+          {
+            "step_id": "notify_customer_release",
+            "action": "api.post",
+            "url": "{{config.NOTIFICATION_URL}}/notifications/send",
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "template": "fraud_transaction_cleared",
+              "params": {
+                "amount": "{{input.transaction_amount}}",
+                "currency": "{{input.transaction_currency}}"
+              }
+            }
+          },
+          {
+            "step_id": "update_case_approved",
+            "action": "api.patch",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases/{{variables.fraud_case.case_id}}",
+            "body": {
+              "status": "closed_legitimate",
+              "resolved_by": "analyst_approved"
+            }
+          }
+        ],
+        "tags": ["approve", "analyst-decision", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "block_transaction": {
+        "title": "Block Transaction",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Analyst rejected: permanently block the transaction and notify the customer.",
+        "steps": [
+          {
+            "step_id": "block_tx",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}/block",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "reason": "analyst_confirmed_fraud",
+              "blocked_by": "fraud_analyst"
+            },
+            "output_variable": "block_result"
+          },
+          {
+            "step_id": "notify_customer_block",
+            "action": "api.post",
+            "url": "{{config.NOTIFICATION_URL}}/notifications/send",
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "template": "fraud_transaction_blocked",
+              "params": {
+                "amount": "{{input.transaction_amount}}",
+                "currency": "{{input.transaction_currency}}",
+                "support_number": "{{config.SUPPORT_PHONE}}"
+              }
+            }
+          },
+          {
+            "step_id": "update_case_blocked",
+            "action": "api.patch",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases/{{variables.fraud_case.case_id}}",
+            "body": {
+              "status": "closed_fraud_confirmed",
+              "resolved_by": "analyst_rejected"
+            }
+          },
+          {
+            "step_id": "add_merchant_to_fraud_feed",
+            "action": "api.post",
+            "url": "{{config.FRAUD_RISK_API_URL}}/feedback",
+            "body": {
+              "transaction_id": "{{input.transaction_id}}",
+              "merchant_id": "{{input.merchant_id}}",
+              "feedback_type": "confirmed_fraud",
+              "risk_signals": "{{variables.risk_assessment.top_signals}}"
+            }
+          }
+        ],
+        "tags": ["block", "fraud-confirmed", "analyst-decision", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "freeze_and_escalate": {
+        "title": "Freeze Account & Escalate to Compliance",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Critical / watchlist hit: freeze account, notify compliance team, prepare SAR filing, and page on-call.",
+        "is_checkpoint": true,
+        "steps": [
+          {
+            "step_id": "freeze_account",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/accounts/{{input.account_id}}/freeze",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "reason": "critical_fraud_or_watchlist_hit",
+              "initiated_by": "fraud_engine"
+            },
+            "output_variable": "account_freeze_result"
+          },
+          {
+            "step_id": "block_all_pending_tx",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/accounts/{{input.account_id}}/transactions/block-pending",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "reason": "critical_fraud_hold"
+            }
+          },
+          {
+            "step_id": "notify_customer_account_frozen",
+            "action": "api.post",
+            "url": "{{config.NOTIFICATION_URL}}/notifications/send",
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "template": "account_frozen_fraud",
+              "params": {
+                "support_number": "{{config.SUPPORT_PHONE}}",
+                "reference_id": "{{input.transaction_id}}"
+              }
+            }
+          },
+          {
+            "step_id": "alert_compliance_team",
+            "action": "api.post",
+            "url": "{{config.COMPLIANCE_PORTAL_URL}}/alerts",
+            "headers": {
+              "Authorization": "Bearer {{secrets.compliance_portal_key}}"
+            },
+            "body": {
+              "alert_type": "critical_fraud_escalation",
+              "priority": "P1",
+              "account_id": "{{input.account_id}}",
+              "transaction_id": "{{input.transaction_id}}",
+              "risk_score": "{{variables.risk_score}}",
+              "watchlist_hit": "{{variables.watchlist_hit}}",
+              "assessment": "{{variables.risk_assessment}}",
+              "signals": {
+                "velocity": "{{variables.velocity_signal}}",
+                "geo": "{{variables.geo_signal}}",
+                "device": "{{variables.device_signal}}",
+                "watchlist": "{{variables.watchlist_signal}}"
+              }
+            },
+            "output_variable": "compliance_alert"
+          },
+          {
+            "step_id": "initiate_sar_draft",
+            "action": "api.post",
+            "url": "{{config.COMPLIANCE_PORTAL_URL}}/sar/draft",
+            "headers": {
+              "Authorization": "Bearer {{secrets.compliance_portal_key}}"
+            },
+            "body": {
+              "account_id": "{{input.account_id}}",
+              "transaction_id": "{{input.transaction_id}}",
+              "customer_profile": "{{variables.customer_profile}}",
+              "transaction": "{{variables.transaction}}",
+              "risk_assessment": "{{variables.risk_assessment}}",
+              "watchlist_signals": "{{variables.watchlist_signal}}"
+            },
+            "output_variable": "sar_draft"
+          },
+          {
+            "step_id": "page_on_call",
+            "action": "api.post",
+            "url": "{{config.ONCALL_SERVICE_URL}}/incidents",
+            "body": {
+              "title": "CRITICAL FRAUD — Account {{input.account_id}} frozen",
+              "severity": "P1",
+              "body": "Transaction {{input.transaction_id}} triggered critical fraud escalation. Risk score: {{variables.risk_score}}. SAR draft ID: {{variables.sar_draft.draft_id}}.",
+              "team": "fraud_compliance"
+            }
+          }
+        ],
+        "tags": ["critical", "freeze", "escalation", "sar", "compliance", "checkpoint", "api"],
+        "next_node": "compliance_officer_sar_decision"
+      },
+      "compliance_officer_sar_decision": {
+        "title": "Compliance Officer SAR Decision",
+        "type": "human_approval",
+        "description": "Compliance officer reviews the SAR draft and decides whether to file or close.",
+        "prompt": "CRITICAL FRAUD ESCALATION — Account {{input.account_id}}\n\nTransaction: {{input.transaction_id}} | Amount: {{input.transaction_amount}} {{input.transaction_currency}}\n\nRisk Score: {{variables.risk_score}} / 100\nWatchlist Hit: {{variables.watchlist_hit}}\n\nBehavioral Assessment:\n{{variables.risk_assessment.behavioral_summary}}\n\nTop Signals: {{variables.risk_assessment.top_signals}}\n\nSAR Draft ID: {{variables.sar_draft.draft_id}}\n\nPlease review and decide on SAR filing.",
+        "decision_type": "select_option",
+        "options": [
+          "File SAR — Submit to FinCEN/regulator",
+          "Close — No SAR required, maintain account freeze for manual review"
+        ],
+        "approval_level": "manager",
+        "timeout_ms": 86400000,
+        "timeout_action": "escalate",
+        "escalation_contact": "chief-compliance@company.com",
+        "on_timeout": "file_sar_auto",
+        "on_approve": "file_sar",
+        "on_reject": "close_without_sar",
+        "routes": {
+          "File SAR — Submit to FinCEN/regulator": "file_sar",
+          "Close — No SAR required, maintain account freeze for manual review": "close_without_sar"
+        },
+        "tags": ["human-approval", "compliance", "sar", "decision-gate"]
+      },
+      "file_sar": {
+        "title": "File SAR",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Submit the SAR to the regulatory reporting system and mark the case.",
+        "steps": [
+          {
+            "step_id": "submit_sar",
+            "action": "api.post",
+            "url": "{{config.COMPLIANCE_PORTAL_URL}}/sar/submit",
+            "headers": {
+              "Authorization": "Bearer {{secrets.compliance_portal_key}}"
+            },
+            "body": {
+              "draft_id": "{{variables.sar_draft.draft_id}}",
+              "submitted_by": "{{variables.approval_decision.reviewer_id}}",
+              "notes": "{{variables.approval_decision.notes}}"
+            },
+            "output_variable": "sar_filing"
+          },
+          {
+            "step_id": "update_case_sar_filed",
+            "action": "api.post",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases",
+            "body": {
+              "transaction_id": "{{input.transaction_id}}",
+              "account_id": "{{input.account_id}}",
+              "status": "sar_filed",
+              "sar_reference": "{{variables.sar_filing.reference_number}}",
+              "risk_score": "{{variables.risk_score}}",
+              "risk_band": "critical",
+              "assessment": "{{variables.risk_assessment}}"
+            }
+          }
+        ],
+        "tags": ["sar", "compliance", "regulatory", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "file_sar_auto": {
+        "title": "Auto-File SAR (Timeout)",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Compliance review timed out — auto-file SAR per regulatory obligation.",
+        "steps": [
+          {
+            "step_id": "submit_sar_auto",
+            "action": "api.post",
+            "url": "{{config.COMPLIANCE_PORTAL_URL}}/sar/submit",
+            "headers": {
+              "Authorization": "Bearer {{secrets.compliance_portal_key}}"
+            },
+            "body": {
+              "draft_id": "{{variables.sar_draft.draft_id}}",
+              "submitted_by": "fraud_engine_auto_timeout",
+              "notes": "Auto-filed: compliance review timed out after 24h"
+            },
+            "output_variable": "sar_filing"
+          }
+        ],
+        "tags": ["sar", "compliance", "timeout", "auto", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "close_without_sar": {
+        "title": "Close — No SAR Required",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Compliance officer determined no SAR needed; account remains frozen for manual review.",
+        "steps": [
+          {
+            "step_id": "update_case_no_sar",
+            "action": "api.post",
+            "url": "{{config.FRAUD_RISK_API_URL}}/cases",
+            "body": {
+              "transaction_id": "{{input.transaction_id}}",
+              "account_id": "{{input.account_id}}",
+              "status": "closed_no_sar",
+              "risk_score": "{{variables.risk_score}}",
+              "risk_band": "critical",
+              "notes": "Compliance officer reviewed — no SAR required. Account frozen pending further investigation."
+            }
+          }
+        ],
+        "tags": ["compliance", "close", "no-sar", "api"],
+        "next_node": "fraud_case_closed_success"
+      },
+      "fraud_case_closed_success": {
+        "title": "Fraud Case Closed \u2014 Success",
+        "type": "terminate",
+        "description": "Terminal node: case concluded successfully via any outcome path (auto-approve, challenge, analyst decision, or SAR filed). Writes the final audit record.",
+        "status": "success",
+        "tags": ["terminate", "success", "audit"],
+        "final_audit_log": {
+          "procedure": "fraud_detection_investigation",
+          "transaction_id": "{{input.transaction_id}}",
+          "account_id": "{{input.account_id}}",
+          "risk_score": "{{variables.risk_score}}",
+          "risk_band": "{{variables.risk_band}}",
+          "recommended_action": "{{variables.recommended_action}}",
+          "watchlist_hit": "{{variables.watchlist_hit}}",
+          "outcome": "completed"
+        }
+      },
+      "audit_and_alert_node": {
+        "title": "Error Handler & Alert",
+        "type": "sequence",
+        "agent": "API",
+        "description": "Failure handler: log the error, alert the fraud ops team, and leave the transaction in a safe held state.",
+        "steps": [
+          {
+            "step_id": "hold_on_failure",
+            "action": "api.post",
+            "url": "{{config.CORE_BANKING_URL}}/transactions/{{input.transaction_id}}/hold",
+            "headers": {
+              "Authorization": "Bearer {{secrets.core_banking_key}}"
+            },
+            "body": {
+              "reason": "fraud_engine_error_safe_hold"
+            }
+          },
+          {
+            "step_id": "alert_fraud_ops",
+            "action": "api.post",
+            "url": "{{config.ONCALL_SERVICE_URL}}/incidents",
+            "body": {
+              "title": "Fraud engine workflow FAILED for transaction {{input.transaction_id}}",
+              "severity": "P2",
+              "body": "Fraud detection pipeline failed. Transaction is in safe hold. Manual review required.",
+              "team": "fraud_ops"
+            }
+          }
+        ],
+        "tags": ["error-handler", "alert", "safe-hold", "api"],
+        "next_node": "fraud_case_pipeline_error"
+      },
+      "fraud_case_pipeline_error": {
+        "title": "Pipeline Error \u2014 Safe Hold",
+        "type": "terminate",
+        "description": "Terminal node: unrecoverable pipeline error. Transaction is held safely pending manual review; fraud ops team has been paged with a P2 incident.",
+        "status": "failed",
+        "tags": ["terminate", "error", "safe-hold"],
+        "final_audit_log": {
+          "procedure": "fraud_detection_investigation",
+          "transaction_id": "{{input.transaction_id}}",
+          "outcome": "pipeline_error_safe_hold"
+        }
+      }
+    }
+  },
+  "provenance": {
+    "compiled_on": "2026-04-04T12:00:00Z",
+    "compiler_agent_version": "1.1.0",
+    "sources": [
+      {
+        "doc_id": "fraud_detection_investigation",
+        "version": "1.0.0"
+      }
+    ]
+  }
+}

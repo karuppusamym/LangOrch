@@ -68,6 +68,7 @@ export default function AgentsPage() {
   const [probingCaps, setProbingCaps] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<AgentInstance | null>(null);
+  const [agentTab, setAgentTab] = useState<"instances" | "catalog">("instances");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -248,19 +249,11 @@ export default function AgentsPage() {
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-neutral-50 p-6">
       <div className="space-y-4">
-        <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Infrastructure Workspace</p>
-              <div className="mt-1 flex flex-wrap items-center gap-3">
-                <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Agents</h1>
-                <span className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-[11px] font-medium text-neutral-500 shadow-sm dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
-                  {filteredAgents.length} visible
-                </span>
-              </div>
-              <p className="mt-1.5 max-w-3xl text-sm leading-5 text-neutral-600 dark:text-neutral-400">
-                Register, monitor, and govern execution agents from a layout designed to hold far more channels, capabilities, and runtime states without turning into noise.
-              </p>
+        <div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">Agent Registry</h1>
+              <p className="mt-0.5 text-sm text-neutral-500 dark:text-neutral-400">Manage agent definitions and monitor live instances</p>
             </div>
             <button
               onClick={() => setShowRegister(true)}
@@ -270,70 +263,74 @@ export default function AgentsPage() {
               Register Agent
             </button>
           </div>
+        </div>
 
-          <div className="mt-4 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_minmax(280px,1.1fr)]">
-            {[
-              { label: "Agents Online", value: summary.online, meta: `${summary.total} total`, tone: "text-emerald-600" },
-              { label: "Busy Agents", value: summary.busy, meta: `${summary.channels} channels`, tone: "text-amber-600" },
-              { label: "Workflow Capable", value: summary.workflows, meta: "workflow agents", tone: "text-blue-600" },
-              { label: "Circuit Open", value: summary.circuitOpen, meta: "needs attention", tone: "text-red-600" },
-            ].map((card) => (
-              <div key={card.label} className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">{card.label}</p>
-                <div className="mt-2 flex items-end justify-between gap-3">
-                  <p className={`text-2xl font-semibold ${card.tone}`}>{card.value}</p>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">{card.meta}</p>
-                </div>
-              </div>
-            ))}
-            <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative min-w-[200px] flex-1">
-              <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search agents, channels, URLs, resources..."
-                className="w-full rounded-2xl border border-neutral-300 bg-neutral-50 py-2 pl-9 pr-3 text-sm text-neutral-900 outline-none transition focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950/40 dark:text-neutral-100"
-              />
-                </div>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  aria-label="Filter agents by status"
-                  className="rounded-2xl border border-neutral-300 bg-white px-3.5 py-2 text-sm text-neutral-700 outline-none transition focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950/40 dark:text-neutral-300"
-                >
-                  <option value="all">All statuses</option>
-                  <option value="online">Online</option>
-                  <option value="busy">Busy</option>
-                  <option value="offline">Offline</option>
-                </select>
-                <select
-                  value={channelFilter}
-                  onChange={(e) => setChannelFilter(e.target.value)}
-                  aria-label="Filter agents by channel"
-                  className="rounded-2xl border border-neutral-300 bg-white px-3.5 py-2 text-sm text-neutral-700 outline-none transition focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950/40 dark:text-neutral-300"
-                >
-                  <option value="all">All channels</option>
-                  {agentChannels.map((channel) => (
-                    <option key={channel} value={channel}>{channel}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => {
-                    setSearch("");
-                    setStatusFilter("all");
-                    setChannelFilter("all");
-                  }}
-                  className="rounded-2xl border border-neutral-300 px-3.5 py-2 text-sm font-medium text-neutral-700 transition hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                >
-                  Reset
-                </button>
-              </div>
+        {/* Stats row */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center gap-2">
+              <div className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">Idle Agents</p>
             </div>
+            <p className="mt-3 text-3xl font-bold text-neutral-900 dark:text-neutral-100">{summary.online}</p>
           </div>
-        </section>
+          <div className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center gap-2">
+              <div className="h-2.5 w-2.5 animate-pulse rounded-full bg-amber-500" />
+              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">Busy Agents</p>
+            </div>
+            <p className="mt-3 text-3xl font-bold text-neutral-900 dark:text-neutral-100">{summary.busy}</p>
+          </div>
+          <div className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center gap-2">
+              <svg className="h-4 w-4 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">Total Capacity</p>
+            </div>
+            <p className="mt-3 text-3xl font-bold text-neutral-900 dark:text-neutral-100">
+              {agents.reduce((sum, a) => sum + a.concurrency_limit, 0)}
+            </p>
+          </div>
+        </div>
+
+        {/* Search + filter — only relevant for Instances tab */}
+        {agentTab === "instances" && (
+        <div className="flex flex-wrap items-center gap-2.5 rounded-2xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="relative min-w-[200px] flex-1">
+            <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search agents, channels, resources..."
+              className="w-full rounded-lg border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-3 text-sm text-neutral-900 outline-none focus:border-sky-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            />
+          </div>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter agents by status" className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 outline-none focus:border-sky-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+            <option value="all">All statuses</option>
+            <option value="online">Online</option>
+            <option value="busy">Busy</option>
+            <option value="offline">Offline</option>
+          </select>
+          <select value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)} aria-label="Filter agents by channel" className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 outline-none focus:border-sky-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+            <option value="all">All channels</option>
+            {agentChannels.map((ch) => <option key={ch} value={ch}>{ch}</option>)}
+          </select>
+        </div>
+        )}
+
+        {/* Tabs */}
+        <div className="flex gap-1 rounded-xl border border-neutral-200 bg-neutral-100 p-1 dark:border-neutral-700 dark:bg-neutral-800">
+          {(["instances", "catalog"] as const).map((tab) => (
+            <button key={tab} onClick={() => setAgentTab(tab)}
+              className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
+                agentTab === tab
+                  ? "bg-white shadow-sm text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100"
+                  : "text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+              }`}>
+              {tab === "instances" ? "Agent Instances" : "Agent Catalog"}
+            </button>
+          ))}
+        </div>
 
         {showRegister && (
           <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
@@ -443,6 +440,53 @@ export default function AgentsPage() {
           <div className="flex items-center justify-center py-16">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
           </div>
+        ) : agentTab === "catalog" ? (
+          /* Agent Catalog: only channels that have at least one registered agent */
+          (() => {
+            const activeEntries = Object.entries(catalog).filter(
+              ([channel]) => agents.some((a) => a.channel === channel)
+            );
+            return activeEntries.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-10 text-center text-sm text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900">
+                No registered agents yet — register an agent to see its channel catalog.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {activeEntries.map(([channel, actions]) => {
+                  const registeredForChannel = agents.filter((a) => a.channel === channel);
+                  return (
+                    <div key={channel} className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+                      <div className="flex items-center justify-between gap-4 border-b border-neutral-100 bg-neutral-50 px-5 py-3 dark:border-neutral-800 dark:bg-neutral-800/50">
+                        <div className="flex items-center gap-3">
+                          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                            {channel.charAt(0).toUpperCase() + channel.slice(1)}
+                          </span>
+                          <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                            {actions.length} action{actions.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {registeredForChannel.map((a) => (
+                            <span key={a.agent_id} className={`flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${statusPillClass(a.status)}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${STATUS_COLORS[a.status] ?? "bg-neutral-400"}`} />
+                              {a.name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2 p-4">
+                        {actions.map((action) => (
+                          <span key={action} className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 font-mono text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                            {action}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()
         ) : filteredAgents.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-12 text-center text-neutral-500 shadow-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
             {agents.length === 0 ? "No agents registered yet. Register your first agent to start assigning execution capacity." : "No agents match the current filters."}
@@ -532,13 +576,21 @@ export default function AgentsPage() {
                 )}
 
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <button onClick={() => handleStatusToggle(agent)}
-                    className={`flex-1 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${agent.status === "online" ? "border-neutral-300 text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800" : "border-green-300 text-green-700 hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-950/40"}`}>
-                    Mark {agent.status === "online" ? "Offline" : "Online"}
-                  </button>
+                  {(agent.status === "online" || agent.status === "busy") && (
+                    <button onClick={() => handleStatusToggle(agent)}
+                      className="flex-1 rounded-full border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+                      Drain
+                    </button>
+                  )}
+                  {agent.status === "offline" && (
+                    <button onClick={() => handleStatusToggle(agent)}
+                      className="flex-1 rounded-full border border-green-300 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-950/40">
+                      Mark Online
+                    </button>
+                  )}
                   <button onClick={() => handleSyncCapabilities(agent)} disabled={syncingId === agent.agent_id}
                     className="rounded-full border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950/40">
-                    {syncingId === agent.agent_id ? "Syncing..." : "Sync Caps"}
+                    {syncingId === agent.agent_id ? "Syncing..." : "Details"}
                   </button>
                   <button onClick={() => handleDelete(agent)}
                     className="rounded-full border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40">

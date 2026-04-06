@@ -30,7 +30,7 @@ from app.compiler.ir import (
 )
 from app.config import settings
 from app.runtime.state import OrchestratorState
-from app.templating.engine import render_template_dict, render_template_str
+from app.templating.engine import render_template_dict, render_template_str, resolve_path
 from app.templating.expressions import evaluate_condition
 from app.runtime.hil import resolve_approval_next_node
 from app.utils.run_cancel import is_cancelled as _is_cancelled, RunCancelledError
@@ -189,14 +189,35 @@ def _build_template_vars(state: OrchestratorState) -> dict[str, Any]:
     * ``{{run_id}}``       — unique ID of the current run
     * ``{{procedure_id}}`` — ID of the procedure being executed
     * ``{{secrets.name}}`` — Agent credential grant token for the secret
+    * ``{{env.VAR}}``      — OS environment variable (for service URLs, etc.)
+    * ``{{input.var}}``    — Alias for user-provided input variable
+    * ``{{variables.var}}``— Alias for any runtime variable
 
     User-defined variables with the same name take precedence.
     """
+    import os as _os
+
     vs = dict(state.get("vars", {}))
     run_id = state.get("run_id", "")
     vs.setdefault("run_id", run_id)
     vs.setdefault("procedure_id", state.get("procedure_id", ""))
-    
+
+    # ── Inject OS env vars for {{env.VAR_NAME}} CKP references ──────────────
+    # Strip transient meta keys so input/variables snapshots stay clean
+    _meta = {"env", "input", "variables", "config", "run_id", "procedure_id", "secrets"}
+    _raw = {k: v for k, v in vs.items() if k not in _meta}
+    vs["env"] = dict(_os.environ)
+    # CKP naming conventions: {{input.xxx}} and {{variables.xxx}} both alias
+    # the current runtime vars dict (inputs + step output vars).
+    vs["input"] = dict(_raw)
+    vs["variables"] = dict(_raw)
+
+    # ── Inject {{config.xxx}} from CKP global_config.service_endpoints ───────
+    # CKP authors put base URLs in global_config.service_endpoints so the CKP
+    # is fully self-contained — no env vars needed for external service URLs.
+    _gc = state.get("global_config") or {}
+    vs["config"] = dict(_gc.get("service_endpoints") or {})
+
     # Inject credential grant tokens instead of raw secrets
     secrets_dict = state.get("secrets", {})
     if secrets_dict:
@@ -933,7 +954,7 @@ async def execute_sequence(
 def execute_logic(node: IRNode, state: OrchestratorState) -> OrchestratorState:
     """Evaluate logic rules and route to the matching next_node."""
     payload: IRLogicPayload = node.payload
-    vs = state.get("vars", {})
+    vs = _build_template_vars(state)
 
     for rule in payload.rules:
         expr = render_template_str(rule.condition_expr, vs)
@@ -1399,7 +1420,7 @@ def execute_human_approval(node: IRNode, state: OrchestratorState) -> Orchestrat
         "run_id": state.get("run_id"),
         "node_id": node.node_id,
         "node_name": node.description or node.node_id,
-        "prompt": payload.prompt,
+        "prompt": render_template_str(payload.prompt, vs) if payload.prompt else payload.prompt,
         "decision_type": payload.decision_type,
         "options": payload.options,
         "context_data": payload.context_data,
@@ -1590,7 +1611,16 @@ async def execute_llm_action(node: IRNode, state: OrchestratorState, db_factory:
             except Exception:
                 vs[key] = text
         else:
-            vs[key] = text
+            # Auto-parse JSON objects/arrays so downstream transforms and routing
+            # can access fields directly (e.g. risk_assessment.risk_score)
+            _stripped = text.strip() if isinstance(text, str) else ""
+            if _stripped and _stripped[0] in ("{", "["):
+                try:
+                    vs[key] = json.loads(text)
+                except Exception:
+                    vs[key] = text
+            else:
+                vs[key] = text
 
     if not payload.outputs:
         vs["llm_output"] = text
@@ -1853,6 +1883,31 @@ async def _execute_step_action(action: str, params: dict, vars_ctx: dict) -> Any
         duration_ms = int(params.get("duration_ms") or params.get("wait_ms") or 0)
         await asyncio.sleep(max(0, duration_ms) / 1000.0)
         return {"waited_ms": duration_ms}
+
+    # ── Built-in HTTP actions (api.get / api.post / api.put / api.patch / api.delete) ──
+    # These are handled natively without a registered external agent.
+    if action in ("api.get", "api.post", "api.put", "api.patch", "api.delete"):
+        import httpx as _httpx
+        method = action.split(".")[1].upper()
+        url = str(params.get("url") or "")
+        headers = params.get("headers") or {}
+        body = params.get("body") or params.get("data")
+        timeout_s = float(params.get("timeout_ms", 30000)) / 1000.0
+        if not url:
+            logger.warning("api action %s called with no url in params", action)
+            return None
+        async with _httpx.AsyncClient(timeout=timeout_s) as _client:
+            if method in ("POST", "PUT", "PATCH") and isinstance(body, dict):
+                resp = await _client.request(method, url, headers=headers, json=body)
+            elif method in ("POST", "PUT", "PATCH") and body is not None:
+                resp = await _client.request(method, url, headers=headers, content=str(body))
+            else:
+                resp = await _client.request(method, url, headers=headers)
+        try:
+            return resp.json()
+        except Exception:
+            return {"status_code": resp.status_code, "text": resp.text}
+
     return _execute_internal_action(action, params, vars_ctx)
 
 
@@ -1879,6 +1934,33 @@ def _execute_internal_action(action: str, params: dict, vars_ctx: dict) -> Any:
             screenshot_uri = f"memory://screenshot/{safe_name}-{uuid4().hex}"
         logger.info("[CKP] screenshot requested uri=%s", screenshot_uri)
         return {"screenshot": screenshot_uri}
+    # ── Built-in HTTP call (used by processing nodes with type: "api_call") ────
+    if action == "api_call":
+        import httpx as _httpx
+        method = (params.get("method") or "GET").upper()
+        url = str(params.get("url") or "")
+        headers = params.get("headers") or {}
+        body = params.get("body") or params.get("data")
+        timeout_s = float(params.get("timeout_ms", 30000)) / 1000.0
+        if not url:
+            logger.warning("api_call: no url in params")
+            return None
+        try:
+            with _httpx.Client(timeout=timeout_s) as _c:
+                if method in ("POST", "PUT", "PATCH") and isinstance(body, dict):
+                    resp = _c.request(method, url, headers=headers, json=body)
+                elif method in ("POST", "PUT", "PATCH") and body is not None:
+                    resp = _c.request(method, url, headers=headers, content=str(body))
+                else:
+                    resp = _c.request(method, url, headers=headers)
+            try:
+                return resp.json()
+            except Exception:
+                return {"status_code": resp.status_code, "text": resp.text}
+        except Exception as exc:
+            logger.warning("api_call %s %s failed: %s", method, url, exc)
+            raise
+
     # Unknown or external action — return params as-is for connector dispatch
     return {"action": action, "params": params}
 
@@ -1903,19 +1985,23 @@ def _execute_transform_op(
         return out
 
     if op == "map":
-        items = source if isinstance(source, list) else []
-        out: list[Any] = []
-        for item in items:
-            ctx = {**vars_ctx, "item": item}
-            if "{{" in expression:
-                out.append(render_template_str(expression, ctx))
-            elif expression in ("item", "{{item}}"):
-                out.append(item)
-            elif isinstance(item, dict) and expression in item:
-                out.append(item.get(expression))
-            else:
-                out.append(item)
-        return out
+        if isinstance(source, list):
+            out: list[Any] = []
+            for item in source:
+                ctx = {**vars_ctx, "item": item}
+                if "{{" in expression:
+                    out.append(render_template_str(expression, ctx))
+                elif expression in ("item", "{{item}}"):
+                    out.append(item)
+                elif isinstance(item, dict) and expression in item:
+                    out.append(item.get(expression))
+                else:
+                    out.append(item)
+            return out
+        else:
+            # Scalar / dict source — resolve dotted path from the vars context
+            # e.g. source_variable="risk_assessment", expression="risk_assessment.risk_score"
+            return resolve_path(expression, vars_ctx)
 
     if op == "aggregate":
         items = source if isinstance(source, list) else []

@@ -74,3 +74,5 @@ dify-main-code-reference/*.*
 frontend/.next-dev
 backend/langorch.db-wal
 
+backend/langorch.db-shm
+backend/langorch.db-wal

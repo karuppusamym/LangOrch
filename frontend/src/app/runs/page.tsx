@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { cleanupRuns, deleteRun, listRuns, cancelRun } from "@/lib/api";
+import { cleanupRuns, deleteRun, listRuns, cancelRun, retryRun } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { useToast } from "@/components/Toast";
@@ -73,6 +73,16 @@ export default function RunsPage() {
       loadRuns();
     } catch (err) {
       console.error(err);
+    }
+  }
+
+  async function handleRetry(runId: string) {
+    try {
+      await retryRun(runId);
+      toast("Retry queued", "success");
+      void loadRuns(0);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to retry", "error");
     }
   }
 
@@ -177,27 +187,20 @@ export default function RunsPage() {
   });
 
   const statusCounts = runs.reduce(
-    (acc, r) => {
-      acc[r.status] = (acc[r.status] || 0) + 1;
-      return acc;
-    },
+    (acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; },
     {} as Record<string, number>
   );
 
   return (
-    <div className="space-y-4 bg-neutral-50 p-6">
+    <div className="min-h-[calc(100vh-4rem)] space-y-5 bg-neutral-50 p-6">
       <div className="space-y-4">
         <section className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-neutral-400">Runtime Operations</p>
               <div className="mt-1 flex flex-wrap items-center gap-3">
-                <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Workflow Runs</h1>
-                <span className="rounded-full bg-white/90 px-3 py-1 text-[11px] font-medium text-neutral-500 shadow-sm dark:bg-neutral-900/80 dark:text-neutral-400">
-                  {filteredRuns.length} visible
-                </span>
+                <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">Runs</h1>
               </div>
-              <p className="mt-1.5 max-w-3xl text-sm leading-5 text-neutral-600 dark:text-neutral-400">Monitor execution flow, stop active work, and prune historical runs from one dense operational view.</p>
+              <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">Monitor and manage procedure executions</p>
             </div>
             <button
               onClick={() => { setOffset(0); void loadRuns(0); }}
@@ -326,67 +329,95 @@ export default function RunsPage() {
           <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
             <table className="w-full text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
-                <tr className="text-left text-[11px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                  <th className="px-4 py-3">
-                    <input type="checkbox" title="Select all"
-                      checked={filteredRuns.length > 0 && selectedIds.size === filteredRuns.length}
-                      onChange={toggleSelectAll} className="rounded" />
-                  </th>
-                  <th className="px-4 py-3">Run ID</th>
+                <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                  <th className="w-10 px-4 py-3" />
                   <th className="px-4 py-3">Procedure</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3 min-w-[160px]">Progress</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Started</th>
+                  <th className="px-4 py-3">Duration</th>
+                  <th className="px-4 py-3">Initiated By</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {filteredRuns.map((run) => (
-                  <tr key={run.run_id} className={`transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/50 ${selectedIds.has(run.run_id) ? "bg-sky-50/70 dark:bg-sky-950/20" : ""}`}>
-                    <td className="px-4 py-3">
-                      <input type="checkbox" aria-label={`Select run ${run.run_id}`}
-                        checked={selectedIds.has(run.run_id)}
-                        onChange={() => toggleSelect(run.run_id)} className="rounded" />
-                    </td>
-                    <td className="px-4 py-3">
-                      <Link href={`/runs/${run.run_id}`} className="font-mono text-blue-600 dark:text-blue-400 hover:underline text-xs">
-                        {run.run_id.slice(0, 8)}…
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Link href={`/procedures/${encodeURIComponent(run.procedure_id)}`} className="text-xs font-medium text-neutral-900 dark:text-neutral-100 hover:text-blue-600 dark:hover:text-blue-400">
-                        {run.procedure_id}
-                      </Link>
-                      <span className="ml-1.5 text-[10px] text-neutral-400">v{run.procedure_version}</span>
-                      {run.thread_id && <p className="mt-0.5 text-[10px] text-neutral-400 dark:text-neutral-500">thread {run.thread_id}</p>}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={run.status} />
-                    </td>
-                    <td className="px-4 py-3 text-xs text-neutral-500 dark:text-neutral-400">
-                      {new Date(run.created_at).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        {(run.status === "running" || run.status === "created") && (
-                          <button onClick={() => handleCancel(run.run_id)}
-                            className="rounded-full border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40">
-                            Stop
-                          </button>
-                        )}
-                        {run.status !== "running" && (
-                          <button onClick={() => handleDelete(run.run_id)}
-                            className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800">
-                            Delete
-                          </button>
-                        )}
-                        <Link href={`/runs/${run.run_id}`}
-                          className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800">
-                          Details
+                {filteredRuns.map((run) => {
+                  const progress = progressFromStatus(run);
+                  const isRunning = run.status === "running";
+                  const duration = run.duration_seconds != null
+                    ? formatDurationSecs(run.duration_seconds)
+                    : run.started_at && !run.ended_at
+                      ? formatDurationSecs((Date.now() - new Date(run.started_at).getTime()) / 1000)
+                      : "—";
+                  const progressColor = run.status === "completed" ? "bg-emerald-500" : run.status === "failed" ? "bg-red-400" : run.status === "waiting_approval" ? "bg-amber-400" : "bg-blue-500";
+                  return (
+                    <tr key={run.run_id} className="group transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
+                      {/* icon */}
+                      <td className="px-4 py-3">
+                        <Link href={`/runs/${run.run_id}`}>
+                          <div className="flex h-7 w-7 items-center justify-center rounded-full border border-neutral-200 text-neutral-400 transition group-hover:border-sky-300 group-hover:text-sky-600 dark:border-neutral-700">
+                            <svg className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                          </div>
                         </Link>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      {/* Procedure + run-id */}
+                      <td className="px-4 py-3">
+                        <Link href={`/runs/${run.run_id}`} className="font-medium text-neutral-900 hover:text-sky-600 dark:text-neutral-100 line-clamp-1 text-sm">
+                          {run.procedure_id}
+                        </Link>
+                        <p className="mt-0.5 font-mono text-[11px] text-neutral-400">{run.run_id.slice(0, 8)}&hellip;</p>
+                      </td>
+                      {/* Status */}
+                      <td className="px-4 py-3">
+                        <StatusBadge status={run.status} />
+                      </td>
+                      {/* Progress */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
+                            <div className={`h-full rounded-full transition-all ${progressColor} ${progressWidthClass(progress)} ${isRunning ? "animate-pulse" : ""}`} />
+                          </div>
+                          <span className="w-9 text-right text-[11px] font-medium text-neutral-500">{progress}%</span>
+                        </div>
+                      </td>
+                      {/* Started */}
+                      <td className="px-4 py-3 text-xs text-neutral-500 dark:text-neutral-400 whitespace-nowrap">
+                        {formatRelativeTime(run.started_at ?? run.created_at)}
+                      </td>
+                      {/* Duration */}
+                      <td className="px-4 py-3 text-xs text-neutral-500 dark:text-neutral-400 whitespace-nowrap">
+                        {duration}
+                      </td>
+                      {/* Initiated By */}
+                      <td className="px-4 py-3 text-xs text-neutral-700 dark:text-neutral-300">
+                        {run.triggered_by ?? <span className="text-neutral-300 dark:text-neutral-600">—</span>}
+                      </td>
+                      {/* Actions */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {(run.status === "running" || run.status === "created") && (
+                            <button onClick={() => handleCancel(run.run_id)} title="Stop run"
+                              className="flex items-center gap-1 rounded-full border border-neutral-200 px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:border-neutral-700 dark:text-neutral-400">
+                              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+                              Stop
+                            </button>
+                          )}
+                          {run.status === "failed" && (
+                            <button onClick={() => handleRetry(run.run_id)} title="Retry run"
+                              className="flex items-center gap-1 rounded-full border border-neutral-200 px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-600 dark:border-neutral-700 dark:text-neutral-400">
+                              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              Retry
+                            </button>
+                          )}
+                          <Link href={`/runs/${run.run_id}`}
+                            className="rounded-full border border-neutral-200 px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800">
+                            Details
+                          </Link>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -423,5 +454,50 @@ export default function RunsPage() {
       </div>
     </div>
   );
+}
+
+function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 2_592_000_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return `about ${Math.floor(diff / 2_592_000_000)} mo ago`;
+}
+
+function formatDurationSecs(seconds: number | null | undefined): string {
+  if (seconds == null) return "—";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function progressFromStatus(run: Run): number {
+  switch (run.status) {
+    case "completed": return 100;
+    case "failed": return 65;
+    case "cancelled":
+    case "canceled": return 50;
+    case "running": return 70;
+    case "waiting_approval": return 75;
+    case "pending": return 10;
+    case "created": return 5;
+    default: return 0;
+  }
+}
+
+function progressWidthClass(p: number): string {
+  // Discrete map so Tailwind JIT can statically detect all classes
+  if (p >= 100) return "w-full";
+  if (p >= 75) return "w-[75%]";
+  if (p >= 70) return "w-[70%]";
+  if (p >= 65) return "w-[65%]";
+  if (p >= 50) return "w-1/2";
+  if (p >= 10) return "w-[10%]";
+  return "w-[5%]";
 }
 

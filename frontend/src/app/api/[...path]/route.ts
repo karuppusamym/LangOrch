@@ -6,7 +6,7 @@ type RouteContext = {
   params: Promise<{ path: string[] }>;
 };
 
-const DEV_FALLBACK_BACKEND_URLS = ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:8010", "http://127.0.0.1:8010"];
+const DEV_FALLBACK_BACKEND_URLS = ["http://localhost:8000", "http://127.0.0.1:8000"];
 
 function getBackendCandidates(): string[] {
   const configured = [process.env.BACKEND_URL, process.env.NEXT_PUBLIC_BACKEND_URL]

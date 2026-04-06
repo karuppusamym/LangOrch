@@ -195,6 +195,9 @@ class IRHumanApprovalPayload:
     on_approve: str | None = None
     on_reject: str | None = None
     on_timeout: str | None = None
+    # Arbitrary decision→next_node map for custom decision_type flows.
+    # Takes precedence over on_approve / on_reject when the decision key matches.
+    routes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

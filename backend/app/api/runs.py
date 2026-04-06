@@ -54,6 +54,8 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _princ
         # inherit project from procedure if caller didn't specify
         project_id=body.project_id or proc.project_id,
         case_id=body.case_id,
+        trigger_type="manual",
+        triggered_by=_principal.identity,
     )
 
     # Atomically enqueue a durable RunJob in the same transaction as the Run.

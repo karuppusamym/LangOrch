@@ -1,0 +1,386 @@
+{
+  "procedure_id": "fraud_detection_investigation_demo",
+  "version": "1.1.0",
+  "name": "Fraud Detection & Investigation",
+  "description": "Automated fraud signal collection, LLM analysis, risk routing, and analyst review gate.",
+  "status": "active",
+  "effective_date": "2026-04-04",
+  "trigger": {
+    "type": "manual",
+    "description": "Triggered by a fraud analyst from the investigation dashboard"
+  },
+  "retrieval_metadata": {
+    "primary_intents": [
+      "investigate fraud alert",
+      "analyst decision on suspicious transaction",
+      "fraud risk review",
+      "freeze and escalate account",
+      "block fraudulent transaction"
+    ],
+    "business_domain": "finance",
+    "applicability": {
+      "account_types": ["fraud_analyst", "compliance_officer", "risk_manager"],
+      "channel": ["web"]
+    },
+    "keywords": [
+      "fraud", "risk score", "analyst review", "SAR",
+      "transaction block", "step-up auth", "watchlist", "freeze"
+    ]
+  },
+  "global_config": {
+    "execution_mode": "production",
+    "max_retries": 0,
+    "timeout_ms": 300000,
+    "checkpoint_strategy": "critical_nodes_only",
+    "checkpoint_storage": "database",
+    "resume_on_failure": true,
+    "on_failure": "audit_log",
+    "logging_level": "INFO"
+  },
+  "variables_schema": {
+    "transaction_id": {
+      "type": "string",
+      "required": true,
+      "origin": "user_strict",
+      "description": "Unique identifier for the transaction under review"
+    },
+    "account_id": {
+      "type": "string",
+      "required": true,
+      "origin": "user_strict",
+      "description": "Account identifier of the customer"
+    },
+    "transaction_amount": {
+      "type": "number",
+      "required": true,
+      "origin": "user_strict",
+      "validation": {
+        "min": 0.01
+      },
+      "description": "Transaction amount in the specified currency"
+    },
+    "transaction_currency": {
+      "type": "string",
+      "required": true,
+      "origin": "user_strict",
+      "validation": {
+        "regex": "^[A-Z]{3}$"
+      },
+      "description": "ISO 4217 3-letter currency code (e.g. USD)"
+    },
+    "merchant_id": {
+      "type": "string",
+      "required": true,
+      "origin": "user_strict",
+      "description": "Merchant or payee identifier"
+    },
+    "channel": {
+      "type": "string",
+      "required": true,
+      "origin": "user_strict",
+      "validation": {
+        "allowed_values": [
+          "online",
+          "atm",
+          "pos",
+          "wire",
+          "mobile"
+        ]
+      },
+      "description": "Transaction channel"
+    },
+    "risk_score": {
+      "type": "number",
+      "required": false,
+      "origin": "user_lazy",
+      "default": 50,
+      "description": "Pre-computed risk score 0–100; used for routing logic"
+    },
+    "customer_name": {
+      "type": "string",
+      "required": false,
+      "origin": "user_lazy",
+      "default": "Unknown Customer",
+      "description": "Customer display name"
+    },
+    "flag": {
+      "type": "string",
+      "required": false,
+      "origin": "user_lazy",
+      "default": "SUSPICIOUS_ACTIVITY",
+      "description": "Alert flag / reason code"
+    }
+  },
+  "workflow_graph": {
+    "start_node": "collect_context",
+    "nodes": {
+      "collect_context": {
+        "title": "Collect Transaction Context",
+        "description": "Fetch transaction record, account profile, and KYC data for the account under review.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "fetch_transaction",
+            "action": "log",
+            "params": {
+              "message": "Fetching transaction {{transaction_id}} on account {{account_id}} — {{transaction_amount}} {{transaction_currency}} via {{channel}}"
+            }
+          },
+          {
+            "step_id": "fetch_account_profile",
+            "action": "log",
+            "params": {
+              "message": "Loading account profile and KYC data for {{account_id}} (customer: {{customer_name}})"
+            }
+          },
+          {
+            "step_id": "fetch_merchant_data",
+            "action": "log",
+            "params": {
+              "message": "Loading merchant risk profile for {{merchant_id}}"
+            }
+          }
+        ],
+        "tags": ["data-collection", "sequence", "api"],
+        "next_node": "signal_analysis"
+      },
+      "signal_analysis": {
+        "title": "Signal Analysis",
+        "description": "Run fraud signal checks: velocity, geo-anomaly, device fingerprint, and watchlist/sanctions screening.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "velocity_check",
+            "action": "log",
+            "params": {
+              "message": "Running velocity check on account {{account_id}} — flagged: {{flag}}"
+            }
+          },
+          {
+            "step_id": "geo_anomaly_check",
+            "action": "log",
+            "params": {
+              "message": "Running geo-anomaly detection on transaction {{transaction_id}}"
+            }
+          },
+          {
+            "step_id": "device_fingerprint",
+            "action": "log",
+            "params": {
+              "message": "Analysing device fingerprint and session for {{transaction_id}}"
+            }
+          },
+          {
+            "step_id": "watchlist_screen",
+            "action": "log",
+            "params": {
+              "message": "Screening {{account_id}} and {{merchant_id}} against sanctions/watchlists"
+            }
+          }
+        ],
+        "tags": ["signals", "fraud-detection", "velocity", "geo", "watchlist"],
+        "next_node": "llm_analysis"
+      },
+      "llm_analysis": {
+        "title": "LLM Behavioural Analysis",
+        "description": "LLM agent synthesises all signals into a composite risk score 0–100 with a behavioural narrative.",
+        "is_checkpoint": true,
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "llm_score",
+            "action": "log",
+            "params": {
+              "message": "LLM behavioural analysis complete — risk score {{risk_score}}/100 for transaction {{transaction_id}}"
+            }
+          }
+        ],
+        "tags": ["llm", "risk-scoring", "checkpoint"],
+        "next_node": "risk_routing"
+      },
+      "risk_routing": {
+        "title": "Risk-Band Router",
+        "description": "Route to auto-approve (risk < 30), auto-block (risk >= 90), or analyst review gate for all other scores.",
+        "type": "logic",
+        "branches": [
+          {
+            "condition": "{{risk_score}} < 30",
+            "next_node": "auto_approve"
+          },
+          {
+            "condition": "{{risk_score}} >= 90",
+            "next_node": "auto_block"
+          }
+        ],
+        "tags": ["logic", "routing", "risk-band"],
+        "default_next_node": "human_approval_review"
+      },
+      "auto_approve": {
+        "title": "Auto-Approve",
+        "description": "Low-risk transaction automatically approved and case closed without analyst intervention.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "log_auto_approve",
+            "action": "log",
+            "params": {
+              "message": "AUTO-APPROVED: transaction {{transaction_id}} — risk score {{risk_score}} is below threshold"
+            }
+          }
+        ],
+        "tags": ["approve", "low-risk", "auto"],
+        "next_node": "audit_log"
+      },
+      "auto_block": {
+        "title": "Auto-Block (Critical Risk)",
+        "description": "Critical risk: transaction blocked immediately and queued for analyst confirmation.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "log_auto_block",
+            "action": "log",
+            "params": {
+              "message": "AUTO-BLOCKED: transaction {{transaction_id}} — risk score {{risk_score}} exceeds critical threshold. Account {{account_id}} flagged."
+            }
+          }
+        ],
+        "tags": ["block", "critical-risk", "auto"],
+        "next_node": "human_approval_review"
+      },
+      "human_approval_review": {
+        "title": "Analyst Review Gate",
+        "description": "Fraud analyst reviews risk signals and selects the appropriate disposition for this alert.",
+        "is_checkpoint": true,
+        "type": "human_approval",
+        "prompt": "FRAUD ALERT REVIEW — Transaction {{transaction_id}}\nCustomer: {{customer_name}} (account {{account_id}})\nAmount: {{transaction_amount}} {{transaction_currency}} via {{channel}}\nMerchant: {{merchant_id}}\nFlag: {{flag}}\nRisk Score: {{risk_score}}/100\n\nSelect the appropriate disposition for this alert.",
+        "decision_type": "custom",
+        "options": [
+          "approve",
+          "block",
+          "challenge",
+          "freeze_and_escalate"
+        ],
+        "approval_level": "standard",
+        "timeout_ms": 14400000,
+        "timeout_action": "escalate",
+        "on_timeout": "outcome_frozen",
+        "escalation_contact": "fraud-manager@company.com",
+        "routes": {
+          "approve": "outcome_approved",
+          "block": "outcome_blocked",
+          "challenge": "outcome_challenged",
+          "freeze_and_escalate": "outcome_frozen"
+        },
+        "tags": ["human-approval", "analyst", "decision-gate", "checkpoint"],
+        "next_node": "execute_decision"
+      },
+      "outcome_approved": {
+        "title": "Outcome: Approved",
+        "description": "Analyst approved — transaction released and customer cleared of this alert.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "log_outcome_approved",
+            "action": "log",
+            "params": {
+              "message": "APPROVED: transaction {{transaction_id}} released — analyst cleared the alert."
+            }
+          }
+        ],
+        "tags": ["outcome", "approve"],
+        "next_node": "execute_decision"
+      },
+      "outcome_blocked": {
+        "title": "Outcome: Blocked",
+        "description": "Analyst blocked — transaction permanently blocked and account flagged for further review.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "log_outcome_blocked",
+            "action": "log",
+            "params": {
+              "message": "BLOCKED: transaction {{transaction_id}} blocked by analyst — account {{account_id}} flagged for review."
+            }
+          }
+        ],
+        "tags": ["outcome", "block", "fraud-confirmed"],
+        "next_node": "execute_decision"
+      },
+      "outcome_challenged": {
+        "title": "Outcome: Challenge Sent",
+        "description": "Analyst challenged — step-up verification request sent to customer to confirm the transaction.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "log_outcome_challenged",
+            "action": "log",
+            "params": {
+              "message": "CHALLENGE SENT: customer {{customer_name}} ({{account_id}}) notified to verify transaction {{transaction_id}}."
+            }
+          }
+        ],
+        "tags": ["outcome", "challenge", "step-up-auth"],
+        "next_node": "execute_decision"
+      },
+      "outcome_frozen": {
+        "title": "Outcome: Freeze & Escalate",
+        "description": "Analyst escalated — account frozen and case referred to compliance for SAR review.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "log_outcome_frozen",
+            "action": "log",
+            "params": {
+              "message": "FREEZE + ESCALATE: account {{account_id}} frozen and transaction {{transaction_id}} escalated to compliance."
+            }
+          }
+        ],
+        "tags": ["outcome", "freeze", "escalation", "compliance"],
+        "next_node": "execute_decision"
+      },
+      "execute_decision": {
+        "title": "Execute Decision",
+        "description": "Apply the analyst decision: update core systems, notify the customer, and close the alert.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "apply_decision",
+            "action": "log",
+            "params": {
+              "message": "Executing analyst decision on transaction {{transaction_id}} (account {{account_id}})"
+            }
+          },
+          {
+            "step_id": "notify_customer",
+            "action": "log",
+            "params": {
+              "message": "Sending decision notification to customer {{customer_name}}"
+            }
+          }
+        ],
+        "tags": ["execute", "notification", "sequence"],
+        "next_node": "audit_log"
+      },
+      "audit_log": {
+        "title": "Audit Log",
+        "description": "Write a complete audit record for the investigation: risk score, flag, decision, and outcome.",
+        "type": "sequence",
+        "steps": [
+          {
+            "step_id": "write_audit",
+            "action": "log",
+            "params": {
+              "message": "Audit record written for transaction {{transaction_id}} on account {{account_id}}. Risk score: {{risk_score}}. Flag: {{flag}}."
+            }
+          }
+        ],
+        "tags": ["audit", "compliance", "terminal"]
+      }
+    }
+  },
+  "provenance": {
+    "compiled_on": "2026-04-04T12:00:00Z",
+    "compiler_agent_version": "1.1.0",
+    "notes": "Demo version — uses log steps in place of live API calls. Mirrors fraud_detection_investigation v1.1.0 pipeline structure."
+  }
+}

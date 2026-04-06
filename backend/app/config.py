@@ -255,6 +255,11 @@ class Settings(BaseSettings):
     # first access.  Safe to enable; adds one round-trip per secret per run.
     SECRETS_ROTATION_CHECK: bool = False
 
+    # ── Secrets encryption ───────────────────────────────────────
+    # Fernet key (base64-url) used to encrypt/decrypt database-backed secrets.
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    SECRETS_ENCRYPTION_KEY: str | None = None
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     @field_validator("DEBUG", mode="before")

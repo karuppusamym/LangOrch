@@ -193,6 +193,48 @@ class TestAgentsAPI:
         assert resp.status_code in [200, 201]
 
     @pytest.mark.asyncio
+    async def test_register_agent_upserts_existing_agent(self, client):
+        agent_id = f"test-agent-upsert-{_uid()}"
+        first_body = {
+            "agent_id": agent_id,
+            "name": "Original Agent",
+            "channel": "api",
+            "base_url": "http://127.0.0.1:9999",
+            "resource_key": "test_resource_a",
+            "concurrency_limit": 1,
+        }
+        second_body = {
+            "agent_id": agent_id,
+            "name": "Updated Agent",
+            "channel": "api",
+            "base_url": "http://127.0.0.1:9998",
+            "resource_key": "test_resource_b",
+            "concurrency_limit": 4,
+            "capabilities": [
+                {
+                    "name": "browser.navigate",
+                    "type": "tool",
+                    "is_batch": False,
+                }
+            ],
+        }
+
+        first_resp = await client.post("/api/agents", json=first_body)
+        assert first_resp.status_code == 201
+
+        second_resp = await client.post("/api/agents", json=second_body)
+        assert second_resp.status_code == 200
+
+        data = second_resp.json()
+        assert data["agent_id"] == agent_id
+        assert data["name"] == "Updated Agent"
+        assert data["base_url"] == "http://127.0.0.1:9998"
+        assert data["resource_key"] == "test_resource_b"
+        assert data["concurrency_limit"] == 4
+        assert data["status"] == "online"
+        assert data["capabilities"][0]["name"] == "browser.navigate"
+
+    @pytest.mark.asyncio
     async def test_agent_not_found(self, client):
         resp = await client.get("/api/agents/nonexistent-agent-id")
         assert resp.status_code == 404

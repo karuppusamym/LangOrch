@@ -35,13 +35,30 @@ async def list_checkpoints(thread_id: str) -> list[dict[str, Any]]:
                 checkpoint_metadata = checkpoint_tuple.metadata
                 checkpoint_id = checkpoint_config.get("configurable", {}).get("checkpoint_id")
 
+                # Resolve parent checkpoint ID from parent_config (more reliable than metadata)
+                _parent_config = getattr(checkpoint_tuple, "parent_config", None)
+                _parent_ckpt_id = (
+                    _parent_config.get("configurable", {}).get("checkpoint_id")
+                    if isinstance(_parent_config, dict)
+                    else None
+                )
+
+                # LangGraph stores the checkpoint timestamp in checkpoint["ts"] as an ISO string.
+                # metadata["source"] is a string like "loop"/"update", NOT a date.
+                _checkpoint_data = getattr(checkpoint_tuple, "checkpoint", None) or {}
+                _ts = (
+                    _checkpoint_data.get("ts")
+                    if isinstance(_checkpoint_data, dict)
+                    else None
+                )
+
                 checkpoints.append({
                     "checkpoint_id": checkpoint_id,
                     "thread_id": thread_id,
-                    "parent_checkpoint_id": checkpoint_metadata.get("parent_checkpoint_id"),
+                    "parent_checkpoint_id": _parent_ckpt_id,
                     "step": checkpoint_metadata.get("step", 0),
                     "writes": checkpoint_metadata.get("writes"),
-                    "created_at": checkpoint_metadata.get("source", "unknown"),
+                    "created_at": _ts or "",
                 })
 
             return checkpoints
