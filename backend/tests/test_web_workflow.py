@@ -44,7 +44,7 @@ class TestDryRunNewActions:
 
     @pytest.mark.asyncio
     async def test_select_all_text_returns_list(self):
-        from demo_agents.web_agent import _execute_dry_run
+        from automation_agents.web_agent import _execute_dry_run
 
         result = await _execute_dry_run("select_all_text", {"target": "article.product_pod h3 a"})
 
@@ -57,14 +57,14 @@ class TestDryRunNewActions:
 
     @pytest.mark.asyncio
     async def test_select_all_text_target_preserved(self):
-        from demo_agents.web_agent import _execute_dry_run
+        from automation_agents.web_agent import _execute_dry_run
 
         result = await _execute_dry_run("select_all_text", {"target": "p.price_color"})
         assert result["target"] == "p.price_color"
 
     @pytest.mark.asyncio
     async def test_get_attribute_returns_value(self):
-        from demo_agents.web_agent import _execute_dry_run
+        from automation_agents.web_agent import _execute_dry_run
 
         result = await _execute_dry_run("get_attribute", {"target": "a.link", "attribute": "href"})
 
@@ -76,7 +76,7 @@ class TestDryRunNewActions:
 
     @pytest.mark.asyncio
     async def test_get_attribute_default_attribute_is_href(self):
-        from demo_agents.web_agent import _execute_dry_run
+        from automation_agents.web_agent import _execute_dry_run
 
         result = await _execute_dry_run("get_attribute", {"target": "img"})
         assert result["attribute"] == "href"
@@ -84,7 +84,7 @@ class TestDryRunNewActions:
     @pytest.mark.asyncio
     async def test_select_all_text_dry_run_books_titles(self):
         """Dry-run returns plausible book titles for books.toscrape.com demos."""
-        from demo_agents.web_agent import _execute_dry_run
+        from automation_agents.web_agent import _execute_dry_run
 
         result = await _execute_dry_run("select_all_text", {"target": "article.product_pod h3 a"})
         # At least one of the demo titles should be in the list
@@ -101,14 +101,14 @@ class TestPlaywrightNewActions:
 
     @pytest.mark.asyncio
     async def test_select_all_text_calls_eval_on_selector_all(self):
-        from demo_agents.web_agent import _execute_playwright
+        from automation_agents.web_agent import _execute_playwright
 
         mock_page = AsyncMock()
         mock_page.eval_on_selector_all = AsyncMock(
             return_value=["Book A", "Book B", "Book C"]
         )
 
-        with patch("demo_agents.web_agent._get_page", return_value=mock_page):
+        with patch("automation_agents.web_agent._get_page", return_value=mock_page):
             result = await _execute_playwright("select_all_text", {"target": "h3 a"}, "run-001")
 
         assert result["ok"] is True
@@ -119,12 +119,12 @@ class TestPlaywrightNewActions:
 
     @pytest.mark.asyncio
     async def test_select_all_text_empty_page_returns_empty(self):
-        from demo_agents.web_agent import _execute_playwright
+        from automation_agents.web_agent import _execute_playwright
 
         mock_page = AsyncMock()
         mock_page.eval_on_selector_all = AsyncMock(return_value=[])
 
-        with patch("demo_agents.web_agent._get_page", return_value=mock_page):
+        with patch("automation_agents.web_agent._get_page", return_value=mock_page):
             result = await _execute_playwright("select_all_text", {"target": "h3 a"}, "run-002")
 
         assert result["texts"] == []
@@ -133,12 +133,12 @@ class TestPlaywrightNewActions:
 
     @pytest.mark.asyncio
     async def test_get_attribute_calls_page_get_attribute(self):
-        from demo_agents.web_agent import _execute_playwright
+        from automation_agents.web_agent import _execute_playwright
 
         mock_page = AsyncMock()
         mock_page.get_attribute = AsyncMock(return_value="https://example.com/book/1")
 
-        with patch("demo_agents.web_agent._get_page", return_value=mock_page):
+        with patch("automation_agents.web_agent._get_page", return_value=mock_page):
             result = await _execute_playwright(
                 "get_attribute",
                 {"target": "article h3 a", "attribute": "href"},
@@ -152,12 +152,12 @@ class TestPlaywrightNewActions:
 
     @pytest.mark.asyncio
     async def test_get_attribute_default_href(self):
-        from demo_agents.web_agent import _execute_playwright
+        from automation_agents.web_agent import _execute_playwright
 
         mock_page = AsyncMock()
         mock_page.get_attribute = AsyncMock(return_value="https://link.example.com")
 
-        with patch("demo_agents.web_agent._get_page", return_value=mock_page):
+        with patch("automation_agents.web_agent._get_page", return_value=mock_page):
             result = await _execute_playwright("get_attribute", {"target": "a"}, "run-004")
 
         # Default attribute is "href"
@@ -171,15 +171,15 @@ class TestPlaywrightNewActions:
 
 class TestCapabilities:
     def test_select_all_text_in_capabilities(self):
-        from demo_agents.web_agent import CAPABILITIES
+        from automation_agents.web_agent import CAPABILITIES
         assert any(c["name"] == "select_all_text" for c in CAPABILITIES)
 
     def test_get_attribute_in_capabilities(self):
-        from demo_agents.web_agent import CAPABILITIES
+        from automation_agents.web_agent import CAPABILITIES
         assert any(c["name"] == "get_attribute" for c in CAPABILITIES)
 
     def test_original_actions_still_present(self):
-        from demo_agents.web_agent import CAPABILITIES
+        from automation_agents.web_agent import CAPABILITIES
         for action in ("navigate", "click", "type", "wait_for_element",
                        "extract_text", "extract_table_data", "screenshot", "close"):
             assert any(c["name"] == action for c in CAPABILITIES), f"Missing original action: {action}"
@@ -487,7 +487,7 @@ class TestWebAgentEndpoints:
     @pytest.fixture
     def agent_client(self):
         from httpx import AsyncClient, ASGITransport
-        import demo_agents.web_agent as wa
+        import automation_agents.web_agent as wa
 
         # Force dry_run for endpoint tests
         original_dry_run = wa.SETTINGS.dry_run
@@ -503,7 +503,7 @@ class TestWebAgentEndpoints:
 
     @pytest.mark.asyncio
     async def test_health_dry_run_mode(self):
-        import demo_agents.web_agent as wa
+        import automation_agents.web_agent as wa
         from httpx import AsyncClient, ASGITransport
 
         wa.SETTINGS.dry_run = True
@@ -517,7 +517,7 @@ class TestWebAgentEndpoints:
 
     @pytest.mark.asyncio
     async def test_capabilities_includes_select_all_text(self):
-        import demo_agents.web_agent as wa
+        import automation_agents.web_agent as wa
         from httpx import AsyncClient, ASGITransport
 
         transport = ASGITransport(app=wa.app)
@@ -530,7 +530,7 @@ class TestWebAgentEndpoints:
 
     @pytest.mark.asyncio
     async def test_execute_select_all_text_dry_run(self):
-        import demo_agents.web_agent as wa
+        import automation_agents.web_agent as wa
         from httpx import AsyncClient, ASGITransport
 
         wa.SETTINGS.dry_run = True
@@ -556,7 +556,7 @@ class TestWebAgentEndpoints:
 
     @pytest.mark.asyncio
     async def test_execute_get_attribute_dry_run(self):
-        import demo_agents.web_agent as wa
+        import automation_agents.web_agent as wa
         from httpx import AsyncClient, ASGITransport
 
         wa.SETTINGS.dry_run = True

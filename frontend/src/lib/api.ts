@@ -16,7 +16,10 @@ import type {
   RunDiagnostics,
   MetricsSummary,
   Case,
+  CaseAllowedProcedures,
   CaseEvent,
+  CasePolicyResolution,
+  CaseProcedurePolicy,
   CaseQueueItem,
   CaseQueueAnalytics,
   CaseSlaPolicy,
@@ -31,8 +34,13 @@ import type {
   CheckpointState,
   ExplainReport,
   TriggerRegistration,
+  TriggerFireResult,
   User,
   Secret,
+  AgentOperationEvent,
+  BatchJob,
+  BatchJobItem,
+  BatchJobOperationResult,
 } from "./types";
 import { getToken } from "./auth";
 
@@ -94,6 +102,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return undefined as unknown as T;
   }
   return res.json();
+}
+
+async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const token = getToken();
+  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { ...authHeader, ...init?.headers },
+    ...init,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, body);
+  }
+  return res.text();
 }
 
 /* ── Procedures ────────────────────────── */
@@ -238,6 +260,18 @@ export async function listRuns(params?: {
   return request(`/runs${qs ? `?${qs}` : ""}`);
 }
 
+export async function listCaseRuns(
+  caseId: string,
+  params?: { order?: "asc" | "desc"; limit?: number; offset?: number }
+): Promise<Run[]> {
+  const q = new URLSearchParams();
+  if (params?.order) q.set("order", params.order);
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return request(`/cases/${encodeURIComponent(caseId)}/runs${qs ? `?${qs}` : ""}`);
+}
+
 export async function getRun(id: string): Promise<Run> {
   return request(`/runs/${id}`);
 }
@@ -246,7 +280,7 @@ export async function createRun(
   procedureId: string,
   version: string,
   inputVars?: Record<string, unknown>,
-  opts?: { project_id?: string; case_id?: string }
+  opts?: { project_id?: string; case_id?: string; link_source?: string; input_snapshot_source?: string }
 ): Promise<Run> {
   return request("/runs", {
     method: "POST",
@@ -256,6 +290,8 @@ export async function createRun(
       input_vars: inputVars ?? {},
       project_id: opts?.project_id,
       case_id: opts?.case_id,
+      link_source: opts?.link_source,
+      input_snapshot_source: opts?.input_snapshot_source,
     }),
   });
 }
@@ -360,6 +396,10 @@ export async function getActionCatalog(): Promise<Record<string, string[]>> {
   return request("/actions");
 }
 
+export async function listRecentAgentOperations(limit = 20): Promise<AgentOperationEvent[]> {
+  return request(`/agents/operations/recent?limit=${limit}`);
+}
+
 /* ── Projects ──────────────────────────────────── */
 
 export async function listProjects(): Promise<Project[]> {
@@ -429,6 +469,44 @@ export async function createCase(data: {
   metadata?: Record<string, unknown> | null;
 }): Promise<Case> {
   return request("/cases", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function listCaseProcedurePolicies(params?: {
+  project_id?: string;
+  case_type?: string;
+  enabled_only?: boolean;
+}): Promise<CaseProcedurePolicy[]> {
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.case_type) q.set("case_type", params.case_type);
+  if (params?.enabled_only !== undefined) q.set("enabled_only", String(params.enabled_only));
+  const qs = q.toString();
+  return request(`/cases/procedure-policies${qs ? `?${qs}` : ""}`);
+}
+
+export async function createCaseProcedurePolicy(data: {
+  project_id?: string | null;
+  case_type: string;
+  procedure_id: string;
+  enabled?: boolean;
+}): Promise<CaseProcedurePolicy> {
+  return request("/cases/procedure-policies", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function deleteCaseProcedurePolicy(policyId: string): Promise<void> {
+  await request(`/cases/procedure-policies/${encodeURIComponent(policyId)}`, { method: "DELETE" });
+}
+
+export async function getCaseAllowedProcedures(caseId: string): Promise<CaseAllowedProcedures> {
+  return request(`/cases/${encodeURIComponent(caseId)}/allowed-procedures`);
+}
+
+export async function getCasePolicyResolution(caseId: string): Promise<CasePolicyResolution> {
+  return request(`/cases/${encodeURIComponent(caseId)}/policy-resolution`);
+}
+
+export async function listCaseLaunchableProcedures(caseId: string): Promise<Procedure[]> {
+  return request(`/cases/${encodeURIComponent(caseId)}/launchable-procedures`);
 }
 
 export async function updateCase(caseId: string, data: Record<string, unknown>): Promise<Case> {
@@ -781,6 +859,12 @@ export async function upsertTrigger(
     event_source?: string | null;
     dedupe_window_seconds?: number;
     max_concurrent_runs?: number | null;
+    dispatch_mode?: string;
+    static_payload?: unknown | null;
+    case_type?: string | null;
+    case_title_template?: string | null;
+    case_external_ref_field?: string | null;
+    create_case_tags?: string[] | null;
     enabled?: boolean;
   }
 ): Promise<TriggerRegistration> {
@@ -804,11 +888,74 @@ export async function syncTriggers(): Promise<{ synced: number }> {
 export async function fireTrigger(
   procedureId: string,
   version: string
-): Promise<{ run_id: string; procedure_id: string; procedure_version: string; trigger_type: string }> {
+): Promise<TriggerFireResult> {
   return request(
     `/triggers/${encodeURIComponent(procedureId)}/${encodeURIComponent(version)}/fire`,
     { method: "POST" }
   );
+}
+
+export async function listBatchJobs(params?: {
+  project_id?: string;
+  procedure_id?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<BatchJob[]> {
+  const q = new URLSearchParams();
+  if (params?.project_id) q.set("project_id", params.project_id);
+  if (params?.procedure_id) q.set("procedure_id", params.procedure_id);
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return request(`/batch-jobs${qs ? `?${qs}` : ""}`);
+}
+
+export async function getBatchJob(batchJobId: string): Promise<BatchJob> {
+  return request(`/batch-jobs/${encodeURIComponent(batchJobId)}`);
+}
+
+export async function listBatchJobItems(batchJobId: string): Promise<BatchJobItem[]> {
+  return request(`/batch-jobs/${encodeURIComponent(batchJobId)}/items`);
+}
+
+export async function retryBatchJobItem(batchJobId: string, itemId: string): Promise<BatchJobItem> {
+  return request(`/batch-jobs/${encodeURIComponent(batchJobId)}/items/${encodeURIComponent(itemId)}/retry`, {
+    method: "POST",
+  });
+}
+
+export async function cancelBatchJobItem(batchJobId: string, itemId: string): Promise<BatchJobItem> {
+  return request(`/batch-jobs/${encodeURIComponent(batchJobId)}/items/${encodeURIComponent(itemId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function retryFailedBatchJobItems(batchJobId: string): Promise<BatchJobOperationResult> {
+  return request(`/batch-jobs/${encodeURIComponent(batchJobId)}/retry-failed`, { method: "POST" });
+}
+
+export async function cancelBatchJob(batchJobId: string): Promise<BatchJobOperationResult> {
+  return request(`/batch-jobs/${encodeURIComponent(batchJobId)}/cancel`, { method: "POST" });
+}
+
+export async function exportFailedBatchJobItems(batchJobId: string): Promise<string> {
+  return requestText(`/batch-jobs/${encodeURIComponent(batchJobId)}/failed-export`);
+}
+
+export async function createBatchJob(data: {
+  name: string;
+  procedure_id: string;
+  procedure_version?: string | null;
+  source_format: "json" | "jsonl" | "csv";
+  payload_text: string;
+  project_id?: string | null;
+  create_case_per_item?: boolean;
+  case_type?: string | null;
+  title_field?: string | null;
+  external_ref_field?: string | null;
+  tags?: string[] | null;
+}): Promise<BatchJob> {
+  return request("/batch-jobs", { method: "POST", body: JSON.stringify(data) });
 }
 
 /* ── Auth ───────────────────────────────────────────────────── */

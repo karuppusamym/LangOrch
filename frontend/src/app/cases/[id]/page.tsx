@@ -1,23 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   claimCase,
   createRun,
   getCase,
+  getCasePolicyResolution,
+  listCaseLaunchableProcedures,
+  listCaseRuns,
   getProcedure,
   isNotFoundError,
   listCaseEvents,
-  listProcedures,
-  listRuns,
   releaseCase,
   updateCase,
 } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { flattenVariablesSchema, isFieldSensitive } from "@/lib/redact";
-import type { Case, CaseEvent, Procedure, Run } from "@/lib/types";
+import type { Case, CaseEvent, CasePolicyResolution, Procedure, Run } from "@/lib/types";
 import type { ProcedureDetail } from "@/lib/types";
 
 const STATUS_OPTIONS = ["open", "in_progress", "resolved", "closed", "escalated"];
@@ -31,12 +32,15 @@ function fmtDate(value: string | null | undefined) {
 
 export default function CaseDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const caseId = params.id as string;
   const { toast } = useToast();
+  const missingCaseHandledRef = useRef(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [caseItem, setCaseItem] = useState<Case | null>(null);
+  const [policyResolution, setPolicyResolution] = useState<CasePolicyResolution | null>(null);
   const [events, setEvents] = useState<CaseEvent[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [claimOwner, setClaimOwner] = useState("");
@@ -52,22 +56,36 @@ export default function CaseDetailPage() {
   }, [caseId]);
 
   useEffect(() => {
-    void listProcedures().then(setProcedures).catch(() => null);
-  }, []);
+    void listCaseLaunchableProcedures(caseId).then(setProcedures).catch(() => null);
+  }, [caseId]);
 
   async function load() {
     setLoading(true);
     try {
-      const [caseData, caseEvents, caseRuns] = await Promise.all([
+      const [caseData, caseResolution, caseEvents, caseRuns] = await Promise.all([
         getCase(caseId),
+        getCasePolicyResolution(caseId),
         listCaseEvents(caseId, 300),
-        listRuns({ case_id: caseId, limit: 200, order: "desc" }),
+        listCaseRuns(caseId, { limit: 200, order: "desc" }),
       ]);
       setCaseItem(caseData);
+      setPolicyResolution(caseResolution);
       setEvents(caseEvents);
       setRuns(caseRuns);
-      if (caseData.owner) setClaimOwner(caseData.owner);
+      setClaimOwner(caseData.owner ?? "");
     } catch (err) {
+      if (isNotFoundError(err)) {
+        setCaseItem(null);
+        setPolicyResolution(null);
+        setEvents([]);
+        setRuns([]);
+        if (!missingCaseHandledRef.current) {
+          missingCaseHandledRef.current = true;
+          toast("Case not found. Redirecting to cases.", "error");
+          router.replace("/cases");
+        }
+        return;
+      }
       toast(err instanceof Error ? err.message : "Failed to load case", "error");
     } finally {
       setLoading(false);
@@ -114,11 +132,7 @@ export default function CaseDetailPage() {
     }
   }
 
-  const launchableProcedures = procedures.filter((p) => {
-    if (p.status === "archived" || p.status === "deprecated") return false;
-    if (!caseItem?.project_id) return true;
-    return p.project_id === caseItem.project_id;
-  });
+  const launchableProcedures = procedures;
 
   useEffect(() => {
     if (launchableProcedures.length === 0) {
@@ -313,10 +327,15 @@ export default function CaseDetailPage() {
       // Verify case still exists before creating run
       try {
         await getCase(caseItem.case_id);
-      } catch {
-        toast("Case no longer exists. Please refresh the page.", "error");
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          toast("Case no longer exists. Redirecting to cases.", "error");
+          router.replace("/cases");
+          setRunModalOpen(false);
+          return;
+        }
+        toast("Unable to verify case before starting the run.", "error");
         await load();
-        setSaving(false);
         return;
       }
 
@@ -324,15 +343,21 @@ export default function CaseDetailPage() {
         runModalProcedure.procedure_id,
         runModalProcedure.version,
         parsed,
-        { case_id: caseItem.case_id, project_id: caseItem.project_id ?? undefined }
+        {
+          case_id: caseItem.case_id,
+          project_id: caseItem.project_id ?? undefined,
+          link_source: "launched_from_case",
+          input_snapshot_source: "manual_request",
+        }
       );
       toast("Run started for case", "success");
       setRunModalOpen(false);
       await load();
     } catch (err) {
       if (isNotFoundError(err)) {
-        toast("Case not found. It may have been deleted.", "error");
-        await load();
+        toast("Case not found. Redirecting to cases.", "error");
+        setRunModalOpen(false);
+        router.replace("/cases");
       } else {
         toast(err instanceof Error ? err.message : "Failed to start run", "error");
       }
@@ -406,6 +431,29 @@ export default function CaseDetailPage() {
           <p><span className="text-neutral-500">SLA Breached:</span> {fmtDate(caseItem.sla_breached_at)}</p>
           <p><span className="text-neutral-500">Created:</span> {fmtDate(caseItem.created_at)}</p>
           <p><span className="text-neutral-500">Updated:</span> {fmtDate(caseItem.updated_at)}</p>
+          <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+            <h3 className="mb-2 text-sm font-semibold">Policy Resolution</h3>
+            <p>
+              <span className="text-neutral-500">Typed cases required:</span>{" "}
+              {policyResolution?.case_type_required ? "yes" : "no"}
+            </p>
+            <p>
+              <span className="text-neutral-500">Procedure policy:</span>{" "}
+              {policyResolution?.procedure_restricted ? "restricted" : "open"}
+            </p>
+            <p>
+              <span className="text-neutral-500">Allowed procedures:</span>{" "}
+              {policyResolution?.allowed_procedure_ids.length
+                ? policyResolution.allowed_procedure_ids.join(", ")
+                : "-"}
+            </p>
+            <p>
+              <span className="text-neutral-500">Matched SLA policy:</span>{" "}
+              {policyResolution?.matched_sla_policy
+                ? `${policyResolution.matched_sla_policy.name} (${policyResolution.matched_sla_policy.due_minutes}m -> ${policyResolution.matched_sla_policy.breach_status})`
+                : "-"}
+            </p>
+          </div>
         </div>
 
         <div className="rounded-2xl border bg-white dark:bg-neutral-900 p-4">
@@ -440,14 +488,35 @@ export default function CaseDetailPage() {
             {runs.length === 0 ? (
               <p className="text-xs text-neutral-500">No runs linked to this case.</p>
             ) : runs.map((run) => (
-              <Link
+              <div
                 key={run.run_id}
-                href={`/runs/${run.run_id}`}
-                className="block rounded border px-2 py-1 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                className="rounded border px-2 py-1 text-xs"
               >
-                <p className="font-mono text-blue-600">{run.run_id}</p>
-                <p className="text-neutral-500">{run.procedure_id} ({run.status})</p>
-              </Link>
+                <div className="flex items-start justify-between gap-2">
+                  <Link href={`/runs/${run.run_id}`} className="font-mono text-blue-600 hover:underline">
+                    {run.run_id}
+                  </Link>
+                  <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {run.status}
+                  </span>
+                </div>
+                <p className="mt-1 text-neutral-500">
+                  {run.procedure_id} v{run.procedure_version}
+                </p>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-neutral-500">
+                  <span>Started: {fmtDate(run.started_at ?? run.created_at)}</span>
+                  {run.batch_job_id ? (
+                    <Link href={`/batch-jobs/${run.batch_job_id}`} className="text-sky-600 hover:underline">
+                      Batch {run.batch_job_id.slice(0, 8)}{run.batch_item_index !== null ? ` / row ${run.batch_item_index + 1}` : ""}
+                    </Link>
+                  ) : (
+                    <span>Direct case run</span>
+                  )}
+                </div>
+                {run.error_message ? (
+                  <p className="mt-1 text-[11px] text-red-600">{run.error_message}</p>
+                ) : null}
+              </div>
             ))}
           </div>
         </div>

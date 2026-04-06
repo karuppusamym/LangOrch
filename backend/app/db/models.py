@@ -77,6 +77,26 @@ class Case(Base):
     events: Mapped[list[CaseEvent]] = relationship(back_populates="case", lazy="noload")
 
 
+class CaseProcedurePolicy(Base):
+    __tablename__ = "case_procedure_policies"
+    __table_args__ = (
+        UniqueConstraint("project_id", "case_type", "procedure_id", name="uq_case_proc_policy_scope"),
+        Index("ix_case_proc_policies_scope", "project_id", "case_type"),
+        Index("ix_case_proc_policies_procedure", "procedure_id"),
+        Index("ix_case_proc_policies_enabled", "enabled"),
+    )
+
+    policy_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.project_id"), nullable=True
+    )
+    case_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    procedure_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class CaseEvent(Base):
     __tablename__ = "case_events"
     __table_args__ = (Index("ix_case_events_case_ts", "case_id", "ts"),)
@@ -237,6 +257,7 @@ class Run(Base):
         Index("ix_runs_project_created_at", "project_id", "created_at"),
         Index("ix_runs_procedure_created_at", "procedure_id", "created_at"),
         Index("ix_runs_case_created_at", "case_id", "created_at"),
+        Index("ix_runs_batch_created_at", "batch_job_id", "created_at"),
     )
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
@@ -265,12 +286,72 @@ class Run(Base):
     case_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("cases.case_id"), nullable=True
     )
+    batch_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("batch_jobs.batch_job_id"), nullable=True
+    )
+    batch_item_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    link_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_snapshot_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     # NOTE: lazy="noload" prevents automatic event loading on every Run query.
     # RunOut never exposes events — use run_service.list_events(db, run_id) explicitly.
     events: Mapped[list[RunEvent]] = relationship(back_populates="run", lazy="noload")
+
+
+class BatchJob(Base):
+    __tablename__ = "batch_jobs"
+    __table_args__ = (
+        Index("ix_batch_jobs_status_created_at", "status", "created_at"),
+        Index("ix_batch_jobs_project_created_at", "project_id", "created_at"),
+        Index("ix_batch_jobs_procedure_created_at", "procedure_id", "created_at"),
+    )
+
+    batch_job_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    procedure_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    procedure_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    source_format: Mapped[str] = mapped_column(String(32), nullable=False, default="json")
+    total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    create_case_per_item: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    case_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    trigger_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.project_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BatchJobItem(Base):
+    __tablename__ = "batch_job_items"
+    __table_args__ = (
+        UniqueConstraint("batch_job_id", "item_index", name="uq_batch_job_item_index"),
+        Index("ix_batch_job_items_batch_status", "batch_job_id", "status"),
+        Index("ix_batch_job_items_run_id", "run_id"),
+        Index("ix_batch_job_items_case_id", "case_id"),
+    )
+
+    item_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    batch_job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("batch_jobs.batch_job_id"), nullable=False
+    )
+    item_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    input_vars_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("runs.run_id"), nullable=True
+    )
+    case_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("cases.case_id"), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 # ── Agent Dispatch Counters (Persistent Round-Robin) ───────────
@@ -384,6 +465,26 @@ class AgentInstance(Base):
 # ── Resource leases ─────────────────────────────────────────────
 
 
+class AutomationSession(Base):
+    __tablename__ = "automation_sessions"
+    __table_args__ = (
+        Index("ix_automation_sessions_agent_expires", "agent_id", "expires_at"),
+        Index("ix_automation_sessions_channel_expires", "channel", "expires_at"),
+    )
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("runs.run_id"), nullable=True, index=True)
+    data_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ResourceLease(Base):
     __tablename__ = "resource_leases"
 
@@ -414,6 +515,12 @@ class TriggerRegistration(Base):
     event_source: Mapped[str | None] = mapped_column(String(256), nullable=True)
     dedupe_window_seconds: Mapped[int] = mapped_column(Integer, default=0)
     max_concurrent_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dispatch_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="run")
+    static_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    case_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    case_title_template: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    case_external_ref_field: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    create_case_tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

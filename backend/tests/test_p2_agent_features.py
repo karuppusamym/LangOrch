@@ -8,6 +8,8 @@ from app.main import app
 from app.db.engine import async_session
 from sqlalchemy import text
 from app.api.agent_credentials import create_credential_grant_token
+from app.config import settings
+from app.contracts.agent_protocol import build_signed_headers
 
 
 @pytest.fixture
@@ -62,6 +64,35 @@ class TestAgentBootstrapAndHeartbeat:
         agent_data = agent_resp.json()
         assert agent_data["last_heartbeat_at"] is not None
         assert agent_data["status"] == "online"
+
+    @pytest.mark.asyncio
+    async def test_signed_agent_heartbeat_when_secret_enabled(self, client):
+        agent_id = "heartbeat_signed_agent_1"
+        previous_secret = settings.AGENT_SHARED_SECRET
+        object.__setattr__(settings, "AGENT_SHARED_SECRET", "heartbeat-secret")
+        try:
+            await client.delete(f"/api/agents/{agent_id}")
+            register_resp = await client.post(
+                "/api/agents",
+                json={
+                    "agent_id": agent_id,
+                    "name": "Signed Heartbeat Agent",
+                    "channel": "desktop",
+                    "base_url": "http://127.0.0.1:9991",
+                },
+            )
+            assert register_resp.status_code in [200, 201]
+
+            heartbeat_body = {"agent_id": agent_id, "status": "online"}
+            unsigned = await client.post("/api/agents/heartbeat", json=heartbeat_body)
+            assert unsigned.status_code == 401
+
+            headers = build_signed_headers("POST", "/api/agents/heartbeat", heartbeat_body, "heartbeat-secret")
+            signed = await client.post("/api/agents/heartbeat", json=heartbeat_body, headers=headers)
+            assert signed.status_code == 200
+            assert signed.json()["status"] == "ok"
+        finally:
+            object.__setattr__(settings, "AGENT_SHARED_SECRET", previous_secret)
 
 
 class TestAgentCredentials:
@@ -155,6 +186,91 @@ class TestAgentRoutingAndAffinity:
         clear_run_affinity(run_id)
         clear_run_affinity(run_id_2)
         assert f"{run_id}:{channel}" not in _run_agent_affinity
+
+    @pytest.mark.asyncio
+    async def test_stale_agent_is_skipped_when_fresh_agent_exists(self):
+        from datetime import datetime, timedelta, timezone
+        from app.runtime.executor_dispatch import _find_capable_agent
+        from app.db.models import AgentInstance
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        stale_agent = AgentInstance(
+            agent_id="web_stale",
+            channel="web",
+            status="online",
+            pool_id="pool_1",
+            capabilities="*",
+            last_heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=600),
+        )
+        fresh_agent = AgentInstance(
+            agent_id="web_fresh",
+            channel="web",
+            status="online",
+            pool_id="pool_1",
+            capabilities="*",
+            last_heartbeat_at=datetime.now(timezone.utc),
+        )
+
+        agent_result = MagicMock()
+        agent_result.scalars.return_value.all.return_value = [stale_agent, fresh_agent]
+        lease_result = []
+
+        async def mock_execute(*_args, **_kwargs):
+            if not hasattr(mock_execute, "count"):
+                mock_execute.count = 0
+            mock_execute.count += 1
+            return agent_result if mock_execute.count == 1 else lease_result
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+        with patch("app.runtime.executor_dispatch._get_next_pool_index", new=AsyncMock(return_value=0)):
+            agent, _cap_type = await _find_capable_agent(mock_db, "web", "navigate")
+        assert agent is not None
+        assert agent.agent_id == "web_fresh"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_prefers_agent_with_available_capacity(self):
+        from app.runtime.executor_dispatch import _find_capable_agent
+        from app.db.models import AgentInstance
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        busy_agent = AgentInstance(
+            agent_id="web_busy",
+            channel="web",
+            status="online",
+            pool_id="pool_1",
+            capabilities="*",
+            resource_key="web_busy_key",
+            concurrency_limit=1,
+        )
+        available_agent = AgentInstance(
+            agent_id="web_available",
+            channel="web",
+            status="online",
+            pool_id="pool_1",
+            capabilities="*",
+            resource_key="web_available_key",
+            concurrency_limit=1,
+        )
+
+        agent_result = MagicMock()
+        agent_result.scalars.return_value.all.return_value = [busy_agent, available_agent]
+        lease_rows = [MagicMock(resource_key="web_busy_key", active=1)]
+
+        async def mock_execute(*_args, **_kwargs):
+            if not hasattr(mock_execute, "count"):
+                mock_execute.count = 0
+            mock_execute.count += 1
+            return agent_result if mock_execute.count == 1 else lease_rows
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+        with patch("app.runtime.executor_dispatch._get_next_pool_index", new=AsyncMock(return_value=0)):
+            agent, _cap_type = await _find_capable_agent(mock_db, "web", "navigate")
+        assert agent is not None
+        assert agent.agent_id == "web_available"
 
 
     @pytest.mark.asyncio

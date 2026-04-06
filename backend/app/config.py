@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # ── Optional MCP fallback ───────────────────────────────────
     MCP_BASE_URL: str | None = None
 
+    # Startup schema policy:
+    #   auto          -> SQLite bootstrap helpers, PostgreSQL Alembic check
+    #   bootstrap     -> allow dev-time create_all / ALTER TABLE patching
+    #   migrate_check -> require DB to already be at Alembic head
+    STARTUP_SCHEMA_MODE: str = "auto"
+
     # ── LLM connector (OpenAI-compatible endpoint) ─────────────
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_API_KEY: str | None = None
@@ -210,6 +216,35 @@ class Settings(BaseSettings):
     # {"status": "success"|"error", "result": ..., "error": ...}
     # and malformed responses are rejected at the connector boundary.
     AGENT_STRICT_RESPONSE_SCHEMA: bool = True
+
+    # Agents may push heartbeats to the orchestrator on this interval.
+    AGENT_HEARTBEAT_INTERVAL_SECONDS: int = 30
+
+    # Agent instances older than this with no successful heartbeat are treated
+    # as stale and skipped by dispatch.
+    AGENT_STALE_AFTER_SECONDS: int = 90
+
+    # Shared secret for HMAC signing between orchestrator and agents.
+    # When unset, request signing is disabled for backward compatibility.
+    AGENT_SHARED_SECRET: str | None = None
+
+    # Request signature time skew tolerance.
+    AGENT_SIGNATURE_TTL_SECONDS: int = 300
+
+    # Agent protocol version exposed by the control plane and expected by
+    # signed workflow callbacks.
+    AGENT_PROTOCOL_VERSION: str = "1.0"
+
+    # Policy middleware for side-effecting agent actions.
+    AGENT_POLICY_ENFORCEMENT: bool = True
+    AGENT_POLICY_REQUIRE_TENANT_FOR_SIDE_EFFECTS: bool = False
+    AGENT_POLICY_REQUIRE_APPROVAL_FOR_HIGH_RISK: bool = True
+    AGENT_POLICY_BLOCK_PII_WITHOUT_APPROVAL: bool = True
+    AGENT_POLICY_FORBIDDEN_TARGET_PATTERNS: list[str] = []
+    AGENT_POLICY_FORBIDDEN_URL_PATTERNS: list[str] = []
+    AGENT_POLICY_FORBIDDEN_FILE_PATH_PATTERNS: list[str] = []
+    AGENT_POLICY_FORBIDDEN_DB_TABLE_PATTERNS: list[str] = []
+    AGENT_POLICY_ALLOWED_EMAIL_DOMAINS: list[str] = []
 
     # ── Authentication ───────────────────────────────────────────
     # Set AUTH_ENABLED=true to require JWT Bearer or X-API-Key on all mutating

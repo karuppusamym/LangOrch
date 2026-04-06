@@ -7,10 +7,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import case as sql_case, delete, func, select
+from sqlalchemy import case as sql_case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Case, CaseEvent, Run
+from app.db.models import Case, CaseEvent, CaseProcedurePolicy, CaseSlaPolicy, Run
 
 logger = logging.getLogger("langorch.case_service")
 
@@ -45,6 +45,82 @@ async def get_case(db: AsyncSession, case_id: str) -> Case | None:
     return await db.get(Case, case_id)
 
 
+def _normalize_case_type(case_type: str | None) -> str | None:
+    if case_type is None:
+        return None
+    normalized = str(case_type).strip()
+    return normalized or None
+
+
+async def _count_linked_runs(db: AsyncSession, case_id: str) -> int:
+    linked_runs = await db.execute(
+        select(func.count()).select_from(Run).where(Run.case_id == case_id)
+    )
+    return int(linked_runs.scalar() or 0)
+
+
+async def is_case_type_required_for_scope(
+    db: AsyncSession,
+    project_id: str | None,
+) -> bool:
+    procedure_policy_count = await db.execute(
+        select(func.count())
+        .select_from(CaseProcedurePolicy)
+        .where(CaseProcedurePolicy.enabled.is_(True))
+        .where(
+            or_(
+                CaseProcedurePolicy.project_id == project_id,
+                CaseProcedurePolicy.project_id.is_(None),
+            )
+        )
+    )
+    if int(procedure_policy_count.scalar() or 0) > 0:
+        return True
+
+    sla_policy_count = await db.execute(
+        select(func.count())
+        .select_from(CaseSlaPolicy)
+        .where(CaseSlaPolicy.enabled.is_(True))
+        .where(CaseSlaPolicy.case_type.is_not(None))
+        .where(
+            or_(
+                CaseSlaPolicy.project_id == project_id,
+                CaseSlaPolicy.project_id.is_(None),
+            )
+        )
+    )
+    return int(sla_policy_count.scalar() or 0) > 0
+
+
+async def get_case_policy_resolution(
+    db: AsyncSession,
+    case: Case,
+) -> dict[str, Any]:
+    from app.services import case_procedure_policy_service, case_sla_policy_service
+
+    restricted, procedure_ids = await case_procedure_policy_service.resolve_allowed_procedure_ids(
+        db,
+        project_id=case.project_id,
+        case_type=case.case_type,
+    )
+    matched_sla_policy = await case_sla_policy_service.resolve_policy(
+        db,
+        project_id=case.project_id,
+        case_type=case.case_type,
+        priority=case.priority,
+    )
+    return {
+        "case_id": case.case_id,
+        "project_id": case.project_id,
+        "case_type": case.case_type,
+        "priority": case.priority,
+        "case_type_required": await is_case_type_required_for_scope(db, case.project_id),
+        "procedure_restricted": restricted,
+        "allowed_procedure_ids": procedure_ids,
+        "matched_sla_policy": matched_sla_policy,
+    }
+
+
 async def create_case(
     db: AsyncSession,
     title: str,
@@ -58,14 +134,24 @@ async def create_case(
     sla_due_at: datetime | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    require_case_type: bool = False,
 ) -> Case:
+    normalized_case_type = _normalize_case_type(case_type)
+    if normalized_case_type is None:
+        case_type_required = require_case_type or await is_case_type_required_for_scope(
+            db,
+            project_id,
+        )
+        if case_type_required:
+            raise ValueError("case_type is required for policy-governed case creation")
+
     if sla_due_at is None:
         from app.services import case_sla_policy_service
 
         sla_due_at = await case_sla_policy_service.compute_sla_due_at(
             db,
             project_id=project_id,
-            case_type=case_type,
+            case_type=normalized_case_type,
             priority=priority,
         )
 
@@ -73,7 +159,7 @@ async def create_case(
         title=title,
         project_id=project_id,
         external_ref=external_ref,
-        case_type=case_type,
+        case_type=normalized_case_type,
         description=description,
         status=status,
         priority=priority,
@@ -99,6 +185,16 @@ async def update_case(
     if not case:
         return None
 
+    patch = dict(patch)
+    if "case_type" in patch:
+        normalized_case_type = _normalize_case_type(patch["case_type"])
+        if normalized_case_type is None:
+            if await _count_linked_runs(db, case_id) > 0:
+                raise ValueError("Cannot clear case_type on case with linked runs")
+            if await is_case_type_required_for_scope(db, case.project_id):
+                raise ValueError("case_type is required when case policies are configured for this scope")
+        patch["case_type"] = normalized_case_type
+
     for key, value in patch.items():
         if key == "tags":
             case.tags_json = json.dumps(value) if value is not None else None
@@ -123,10 +219,7 @@ async def delete_case(db: AsyncSession, case_id: str) -> bool:
     if not case:
         return False
 
-    linked_runs = await db.execute(
-        select(func.count()).select_from(Run).where(Run.case_id == case_id)
-    )
-    if int(linked_runs.scalar() or 0) > 0:
+    if await _count_linked_runs(db, case_id) > 0:
         raise ValueError("Cannot delete case with linked runs")
 
     await db.execute(delete(CaseEvent).where(CaseEvent.case_id == case_id))

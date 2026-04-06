@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns, getTrigger, upsertTrigger, deleteTrigger, fireTrigger, promoteProcedure, rollbackProcedure, getCase, isNotFoundError } from "@/lib/api";
+import { createRun, deleteProcedure, getGraph, getProcedure, listVersions, updateProcedure, explainProcedure, listRuns, getTrigger, upsertTrigger, deleteTrigger, fireTrigger, promoteProcedure, rollbackProcedure } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { ProcedureDetail, Procedure, ExplainReport, Run, TriggerRegistration } from "@/lib/types";
@@ -27,6 +27,12 @@ type TriggerFormState = {
   event_source: string;
   dedupe_window_seconds: number;
   max_concurrent_runs: string;
+  dispatch_mode: "run" | "batch" | "case_run";
+  static_payload: string;
+  case_type: string;
+  case_title_template: string;
+  case_external_ref_field: string;
+  create_case_tags: string;
   enabled: boolean;
 };
 
@@ -79,6 +85,18 @@ function getTriggerFormError(triggerForm: TriggerFormState): string | null {
     return triggerForm.trigger_type === "file_watch"
       ? "File watch triggers require a watched file path."
       : "Event triggers require an event source.";
+  }
+
+  if (triggerForm.static_payload.trim()) {
+    try {
+      JSON.parse(triggerForm.static_payload);
+    } catch {
+      return "Static trigger payload must be valid JSON.";
+    }
+  }
+
+  if (triggerForm.dispatch_mode === "case_run" && !triggerForm.case_type.trim()) {
+    return "Case-run dispatch requires a case type.";
   }
 
   return null;
@@ -185,13 +203,18 @@ export default function ProcedureVersionDetailPage() {
     event_source: "",
     dedupe_window_seconds: 0,
     max_concurrent_runs: "",
+    dispatch_mode: "run",
+    static_payload: "",
+    case_type: "",
+    case_title_template: "{title}",
+    case_external_ref_field: "external_ref",
+    create_case_tags: "",
     enabled: true,
   });
   const [showVarsModal, setShowVarsModal] = useState(false);
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
   const [runCreating, setRunCreating] = useState(false);
-  const [runCaseId, setRunCaseId] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [diffVersionA, setDiffVersionA] = useState<string>("");
   const [diffVersionB, setDiffVersionB] = useState<string>("");
@@ -398,7 +421,6 @@ export default function ProcedureVersionDetailPage() {
     schemaEntries.forEach(([k, v]) => {
       defaults[k] = v?.default !== undefined ? String(v.default) : "";
     });
-    // Always show modal so callers can attach optional run context like case_id.
     setVarsForm(defaults);
     setVarsErrors({});
     setShowVarsModal(true);
@@ -408,33 +430,10 @@ export default function ProcedureVersionDetailPage() {
     if (!procedure) return;
     setRunCreating(true);
     try {
-      // Validate case if provided
-      if (runCaseId.trim()) {
-        try {
-          await getCase(runCaseId.trim());
-        } catch (err) {
-          if (isNotFoundError(err)) {
-            toast("Case not found. Please check the case ID.", "error");
-            setRunCreating(false);
-            return;
-          }
-          throw err;
-        }
-      }
-
-      const run = await createRun(
-        procedure.procedure_id,
-        procedure.version,
-        vars,
-        { case_id: runCaseId.trim() || undefined }
-      );
+      const run = await createRun(procedure.procedure_id, procedure.version, vars);
       router.push(`/runs/${run.run_id}`);
     } catch (err) {
-      if (isNotFoundError(err)) {
-        toast("Case not found. Please check the case ID.", "error");
-      } else {
-        console.error(err);
-      }
+      console.error(err);
       setRunCreating(false);
     }
   }
@@ -779,6 +778,12 @@ export default function ProcedureVersionDetailPage() {
                         event_source: r.event_source ?? "",
                         dedupe_window_seconds: r.dedupe_window_seconds,
                         max_concurrent_runs: r.max_concurrent_runs != null ? String(r.max_concurrent_runs) : "",
+                        dispatch_mode: r.dispatch_mode ?? "run",
+                        static_payload: r.static_payload ? JSON.stringify(r.static_payload, null, 2) : "",
+                        case_type: r.case_type ?? "",
+                        case_title_template: r.case_title_template ?? "{title}",
+                        case_external_ref_field: r.case_external_ref_field ?? "external_ref",
+                        create_case_tags: (r.create_case_tags ?? []).join(","),
                         enabled: r.enabled,
                       });
                     } else {
@@ -790,6 +795,7 @@ export default function ProcedureVersionDetailPage() {
                           trigger_type: (t.type as string) ?? f.trigger_type,
                           schedule: (t.schedule as string) ?? "",
                           webhook_secret: (t.webhook_secret as string) ?? "",
+                          dispatch_mode: (t.dispatch_mode as "run" | "batch" | "case_run") ?? f.dispatch_mode,
                         }));
                       }
                     }
@@ -1289,6 +1295,20 @@ export default function ProcedureVersionDetailPage() {
                 </select>
               </div>
 
+              <div>
+                <label htmlFor="trigger_dispatch_mode" className="mb-1 block text-xs font-medium text-neutral-600">Dispatch Mode</label>
+                <select
+                  id="trigger_dispatch_mode"
+                  value={triggerForm.dispatch_mode}
+                  onChange={(e) => setTriggerForm((f) => ({ ...f, dispatch_mode: e.target.value as "run" | "batch" | "case_run" }))}
+                  className="rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+                >
+                  <option value="run">Run</option>
+                  <option value="batch">Batch Job</option>
+                  <option value="case_run">Case + Run</option>
+                </select>
+              </div>
+
               {/* Schedule — shown only for scheduled */}
               {triggerForm.trigger_type === "scheduled" && (
                 <div>
@@ -1348,6 +1368,65 @@ export default function ProcedureVersionDetailPage() {
                     placeholder={triggerForm.trigger_type === "file_watch" ? "e.g. C:/data/inbox/orders.json" : "e.g. orders.created"}
                     className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
                   />
+                </div>
+              )}
+
+              <div>
+                <label htmlFor="trigger_static_payload" className="mb-1 block text-xs font-medium text-neutral-600">
+                  Static Payload <span className="text-neutral-400">(optional JSON)</span>
+                </label>
+                <textarea
+                  id="trigger_static_payload"
+                  value={triggerForm.static_payload}
+                  onChange={(e) => setTriggerForm((f) => ({ ...f, static_payload: e.target.value }))}
+                  placeholder='{"items":[{"name":"example"}]}'
+                  rows={4}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-sm focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+
+              {triggerForm.dispatch_mode === "case_run" && (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label htmlFor="trigger_case_type" className="mb-1 block text-xs font-medium text-neutral-600">Case Type</label>
+                    <input
+                      id="trigger_case_type"
+                      value={triggerForm.case_type}
+                      onChange={(e) => setTriggerForm((f) => ({ ...f, case_type: e.target.value }))}
+                      placeholder="finderec_enrollment"
+                      className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="trigger_case_external_ref_field" className="mb-1 block text-xs font-medium text-neutral-600">External Ref Field</label>
+                    <input
+                      id="trigger_case_external_ref_field"
+                      value={triggerForm.case_external_ref_field}
+                      onChange={(e) => setTriggerForm((f) => ({ ...f, case_external_ref_field: e.target.value }))}
+                      placeholder="external_ref"
+                      className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label htmlFor="trigger_case_title_template" className="mb-1 block text-xs font-medium text-neutral-600">Case Title Template</label>
+                    <input
+                      id="trigger_case_title_template"
+                      value={triggerForm.case_title_template}
+                      onChange={(e) => setTriggerForm((f) => ({ ...f, case_title_template: e.target.value }))}
+                      placeholder="{title}"
+                      className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label htmlFor="trigger_case_tags" className="mb-1 block text-xs font-medium text-neutral-600">Case Tags</label>
+                    <input
+                      id="trigger_case_tags"
+                      value={triggerForm.create_case_tags}
+                      onChange={(e) => setTriggerForm((f) => ({ ...f, create_case_tags: e.target.value }))}
+                      placeholder="automation,enrollment"
+                      className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
                 </div>
               )}
 
@@ -1413,6 +1492,14 @@ export default function ProcedureVersionDetailPage() {
                         event_source: triggerForm.event_source.trim() || null,
                         dedupe_window_seconds: triggerForm.dedupe_window_seconds,
                         max_concurrent_runs: triggerForm.max_concurrent_runs ? Number(triggerForm.max_concurrent_runs) : null,
+                        dispatch_mode: triggerForm.dispatch_mode,
+                        static_payload: triggerForm.static_payload.trim() ? JSON.parse(triggerForm.static_payload) : null,
+                        case_type: triggerForm.dispatch_mode === "case_run" ? (triggerForm.case_type.trim() || null) : null,
+                        case_title_template: triggerForm.dispatch_mode === "case_run" ? (triggerForm.case_title_template.trim() || null) : null,
+                        case_external_ref_field: triggerForm.dispatch_mode === "case_run" ? (triggerForm.case_external_ref_field.trim() || null) : null,
+                        create_case_tags: triggerForm.dispatch_mode === "case_run"
+                          ? triggerForm.create_case_tags.split(",").map((v) => v.trim()).filter(Boolean)
+                          : null,
                         enabled: triggerForm.enabled,
                       });
                       setTriggerReg(reg);
@@ -1436,7 +1523,9 @@ export default function ProcedureVersionDetailPage() {
                         setTriggerFiring(true);
                         try {
                           const result = await fireTrigger(procedureId, version);
-                          toast(`Run created: ${result.run_id.slice(0, 12)}…`, "success");
+                          const targetId = result.run_id ?? result.batch_job_id ?? result.case_id ?? "";
+                          toast(`${result.entity_type} created: ${targetId.slice(0, 12)}...`, "success");
+                          return;
                         } catch (err) {
                           toast(err instanceof Error ? err.message : "Failed to fire trigger", "error");
                         } finally {
@@ -1496,12 +1585,9 @@ export default function ProcedureVersionDetailPage() {
                 ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
                 : "All fields have default values. Override any before starting."}
             </p>
-            <input
-              value={runCaseId}
-              onChange={(e) => setRunCaseId(e.target.value)}
-              placeholder="Attach case_id (optional)"
-              className="mb-3 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
-            />
+            <div className="mb-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+              This launch creates a standalone run. Start from the Cases page to link a run to case work.
+            </div>
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (

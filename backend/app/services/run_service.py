@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import Approval, Artifact, ResourceLease, Run, RunEvent, RunJob, StepIdempotency
 from app.utils.redaction import redact_sensitive_data, build_patterns
+
+
+def _normalize_artifact_uri(raw_uri: str) -> str:
+    if (
+        raw_uri.startswith("http://")
+        or raw_uri.startswith("https://")
+        or raw_uri.startswith("/api/")
+    ):
+        return raw_uri
+    try:
+        artifacts_abs = os.path.abspath(settings.ARTIFACTS_DIR)
+        uri_abs = os.path.abspath(raw_uri)
+        if uri_abs.startswith(artifacts_abs):
+            rel = os.path.relpath(uri_abs, artifacts_abs)
+            return "/api/artifacts/" + rel.replace(os.sep, "/")
+    except Exception:
+        pass
+    return raw_uri
 
 
 async def create_run(
@@ -22,6 +42,10 @@ async def create_run(
     case_id: str | None = None,
     trigger_type: str | None = None,
     triggered_by: str | None = None,
+    batch_job_id: str | None = None,
+    batch_item_index: int | None = None,
+    link_source: str | None = None,
+    input_snapshot_source: str | None = None,
 ) -> Run:
     run = Run(
         procedure_id=procedure_id,
@@ -32,6 +56,10 @@ async def create_run(
         case_id=case_id,
         trigger_type=trigger_type,
         triggered_by=triggered_by,
+        batch_job_id=batch_job_id,
+        batch_item_index=batch_item_index,
+        link_source=link_source,
+        input_snapshot_source=input_snapshot_source,
         status="created",
     )
     db.add(run)
@@ -55,6 +83,7 @@ async def create_run(
                 "run_id": run.run_id,
                 "procedure_id": procedure_id,
                 "procedure_version": procedure_version,
+                "link_source": link_source,
             },
         )
     return run
@@ -235,32 +264,12 @@ async def create_artifact(
     External http(s) URIs and paths already starting with ``/api/`` are kept
     as-is.
     """
-    import os as _os
-    from app.config import settings as _settings
-
-    def _normalize(raw_uri: str) -> str:
-        if (
-            raw_uri.startswith("http://")
-            or raw_uri.startswith("https://")
-            or raw_uri.startswith("/api/")
-        ):
-            return raw_uri
-        try:
-            artifacts_abs = _os.path.abspath(_settings.ARTIFACTS_DIR)
-            uri_abs = _os.path.abspath(raw_uri)
-            if uri_abs.startswith(artifacts_abs):
-                rel = _os.path.relpath(uri_abs, artifacts_abs)
-                return "/api/artifacts/" + rel.replace(_os.sep, "/")
-        except Exception:
-            pass
-        return raw_uri
-
     artifact = Artifact(
         run_id=run_id,
         node_id=node_id,
         step_id=step_id,
         kind=kind,
-        uri=_normalize(uri),
+        uri=_normalize_artifact_uri(uri),
         name=name,
         mime_type=mime_type,
         size_bytes=size_bytes,
@@ -278,7 +287,11 @@ async def list_artifacts(db: AsyncSession, run_id: str) -> list[Artifact]:
         .order_by(Artifact.created_at.asc())
     )
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    artifacts = list(result.scalars().all())
+    for artifact in artifacts:
+        if artifact.uri:
+            artifact.uri = _normalize_artifact_uri(str(artifact.uri))
+    return artifacts
 
 
 async def delete_run(db: AsyncSession, run_id: str) -> bool:

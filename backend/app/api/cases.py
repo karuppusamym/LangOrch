@@ -8,10 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.audit import emit_audit
 from app.db.engine import get_db
 from app.schemas.cases import (
+    CaseAllowedProceduresOut,
     CaseClaimRequest,
     CaseCreate,
     CaseEventOut,
     CaseOut,
+    CasePolicyResolutionOut,
+    CaseProcedurePolicyCreate,
+    CaseProcedurePolicyOut,
     CaseQueueItemOut,
     CaseQueueAnalyticsOut,
     CaseReleaseRequest,
@@ -30,7 +34,9 @@ from app.schemas.cases import (
     CaseWebhookSubscriptionOut,
     CaseUpdate,
 )
-from app.services import case_service, case_sla_policy_service, case_webhook_service, project_service
+from app.schemas.procedures import ProcedureOut
+from app.schemas.runs import RunOut
+from app.services import case_procedure_policy_service, case_service, case_sla_policy_service, case_webhook_service, project_service, run_service
 
 router = APIRouter()
 
@@ -98,21 +104,57 @@ async def create_case(body: CaseCreate, db: AsyncSession = Depends(get_db)):
         proj = await project_service.get_project(db, body.project_id)
         if not proj:
             raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        return await case_service.create_case(
+            db=db,
+            title=body.title,
+            project_id=body.project_id,
+            external_ref=body.external_ref,
+            case_type=body.case_type,
+            description=body.description,
+            status=body.status,
+            priority=body.priority,
+            owner=body.owner,
+            sla_due_at=body.sla_due_at,
+            tags=body.tags,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    return await case_service.create_case(
-        db=db,
-        title=body.title,
-        project_id=body.project_id,
-        external_ref=body.external_ref,
-        case_type=body.case_type,
-        description=body.description,
-        status=body.status,
-        priority=body.priority,
-        owner=body.owner,
-        sla_due_at=body.sla_due_at,
-        tags=body.tags,
-        metadata=body.metadata,
+
+@router.get("/procedure-policies", response_model=list[CaseProcedurePolicyOut])
+async def list_case_procedure_policies(
+    project_id: str | None = None,
+    case_type: str | None = None,
+    enabled_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    return await case_procedure_policy_service.list_policies(
+        db,
+        project_id=project_id,
+        case_type=case_type,
+        enabled_only=enabled_only,
     )
+
+
+@router.post("/procedure-policies", response_model=CaseProcedurePolicyOut, status_code=201)
+async def create_case_procedure_policy(body: CaseProcedurePolicyCreate, db: AsyncSession = Depends(get_db)):
+    return await case_procedure_policy_service.create_policy(
+        db,
+        project_id=body.project_id,
+        case_type=body.case_type,
+        procedure_id=body.procedure_id,
+        enabled=body.enabled,
+    )
+
+
+@router.delete("/procedure-policies/{policy_id}", status_code=204)
+async def delete_case_procedure_policy(policy_id: str, db: AsyncSession = Depends(get_db)):
+    deleted = await case_procedure_policy_service.delete_policy(db, policy_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Case procedure policy not found")
+    return None
 
 
 @router.get("/webhooks", response_model=list[CaseWebhookSubscriptionOut])
@@ -453,6 +495,59 @@ async def get_case(case_id: str, db: AsyncSession = Depends(get_db)):
     return case
 
 
+@router.get("/{case_id}/runs", response_model=list[RunOut])
+async def list_case_runs(
+    case_id: str,
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    case = await case_service.get_case(db, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return await run_service.list_runs(
+        db,
+        case_id=case_id,
+        order=order,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{case_id}/allowed-procedures", response_model=CaseAllowedProceduresOut)
+async def get_case_allowed_procedures(case_id: str, db: AsyncSession = Depends(get_db)):
+    case = await case_service.get_case(db, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    restricted, procedure_ids = await case_procedure_policy_service.resolve_allowed_procedure_ids(
+        db,
+        project_id=case.project_id,
+        case_type=case.case_type,
+    )
+    return CaseAllowedProceduresOut(
+        case_id=case.case_id,
+        restricted=restricted,
+        procedure_ids=procedure_ids,
+    )
+
+
+@router.get("/{case_id}/policy-resolution", response_model=CasePolicyResolutionOut)
+async def get_case_policy_resolution(case_id: str, db: AsyncSession = Depends(get_db)):
+    case = await case_service.get_case(db, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return await case_service.get_case_policy_resolution(db, case)
+
+
+@router.get("/{case_id}/launchable-procedures", response_model=list[ProcedureOut])
+async def list_case_launchable_procedures(case_id: str, db: AsyncSession = Depends(get_db)):
+    case = await case_service.get_case(db, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return await case_procedure_policy_service.list_launchable_procedures_for_case(db, case)
+
+
 @router.patch("/{case_id}", response_model=CaseOut)
 async def patch_case(case_id: str, body: CaseUpdate, db: AsyncSession = Depends(get_db)):
     patch = body.model_dump(exclude_unset=True)
@@ -462,7 +557,10 @@ async def patch_case(case_id: str, body: CaseUpdate, db: AsyncSession = Depends(
             raise HTTPException(status_code=404, detail="Case not found")
         return case
 
-    case = await case_service.update_case(db, case_id, patch)
+    try:
+        case = await case_service.update_case(db, case_id, patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case

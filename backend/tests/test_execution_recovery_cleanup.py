@@ -88,3 +88,94 @@ async def test_execute_run_clears_affinity_after_on_failure_recovery():
         if len(call.args) >= 3 and call.args[2] == "run_completed"
     ]
     assert any(payload.get("recovered_via") == "recover_node" for payload in recovered_events)
+
+
+@pytest.mark.asyncio
+async def test_execute_run_sanitizes_persisted_output_snapshot():
+    from app.services import execution_service, run_service
+
+    run_id = "run-redacted-output"
+
+    mock_run = MagicMock()
+    mock_run.run_id = run_id
+    mock_run.procedure_id = "proc-1"
+    mock_run.procedure_version = "1.0.0"
+    mock_run.last_node_id = None
+    mock_run.input_vars_json = json.dumps({})
+    mock_run.thread_id = run_id
+    mock_run.output_vars_json = None
+
+    mock_proc = MagicMock()
+    mock_proc.status = "active"
+    mock_proc.effective_date = None
+    mock_proc.ckp_json = json.dumps(
+        {
+            "procedure_id": "proc-1",
+            "version": "1.0.0",
+            "global_config": {},
+            "variables_schema": {},
+            "workflow_graph": {
+                "start_node": "start",
+                "nodes": {
+                    "start": {"type": "sequence", "steps": []},
+                    "end": {"type": "terminate", "status": "success"},
+                },
+            },
+        }
+    )
+
+    fake_ir = MagicMock()
+    fake_ir.global_config = {}
+    fake_ir.variables_schema = {}
+    fake_ir.nodes = {"start": MagicMock(), "end": MagicMock()}
+    fake_ir.start_node_id = "start"
+    fake_ir.procedure_id = "proc-1"
+    fake_ir.version = "1.0.0"
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.commit = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=None)))
+
+    with (
+        patch.object(run_service, "get_run", new=AsyncMock(return_value=mock_run)),
+        patch.object(run_service, "update_run_status", new=AsyncMock()),
+        patch.object(run_service, "emit_event", new=AsyncMock()) as mock_emit_event,
+        patch("app.services.procedure_service.get_procedure", new=AsyncMock(return_value=mock_proc)),
+        patch("app.services.execution_service.parse_ckp", return_value=fake_ir),
+        patch("app.services.execution_service.validate_ir", return_value=[]),
+        patch("app.services.execution_service.bind_executors"),
+        patch("app.services.execution_service.build_graph", return_value=MagicMock()),
+        patch(
+            "app.services.execution_service._invoke_graph_with_checkpointer",
+            new=AsyncMock(
+                return_value={
+                    "terminal_status": "success",
+                    "error": None,
+                    "vars": {
+                        "result": "ok",
+                        "admin_password": "super-secret",
+                        "env": {"LANGORCH_SECRET": "value", "OTHER": "x"},
+                    },
+                }
+            ),
+        ),
+        patch("app.services.execution_service.record_run_started"),
+        patch("app.services.execution_service.record_run_completed"),
+    ):
+        await execution_service.execute_run(run_id, lambda: mock_db)
+
+    persisted = json.loads(mock_run.output_vars_json)
+    assert persisted["result"] == "ok"
+    assert persisted["admin_password"] == "***REDACTED***"
+    assert "env" not in persisted
+
+    completed_payloads = [
+        call.kwargs.get("payload", {})
+        for call in mock_emit_event.await_args_list
+        if len(call.args) >= 3 and call.args[2] == "run_completed"
+    ]
+    assert completed_payloads
+    assert completed_payloads[0]["outputs"]["admin_password"] == "***REDACTED***"
+    assert "env" not in completed_payloads[0]["outputs"]

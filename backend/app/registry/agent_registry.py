@@ -2,51 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.agent_contracts import parse_agent_capabilities, serialize_agent_capabilities
 from app.db.models import AgentInstance
 
 logger = logging.getLogger("langorch.registry.agent")
 
 
-def _serialize_capabilities(capabilities: list[str] | None) -> str | None:
-    if not capabilities:
-        return None
-    return json.dumps([
-        {"name": capability, "type": "tool", "is_batch": False}
-        for capability in capabilities
-        if capability
-    ])
-
-
 def _parse_capability_names(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-
-    text = raw.strip()
-    if not text:
-        return []
-
-    if text.startswith("["):
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                names: list[str] = []
-                for item in parsed:
-                    if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip():
-                        names.append(item["name"].strip())
-                    elif isinstance(item, str) and item.strip():
-                        names.append(item.strip())
-                return names
-        except json.JSONDecodeError:
-            pass
-
-    return [capability.strip() for capability in text.split(",") if capability.strip()]
+    return [cap.name for cap in parse_agent_capabilities(raw)]
 
 
 async def register_agent(
@@ -66,7 +35,7 @@ async def register_agent(
         existing.name = name
         existing.channel = channel
         existing.base_url = base_url
-        existing.capabilities = _serialize_capabilities(capabilities)
+        existing.capabilities = serialize_agent_capabilities(capabilities)
         existing.resource_key = resource_key or f"{channel}_default"
         existing.concurrency_limit = concurrency_limit
         existing.status = "online"
@@ -78,7 +47,7 @@ async def register_agent(
         name=name,
         channel=channel,
         base_url=base_url,
-        capabilities=_serialize_capabilities(capabilities),
+        capabilities=serialize_agent_capabilities(capabilities),
         resource_key=resource_key or f"{channel}_default",
         concurrency_limit=concurrency_limit,
         status="online",

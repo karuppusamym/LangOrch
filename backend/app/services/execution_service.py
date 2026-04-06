@@ -261,6 +261,7 @@ async def _emit_checkpoint_event(db_factory, run_id: str, node_id: str) -> None:
 
 
 from app.utils.logger import ctx_run_id
+from app.utils.redaction import sanitize_run_snapshot
 from app.utils.tracing import get_tracer
 
 _tracer = get_tracer("langorch.execution")
@@ -587,9 +588,10 @@ async def execute_run(run_id: str, db_factory) -> None:
                     )
                     if fb_state and not fb_state.get("error") and fb_state.get("terminal_status") != "failed":
                         await run_service.update_run_status(db, run_id, "completed")
+                        recovered_outputs = sanitize_run_snapshot(fb_state.get("vars", {}))
                         await run_service.emit_event(
                             db, run_id, "run_completed",
-                            payload={"outputs": fb_state.get("vars", {}), "recovered_via": on_failure_node},
+                            payload={"outputs": recovered_outputs, "recovered_via": on_failure_node},
                         )
                         record_run_completed(run_duration, "completed")
                         await db.commit()
@@ -613,7 +615,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                     k: v for k, v in (final_state.get("vars") or {}).items()
                     if not k.startswith("__") and k not in _SYSTEM_VAR_KEYS
                 }
-                run.input_vars_json = json.dumps(_saved_vars)
+                run.input_vars_json = json.dumps(sanitize_run_snapshot(_saved_vars))
 
                 approval = await approval_service.create_approval(
                     db,
@@ -653,7 +655,7 @@ async def execute_run(run_id: str, db_factory) -> None:
                 asyncio.ensure_future(_fire_alert_webhook(run_id, None))
             else:
                 # Persist final output vars alongside the run record
-                _final_vars = final_state.get("vars", {})
+                _final_vars = sanitize_run_snapshot(final_state.get("vars", {}))
                 run.output_vars_json = json.dumps(_final_vars)
                 await run_service.update_run_status(db, run_id, "completed")
                 await run_service.emit_event(
@@ -692,9 +694,10 @@ async def execute_run(run_id: str, db_factory) -> None:
                         try:
                             _dur = (datetime.now(timezone.utc) - locals().get("run_start_time", datetime.now(timezone.utc))).total_seconds()
                             await run_service.update_run_status(db, run_id, "completed")
+                            recovered_outputs = sanitize_run_snapshot(fb.get("vars", {}))
                             await run_service.emit_event(
                                 db, run_id, "run_completed",
-                                payload={"outputs": fb.get("vars", {}), "recovered_via": _on_failure},
+                                payload={"outputs": recovered_outputs, "recovered_via": _on_failure},
                             )
                             record_run_completed(_dur, "completed")
                             await db.commit()

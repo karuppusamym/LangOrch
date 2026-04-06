@@ -1,0 +1,74 @@
+{
+  "procedure_id": "automation-desktop-notepad-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Actual Windows desktop smoke test using Notepad through the desktop automation agent.",
+  "variables_schema": {
+    "required": {
+      "artifacts_base_dir": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "c:/Users/karup/AGProjects/LangOrch/artifacts"
+      },
+      "desktop_text": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "LangOrch desktop demo typing into Notepad."
+      },
+      "desktop_application": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "\"C:/Program Files/Notepad++/notepad++.exe\" -multiInst -nosession"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "desktop_smoke",
+    "nodes": {
+      "desktop_smoke": {
+        "agent": "DESKTOP",
+        "type": "sequence",
+        "description": "Launch Notepad, type text, read the window, and capture a desktop screenshot.",
+        "next_node": "done",
+        "steps": [
+          {
+            "step_id": "launch_notepad",
+            "action": "launch_app",
+            "provider": "pywinauto",
+            "application": "{{desktop_application}}",
+            "output_variable": "launch_result"
+          },
+          {
+            "step_id": "wait_notepad",
+            "action": "wait_for_window",
+            "provider": "pywinauto",
+            "pid": "{{launch_result.pid}}",
+            "timeout_s": 20
+          },
+          {
+            "step_id": "type_text",
+            "action": "type",
+            "provider": "pywinauto",
+            "pid": "{{launch_result.pid}}",
+            "text": "{{desktop_text}}"
+          },
+          {
+            "step_id": "read_notepad",
+            "action": "read_screen",
+            "provider": "pywinauto",
+            "pid": "{{launch_result.pid}}",
+            "output_variable": "desktop_read_result"
+          }
+        ]
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "launch_result": "{{launch_result}}",
+          "desktop_read_result": "{{desktop_read_result}}"
+        }
+      }
+    }
+  }
+}

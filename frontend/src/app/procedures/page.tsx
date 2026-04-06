@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { listProcedures, importProcedure, listProjects, createRun, getProcedure, getCase, isNotFoundError } from "@/lib/api";
+import { listProcedures, importProcedure, listProjects, createRun, getProcedure } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import { flattenVariablesSchema, isFieldSensitive } from "@/lib/redact";
@@ -54,7 +54,6 @@ function ProceduresContent() {
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
   const [runCreating, setRunCreating] = useState(false);
-  const [quickRunCaseId, setQuickRunCaseId] = useState("");
 
   useEffect(() => {
     const pid = searchParams.get("project_id") ?? "";
@@ -115,26 +114,7 @@ function ProceduresContent() {
         setShowVarsModal(true);
       } else {
         // No variables — run immediately
-        // Validate case if provided
-        if (quickRunCaseId.trim()) {
-          try {
-            await getCase(quickRunCaseId.trim());
-          } catch (err) {
-            if (isNotFoundError(err)) {
-              toast("Case not found. Please check the case ID.", "error");
-              setRunningId(null);
-              return;
-            }
-            throw err;
-          }
-        }
-
-        const run = await createRun(
-          proc.procedure_id,
-          proc.version,
-          undefined,
-          { case_id: quickRunCaseId.trim() || undefined }
-        );
+        const run = await createRun(proc.procedure_id, proc.version, undefined);
         toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
         router.push("/runs");
       }
@@ -149,35 +129,12 @@ function ProceduresContent() {
     if (!quickRunProc) return;
     setRunCreating(true);
     try {
-      // Validate case if provided
-      if (quickRunCaseId.trim()) {
-        try {
-          await getCase(quickRunCaseId.trim());
-        } catch (err) {
-          if (isNotFoundError(err)) {
-            toast("Case not found. Please check the case ID.", "error");
-            setRunCreating(false);
-            return;
-          }
-          throw err;
-        }
-      }
-
-      const run = await createRun(
-        quickRunProc.procedure_id,
-        quickRunProc.version,
-        vars,
-        { case_id: quickRunCaseId.trim() || undefined }
-      );
+      const run = await createRun(quickRunProc.procedure_id, quickRunProc.version, vars);
       toast(`Run started: ${run.run_id.slice(0, 8)}…`, "success");
       setShowVarsModal(false);
       router.push("/runs");
     } catch (err) {
-      if (isNotFoundError(err)) {
-        toast("Case not found. Please check the case ID.", "error");
-      } else {
-        toast(err instanceof Error ? err.message : "Failed to start run", "error");
-      }
+      toast(err instanceof Error ? err.message : "Failed to start run", "error");
     } finally {
       setRunCreating(false);
     }
@@ -442,13 +399,7 @@ function ProceduresContent() {
       ) : (
         <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-100 px-4 py-2.5 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-            <span>Quick run case ID applies when starting procedures from this page.</span>
-            <input
-              value={quickRunCaseId}
-              onChange={(e) => setQuickRunCaseId(e.target.value)}
-              placeholder="Optional case_id for quick runs"
-              className="min-w-[220px] rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs text-neutral-700 focus:border-blue-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
-            />
+            <span>Runs started here are standalone. Use the Cases page when a run must stay attached to business work.</span>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">

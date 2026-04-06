@@ -3,7 +3,7 @@
 Thumbs.db
 .vscode/
 .idea/
-
+__init__.py
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -72,7 +72,6 @@ backend/langorch.db-wal
 dify-main-code-reference/
 dify-main-code-reference/*.*
 frontend/.next-dev
-backend/langorch.db-wal
-
 backend/langorch.db-shm
-backend/langorch.db-wal
+backend/app/contracts/__init__.py
+backend/automation_agents/__init__.py

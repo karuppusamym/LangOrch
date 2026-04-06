@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db, async_session
 from app.db.models import Run, RunJob, RunEvent
 from app.schemas.runs import ArtifactOut, RunCreate, RunDiagnostics, RunOut, CheckpointMetadata, CheckpointState
-from app.services import case_service, procedure_service, run_service
+from app.services import case_service, case_procedure_policy_service, procedure_service, run_service
 from app.services import checkpoint_service
 from app.utils.metrics import get_metrics_summary
 from app.utils.run_cancel import mark_cancelled as _mark_run_cancelled, mark_cancelled_db as _mark_run_cancelled_db
@@ -19,6 +19,7 @@ from app.utils.input_vars import validate_input_vars
 from app.worker.enqueue import enqueue_run, requeue_run
 from app.auth import require_role
 from app.auth.deps import Principal
+from app.contracts.agent_protocol import PROTOCOL_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, verify_signed_request
 
 router = APIRouter()
 
@@ -45,6 +46,10 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _princ
         case = await case_service.get_case(db, body.case_id)
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
+        try:
+            await case_procedure_policy_service.assert_case_allows_procedure(db, case, proc.procedure_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     run = await run_service.create_run(
         db,
@@ -56,6 +61,8 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db), _princ
         case_id=body.case_id,
         trigger_type="manual",
         triggered_by=_principal.identity,
+        link_source=body.link_source or ("launched_from_case" if body.case_id else "manual_run"),
+        input_snapshot_source=body.input_snapshot_source or ("manual_request" if body.input_vars else "empty_request"),
     )
 
     # Atomically enqueue a durable RunJob in the same transaction as the Run.
@@ -240,6 +247,7 @@ async def delete_run(run_id: str, db: AsyncSession = Depends(get_db), _principal
 async def workflow_callback(
     run_id: str,
     body: dict,
+    request: Request,
     background_tasks: BackgroundTasks,
     token: str | None = None,
     db: AsyncSession = Depends(get_db),
@@ -261,7 +269,25 @@ async def workflow_callback(
         }
     """
     from app.config import settings
-    if settings.AUTH_SECRET_KEY:
+    signed_callback = False
+    if settings.AGENT_SHARED_SECRET:
+        raw_body = await request.body()
+        provided_signature = request.headers.get(SIGNATURE_HEADER)
+        provided_timestamp = request.headers.get(TIMESTAMP_HEADER)
+        if provided_signature or provided_timestamp:
+            if not verify_signed_request(
+                method=request.method,
+                path=request.url.path,
+                body=raw_body,
+                secret=settings.AGENT_SHARED_SECRET,
+                provided_timestamp=provided_timestamp,
+                provided_signature=provided_signature,
+                ttl_seconds=settings.AGENT_SIGNATURE_TTL_SECONDS,
+            ):
+                raise HTTPException(status_code=401, detail="Invalid workflow callback signature")
+            signed_callback = True
+
+    if not signed_callback and settings.AUTH_SECRET_KEY:
         import hmac
         import hashlib
         
@@ -276,6 +302,13 @@ async def workflow_callback(
                 status_code=403, 
                 detail="Invalid or missing webhook callback token"
             )
+
+    callback_protocol_version = request.headers.get(PROTOCOL_HEADER) or body.get("protocol_version")
+    if callback_protocol_version and callback_protocol_version != settings.AGENT_PROTOCOL_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported workflow callback protocol_version '{callback_protocol_version}'",
+        )
 
     run = await run_service.get_run(db, run_id)
     if not run:
@@ -446,6 +479,8 @@ async def workflow_callback(
             "status": callback_status,
             "output": output_vars,
             "error": error_msg,
+            "signed": signed_callback,
+            "protocol_version": callback_protocol_version or settings.AGENT_PROTOCOL_VERSION,
         },
     )
 

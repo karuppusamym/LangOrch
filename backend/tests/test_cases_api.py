@@ -131,6 +131,13 @@ async def test_case_linked_run_blocks_delete(client):
     event_types = [ev["event_type"] for ev in events_resp.json()]
     assert "run_linked" in event_types
 
+    runs_resp = await client.get(f"/api/cases/{case_id}/runs")
+    assert runs_resp.status_code == 200
+    linked_runs = runs_resp.json()
+    assert len(linked_runs) == 1
+    assert linked_runs[0]["run_id"] == run["run_id"]
+    assert linked_runs[0]["case_id"] == case_id
+
 
 @pytest.mark.asyncio
 async def test_case_queue_claim_release_and_sla_breach(client):
@@ -275,3 +282,141 @@ async def test_case_queue_analytics_endpoint(client):
     assert "high" in analytics["wait_by_priority"]
     assert "wait_p95_seconds" in analytics["wait_by_priority"]["high"]
     assert "unknown" in analytics["wait_by_case_type"]
+
+
+@pytest.mark.asyncio
+async def test_case_create_requires_case_type_when_policy_scope_exists(client):
+    proj_resp = await client.post(
+        "/api/projects",
+        json={"name": f"Policy Project {_uid()}", "description": "policy scope test"},
+    )
+    assert proj_resp.status_code == 201
+    project_id = proj_resp.json()["project_id"]
+
+    policy_resp = await client.post(
+        "/api/cases/procedure-policies",
+        json={
+            "project_id": project_id,
+            "case_type": "incident",
+            "procedure_id": "incident-proc",
+            "enabled": True,
+        },
+    )
+    assert policy_resp.status_code == 201
+
+    create_resp = await client.post(
+        "/api/cases",
+        json={
+            "title": f"Untyped {_uid()}",
+            "project_id": project_id,
+            "priority": "high",
+        },
+    )
+    assert create_resp.status_code == 422
+    assert "case_type is required" in create_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_case_patch_blocks_clearing_case_type_when_runs_exist(client):
+    pid = f"case_type_guard_proc_{_uid()}"
+    ckp = {
+        "procedure_id": pid,
+        "version": "1.0.0",
+        "global_config": {},
+        "variables_schema": {},
+        "workflow_graph": {
+            "start_node": "start",
+            "nodes": {
+                "start": {
+                    "type": "sequence",
+                    "next_node": "end",
+                    "steps": [{"step_id": "s1", "action": "log", "message": "x"}],
+                },
+                "end": {"type": "terminate", "status": "success"},
+            },
+        },
+    }
+    import_resp = await client.post("/api/procedures", json={"ckp_json": ckp})
+    assert import_resp.status_code == 201
+
+    case_resp = await client.post(
+        "/api/cases",
+        json={"title": f"Typed {_uid()}", "status": "open", "case_type": "incident"},
+    )
+    assert case_resp.status_code == 201
+    case_id = case_resp.json()["case_id"]
+
+    run_resp = await client.post(
+        "/api/runs",
+        json={
+            "procedure_id": pid,
+            "procedure_version": "1.0.0",
+            "input_vars": {},
+            "case_id": case_id,
+        },
+    )
+    assert run_resp.status_code == 201
+
+    patch_resp = await client.patch(
+        f"/api/cases/{case_id}",
+        json={"case_type": ""},
+    )
+    assert patch_resp.status_code == 422
+    assert "Cannot clear case_type" in patch_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_case_policy_resolution_endpoint_reports_allowed_procedures_and_sla_policy(client):
+    proj_resp = await client.post(
+        "/api/projects",
+        json={"name": f"Resolution Project {_uid()}", "description": "policy resolution"},
+    )
+    assert proj_resp.status_code == 201
+    project_id = proj_resp.json()["project_id"]
+
+    proc_policy_resp = await client.post(
+        "/api/cases/procedure-policies",
+        json={
+            "project_id": project_id,
+            "case_type": "incident",
+            "procedure_id": "incident-proc",
+            "enabled": True,
+        },
+    )
+    assert proc_policy_resp.status_code == 201
+
+    sla_policy_resp = await client.post(
+        "/api/cases/sla-policies",
+        json={
+            "name": f"Incident SLA {_uid()}",
+            "project_id": project_id,
+            "case_type": "incident",
+            "priority": "high",
+            "due_minutes": 30,
+            "breach_status": "escalated",
+            "enabled": True,
+        },
+    )
+    assert sla_policy_resp.status_code == 201
+    sla_policy_id = sla_policy_resp.json()["policy_id"]
+
+    case_resp = await client.post(
+        "/api/cases",
+        json={
+            "title": f"Resolution Case {_uid()}",
+            "project_id": project_id,
+            "case_type": "incident",
+            "priority": "high",
+        },
+    )
+    assert case_resp.status_code == 201
+    case_id = case_resp.json()["case_id"]
+
+    resolution_resp = await client.get(f"/api/cases/{case_id}/policy-resolution")
+    assert resolution_resp.status_code == 200
+    resolution = resolution_resp.json()
+    assert resolution["case_id"] == case_id
+    assert resolution["case_type_required"] is True
+    assert resolution["procedure_restricted"] is True
+    assert resolution["allowed_procedure_ids"] == ["incident-proc"]
+    assert resolution["matched_sla_policy"]["policy_id"] == sla_policy_id

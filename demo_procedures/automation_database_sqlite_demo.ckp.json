@@ -1,0 +1,71 @@
+{
+  "procedure_id": "automation-database-sqlite-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Actual SQLite smoke test using the database automation agent.",
+  "variables_schema": {
+    "required": {
+      "artifacts_base_dir": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "c:/Users/karup/AGProjects/LangOrch/artifacts"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "database_roundtrip",
+    "nodes": {
+      "database_roundtrip": {
+        "agent": "DATABASE",
+        "type": "sequence",
+        "description": "Create a SQLite DB, insert rows, query them, and back the DB up.",
+        "next_node": "done",
+        "steps": [
+          {
+            "step_id": "create_table",
+            "action": "execute_query",
+            "provider": "sqlite",
+            "database_url": "sqlite:///{{artifacts_base_dir}}/{{run_id}}/database_demo.sqlite",
+            "query": "CREATE TABLE IF NOT EXISTS demo_users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL)"
+          },
+          {
+            "step_id": "insert_rows",
+            "action": "bulk_insert",
+            "provider": "sqlite",
+            "database_url": "sqlite:///{{artifacts_base_dir}}/{{run_id}}/database_demo.sqlite",
+            "table": "demo_users",
+            "rows": [
+              {"id": 1, "name": "Ariana Coleman", "email": "ariana.coleman@example.com"},
+              {"id": 2, "name": "Marcus Reed", "email": "marcus.reed@example.com"}
+            ],
+            "output_variable": "insert_result"
+          },
+          {
+            "step_id": "select_rows",
+            "action": "execute_query",
+            "provider": "sqlite",
+            "database_url": "sqlite:///{{artifacts_base_dir}}/{{run_id}}/database_demo.sqlite",
+            "query": "SELECT id, name, email FROM demo_users ORDER BY id",
+            "output_variable": "query_result"
+          },
+          {
+            "step_id": "backup_db",
+            "action": "backup_data",
+            "database_url": "sqlite:///{{artifacts_base_dir}}/{{run_id}}/database_demo.sqlite",
+            "output_path": "{{artifacts_base_dir}}/{{run_id}}/database_demo_backup.sqlite",
+            "output_variable": "backup_result"
+          }
+        ]
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "insert_result": "{{insert_result}}",
+          "query_result": "{{query_result}}",
+          "backup_result": "{{backup_result}}"
+        }
+      }
+    }
+  }
+}

@@ -86,6 +86,42 @@ class CaseOut(BaseModel):
         return data
 
 
+class CaseProcedurePolicyCreate(BaseModel):
+    project_id: str | None = None
+    case_type: str = Field(min_length=1, max_length=128)
+    procedure_id: str = Field(min_length=1, max_length=256)
+    enabled: bool = True
+
+
+class CaseProcedurePolicyOut(BaseModel):
+    policy_id: str
+    project_id: str | None = None
+    case_type: str
+    procedure_id: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CaseAllowedProceduresOut(BaseModel):
+    case_id: str
+    restricted: bool
+    procedure_ids: list[str]
+
+
+class CasePolicyResolutionOut(BaseModel):
+    case_id: str
+    project_id: str | None = None
+    case_type: str | None = None
+    priority: str
+    case_type_required: bool
+    procedure_restricted: bool
+    allowed_procedure_ids: list[str]
+    matched_sla_policy: "CaseSlaPolicyOut | None" = None
+
+
 class CaseEventOut(BaseModel):
     event_id: int
     case_id: str
@@ -255,3 +291,6 @@ class CaseSlaPolicyOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+CasePolicyResolutionOut.model_rebuild()

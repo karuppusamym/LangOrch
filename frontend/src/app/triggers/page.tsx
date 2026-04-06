@@ -68,7 +68,10 @@ export default function TriggersPage() {
     setFiring(key);
     try {
       const result = await fireTrigger(trigger.procedure_id, trigger.version);
-      toast(`Fired! Run ID: ${result.run_id.slice(0, 8)}…`, "success");
+      const targetId = result.run_id ?? result.batch_job_id ?? result.case_id ?? "";
+      toast(`Fired ${result.entity_type}: ${targetId.slice(0, 8)}...`, "success");
+      void load();
+      return;
       void load();
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to fire trigger", "error");

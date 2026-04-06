@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { getProcedure, createRun, getGraph, listVersions, listRuns, getCase, isNotFoundError } from "@/lib/api";
+import { getProcedure, createRun, getGraph, listVersions, listRuns } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ProcedureStatusBadge as StatusBadge } from "@/components/shared/ProcedureStatusBadge";
 import type { ProcedureDetail, Procedure, Run } from "@/lib/types";
@@ -46,7 +46,6 @@ export default function ProcedureDetailPage() {
   const [varsForm, setVarsForm] = useState<Record<string, string>>({});
   const [varsErrors, setVarsErrors] = useState<Record<string, string>>({});
   const [runCreating, setRunCreating] = useState(false);
-  const [runCaseId, setRunCaseId] = useState("");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -160,7 +159,6 @@ export default function ProcedureDetailPage() {
     schemaEntries.forEach(([k, v]) => {
       defaults[k] = v?.default !== undefined ? String(v.default) : "";
     });
-    // Always show modal so callers can attach optional run context like case_id.
     setVarsForm(defaults);
     setVarsErrors({});
     setShowVarsModal(true);
@@ -170,33 +168,10 @@ export default function ProcedureDetailPage() {
     if (!procedure) return;
     setRunCreating(true);
     try {
-      // Validate case if provided
-      if (runCaseId.trim()) {
-        try {
-          await getCase(runCaseId.trim());
-        } catch (err) {
-          if (isNotFoundError(err)) {
-            toast("Case not found. Please check the case ID.", "error");
-            setRunCreating(false);
-            return;
-          }
-          throw err;
-        }
-      }
-
-      const run = await createRun(
-        procedure.procedure_id,
-        procedure.version,
-        vars,
-        { case_id: runCaseId.trim() || undefined }
-      );
+      const run = await createRun(procedure.procedure_id, procedure.version, vars);
       router.push(`/runs/${run.run_id}`);
     } catch (err) {
-      if (isNotFoundError(err)) {
-        toast("Case not found. Please check the case ID.", "error");
-      } else {
-        console.error(err);
-      }
+      console.error(err);
       setRunCreating(false);
     }
   }
@@ -462,12 +437,9 @@ export default function ProcedureDetailPage() {
                 ? "Fill in the required fields. Fields with defaults are pre-filled and can be overridden below."
                 : "All fields have default values. Override any before starting."}
             </p>
-            <input
-              value={runCaseId}
-              onChange={(e) => setRunCaseId(e.target.value)}
-              placeholder="Attach case_id (optional)"
-              className="mb-3 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
-            />
+            <div className="mb-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+              This launch creates a standalone run. Start from the Cases page to link a run to case work.
+            </div>
             <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-1">
               {mustFillEntries.map(([key, meta]) => fieldRow(key, meta, false))}
               {overrideEntries.length > 0 && (

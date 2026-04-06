@@ -1,0 +1,36 @@
+{
+  "procedure_id": "automation-swarm-failure-analysis-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Actual swarm workflow smoke test using the bounded swarm automation agent.",
+  "workflow_graph": {
+    "start_node": "swarm_analysis",
+    "nodes": {
+      "swarm_analysis": {
+        "agent": "SWARM",
+        "type": "sequence",
+        "description": "Run bounded failure analysis against a synthetic timeout scenario.",
+        "next_node": "done",
+        "steps": [
+          {
+            "step_id": "analyze_failure",
+            "action": "swarm.failure_analysis",
+            "goal": "Assess whether a retry is safe",
+            "context": {
+              "error_message": "HTTP 503 timeout from downstream identity service",
+              "timeline": ["request_started", "dependency_timeout", "run_failed"]
+            },
+            "output_variable": "swarm_result"
+          }
+        ]
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "swarm_result": "{{swarm_result}}"
+        }
+      }
+    }
+  }
+}

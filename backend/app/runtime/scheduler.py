@@ -176,7 +176,7 @@ async def _fire_scheduled_trigger(procedure_id: str, version: str) -> None:
     logger.info("Cron trigger firing for %s v%s", procedure_id, version)
     try:
         async with async_session() as db:
-            run = await fire_trigger(
+            result = await fire_trigger(
                 db=db,
                 procedure_id=procedure_id,
                 version=version,
@@ -184,7 +184,14 @@ async def _fire_scheduled_trigger(procedure_id: str, version: str) -> None:
                 triggered_by="scheduler",
             )
             await db.commit()
-            logger.info("Cron trigger created run %s for %s v%s", run.run_id, procedure_id, version)
+            target_id = result.get("run_id") or result.get("batch_job_id") or result.get("case_id")
+            logger.info(
+                "Cron trigger created %s %s for %s v%s",
+                result.get("entity_type"),
+                target_id,
+                procedure_id,
+                version,
+            )
 
         # Run is enqueued by fire_trigger(); worker picks it up.
     except Exception:

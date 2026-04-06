@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compiler.ir import IRTrigger
 from app.db.models import Procedure, Run, TriggerDedupeRecord, TriggerRegistration
+from app.services import batch_job_service, case_procedure_policy_service, case_service
 from app.services.run_service import create_run
 from app.worker.enqueue import enqueue_run
 
@@ -55,6 +56,12 @@ async def upsert_trigger(
         event_source = override.get("event_source")
         dedupe_window = int(override.get("dedupe_window_seconds", 0))
         max_concurrent = override.get("max_concurrent_runs")
+    dispatch_mode = (override or {}).get("dispatch_mode", "run")
+    static_payload_json = json.dumps((override or {}).get("static_payload")) if (override or {}).get("static_payload") is not None else None
+    case_type = (override or {}).get("case_type")
+    case_title_template = (override or {}).get("case_title_template")
+    case_external_ref_field = (override or {}).get("case_external_ref_field")
+    create_case_tags_json = json.dumps((override or {}).get("create_case_tags")) if (override or {}).get("create_case_tags") is not None else None
 
     now = datetime.now(timezone.utc)
     if existing:
@@ -64,6 +71,12 @@ async def upsert_trigger(
         existing.event_source = event_source
         existing.dedupe_window_seconds = dedupe_window
         existing.max_concurrent_runs = max_concurrent
+        existing.dispatch_mode = dispatch_mode
+        existing.static_payload_json = static_payload_json
+        existing.case_type = case_type
+        existing.case_title_template = case_title_template
+        existing.case_external_ref_field = case_external_ref_field
+        existing.create_case_tags_json = create_case_tags_json
         existing.enabled = override.get("enabled", True) if override else True
         existing.updated_at = now
         await db.flush()
@@ -79,6 +92,12 @@ async def upsert_trigger(
             event_source=event_source,
             dedupe_window_seconds=dedupe_window,
             max_concurrent_runs=max_concurrent,
+            dispatch_mode=dispatch_mode,
+            static_payload_json=static_payload_json,
+            case_type=case_type,
+            case_title_template=case_title_template,
+            case_external_ref_field=case_external_ref_field,
+            create_case_tags_json=create_case_tags_json,
             enabled=override.get("enabled", True) if override else True,
         )
         db.add(reg)
@@ -249,6 +268,28 @@ async def record_dedupe(
 # ── Firing ──────────────────────────────────────────────────────
 
 
+def _resolve_trigger_payload(reg: TriggerRegistration | None, input_vars: dict[str, Any] | None) -> Any:
+    if input_vars is not None:
+        return input_vars
+    static_payload_json = getattr(reg, "static_payload_json", None) if reg else None
+    if static_payload_json:
+        try:
+            return json.loads(static_payload_json)
+        except Exception:
+            return {}
+    return {}
+
+
+def _render_case_title(template: str | None, payload: dict[str, Any], procedure_id: str) -> str:
+    if not template:
+        return f"{procedure_id} automation"
+    safe_payload = {key: "" if value is None else str(value) for key, value in payload.items()}
+    try:
+        return template.format_map(safe_payload).strip() or f"{procedure_id} automation"
+    except Exception:
+        return template.strip() or f"{procedure_id} automation"
+
+
 async def fire_trigger(
     db: AsyncSession,
     procedure_id: str,
@@ -258,8 +299,8 @@ async def fire_trigger(
     input_vars: dict[str, Any] | None = None,
     project_id: str | None = None,
     lock_acquired: bool = False,
-) -> Run:
-    """Create and enqueue a run tagged with trigger metadata."""
+) -> dict[str, Any]:
+    """Dispatch a trigger into a run, batch job, or case+run result."""
     reg = await get_trigger(db, procedure_id, version)
     if reg and not lock_acquired:
         reg = await acquire_trigger_fire_lock(db, procedure_id, version)
@@ -295,18 +336,95 @@ async def fire_trigger(
         if proc:
             project_id = proc.project_id
 
+    payload = _resolve_trigger_payload(reg, input_vars)
+    dispatch_mode = getattr(reg, "dispatch_mode", "run") if reg else "run"
+
+    if dispatch_mode == "batch":
+        payload_text = json.dumps(payload)
+        batch = await batch_job_service.create_batch_job(
+            db,
+            name=f"{procedure_id} batch trigger",
+            procedure_id=procedure_id,
+            procedure_version=version,
+            payload_text=payload_text,
+            source_format="json",
+            project_id=project_id,
+            create_case_per_item=False,
+            case_type=getattr(reg, "case_type", None),
+            title_field=None,
+            external_ref_field=None,
+            tags=json.loads(reg.create_case_tags_json) if reg and reg.create_case_tags_json else None,
+            trigger_type=trigger_type,
+            triggered_by=triggered_by,
+        )
+        return {
+            "entity_type": "batch_job",
+            "batch_job": batch,
+            "batch_job_id": batch.batch_job_id,
+            "procedure_id": procedure_id,
+            "procedure_version": version,
+        }
+
+    if dispatch_mode == "case_run":
+        payload_dict = payload if isinstance(payload, dict) else {"payload": payload}
+        case_row = await case_service.create_case(
+            db,
+            title=_render_case_title(getattr(reg, "case_title_template", None), payload_dict, procedure_id),
+            project_id=project_id,
+            external_ref=(
+                str(payload_dict.get(reg.case_external_ref_field))
+                if reg and reg.case_external_ref_field and payload_dict.get(reg.case_external_ref_field) not in (None, "")
+                else None
+            ),
+            case_type=getattr(reg, "case_type", None),
+            status="open",
+            priority="normal",
+            tags=json.loads(reg.create_case_tags_json) if reg and reg.create_case_tags_json else None,
+            metadata=payload_dict,
+            require_case_type=True,
+        )
+        await case_procedure_policy_service.assert_case_allows_procedure(db, case_row, procedure_id)
+        run = await create_run(
+            db=db,
+            procedure_id=procedure_id,
+            procedure_version=version,
+            input_vars=payload_dict,
+            project_id=project_id,
+            case_id=case_row.case_id,
+            trigger_type=trigger_type,
+            triggered_by=triggered_by,
+            link_source="created_from_trigger_case",
+            input_snapshot_source="trigger_payload",
+        )
+        enqueue_run(db, run.run_id)
+        return {
+            "entity_type": "case_run",
+            "run": run,
+            "run_id": run.run_id,
+            "case_id": case_row.case_id,
+            "procedure_id": procedure_id,
+            "procedure_version": version,
+        }
+
     run = await create_run(
         db=db,
         procedure_id=procedure_id,
         procedure_version=version,
-        input_vars=input_vars,
+        input_vars=payload if isinstance(payload, dict) else {"payload": payload},
         project_id=project_id,
         trigger_type=trigger_type,
         triggered_by=triggered_by,
+        link_source=f"created_from_{trigger_type}",
+        input_snapshot_source="trigger_payload" if input_vars is not None else "trigger_static_payload",
     )
-    # Trigger-fired runs should always execute via the durable worker queue.
     enqueue_run(db, run.run_id)
-    return run
+    return {
+        "entity_type": "run",
+        "run": run,
+        "run_id": run.run_id,
+        "procedure_id": procedure_id,
+        "procedure_version": version,
+    }
 
 
 # ── HMAC signature verification ─────────────────────────────────
@@ -327,5 +445,7 @@ def verify_hmac_signature(body: bytes, header_signature: str | None, secret_env_
         return False
     # Strip "sha256=" prefix
     sig = header_signature.removeprefix("sha256=")
-    expected = hmac.new(secret_value.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+    expected_hmac = hmac.new(secret_value.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    # Backward-compatible fallback for older senders that used sha256(secret + body).
+    expected_legacy = hashlib.sha256(secret_value.encode("utf-8") + body).hexdigest()
+    return hmac.compare_digest(sig, expected_hmac) or hmac.compare_digest(sig, expected_legacy)

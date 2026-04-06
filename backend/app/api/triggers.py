@@ -101,7 +101,7 @@ async def receive_webhook(
 
     # Fire the trigger
     try:
-        run = await trigger_service.fire_trigger(
+        result = await trigger_service.fire_trigger(
             db=db,
             procedure_id=procedure_id,
             version=reg.version,
@@ -115,12 +115,17 @@ async def receive_webhook(
 
     # Record dedupe entry
     if reg.dedupe_window_seconds > 0:
-        await trigger_service.record_dedupe(db, procedure_id, run.run_id, payload_hash)
+        dedupe_id = result.get("run_id") or result.get("batch_job_id")
+        if dedupe_id:
+            await trigger_service.record_dedupe(db, procedure_id, dedupe_id, payload_hash)
 
     await db.commit()
 
     return WebhookFireOut(
-        run_id=run.run_id,
+        entity_type=result["entity_type"],
+        run_id=result.get("run_id"),
+        batch_job_id=result.get("batch_job_id"),
+        case_id=result.get("case_id"),
         procedure_id=procedure_id,
         procedure_version=reg.version,
     )
@@ -145,7 +150,7 @@ async def fire_trigger_manual(
     reg = await trigger_service.get_trigger(db, procedure_id, version)
 
     try:
-        run = await trigger_service.fire_trigger(
+        result = await trigger_service.fire_trigger(
             db=db,
             procedure_id=procedure_id,
             version=version,
@@ -158,7 +163,10 @@ async def fire_trigger_manual(
     await db.commit()
 
     return TriggerFireOut(
-        run_id=run.run_id,
+        entity_type=result["entity_type"],
+        run_id=result.get("run_id"),
+        batch_job_id=result.get("batch_job_id"),
+        case_id=result.get("case_id"),
         procedure_id=procedure_id,
         procedure_version=version,
         trigger_type=reg.trigger_type if reg else "manual",

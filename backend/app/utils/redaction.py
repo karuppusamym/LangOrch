@@ -26,6 +26,15 @@ DEFAULT_SENSITIVE_PATTERNS = [
 SENSITIVE_PATTERNS = DEFAULT_SENSITIVE_PATTERNS
 
 REDACTION_PLACEHOLDER = "***REDACTED***"
+RUN_CONTEXT_KEYS = {
+    "config",
+    "env",
+    "input",
+    "procedure_id",
+    "run_id",
+    "secrets",
+    "variables",
+}
 
 
 def build_patterns(extra_fields: list[str] | None = None) -> list[re.Pattern]:
@@ -102,3 +111,65 @@ def redact_sensitive_data(
     else:
         # Primitive types (str, int, float, bool, None) pass through
         return data
+
+
+def sanitize_run_snapshot(
+    data: Any,
+    *,
+    extra_patterns: list[re.Pattern] | None = None,
+    omit_context: bool = True,
+    max_depth: int = 10,
+) -> Any:
+    """Prepare run input/output snapshots for persistence or API exposure.
+
+    The runtime injects helper objects like ``env`` and ``secrets`` into the
+    template context. Those keys are useful during execution, but they should
+    not be persisted as run snapshots or returned from API responses.
+    """
+    if max_depth <= 0:
+        return data
+
+    patterns = extra_patterns if extra_patterns is not None else DEFAULT_SENSITIVE_PATTERNS
+
+    if isinstance(data, dict):
+        sanitized: dict[str, Any] = {}
+        for key, value in data.items():
+            key_str = str(key)
+            if key_str.startswith("__"):
+                continue
+            if omit_context and key_str in RUN_CONTEXT_KEYS:
+                continue
+            if _is_sensitive_key(key_str, patterns):
+                sanitized[key_str] = REDACTION_PLACEHOLDER
+            else:
+                sanitized[key_str] = sanitize_run_snapshot(
+                    value,
+                    extra_patterns=patterns,
+                    omit_context=False,
+                    max_depth=max_depth - 1,
+                )
+        return sanitized
+
+    if isinstance(data, list):
+        return [
+            sanitize_run_snapshot(
+                item,
+                extra_patterns=patterns,
+                omit_context=False,
+                max_depth=max_depth - 1,
+            )
+            for item in data
+        ]
+
+    if isinstance(data, tuple):
+        return tuple(
+            sanitize_run_snapshot(
+                item,
+                extra_patterns=patterns,
+                omit_context=False,
+                max_depth=max_depth - 1,
+            )
+            for item in data
+        )
+
+    return data

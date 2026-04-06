@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-
-class AgentCapability(BaseModel):
-    name: str
-    type: str = "tool"  # "tool" or "workflow"
-    description: str | None = None
-    estimated_duration_s: int | None = None
-    is_batch: bool = False
+from app.config import settings
+from app.contracts.agent_contracts import AgentCapability, parse_agent_capabilities
 
 class AgentInstanceCreate(BaseModel):
     agent_id: str | None = None
@@ -62,6 +57,11 @@ class AgentInstanceOut(BaseModel):
     consecutive_failures: int = 0
     circuit_open_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
+    heartbeat_age_seconds: int | None = None
+    is_stale: bool = False
+    protocol_version: str | None = None
+    supports_sessions: bool = False
+    capability_contract_coverage: float = 0.0
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -69,47 +69,40 @@ class AgentInstanceOut(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _parse_capabilities(cls, data: Any) -> Any:
-        import json
-
-        def _parse_raw(raw: Any) -> list[dict[str, Any]]:
-            if raw is None:
-                return []
-            if isinstance(raw, list):
-                # Ensure elements are dictionaries (in case they're already AgentCapability objects or strings)
-                parsed_list = []
-                for item in raw:
-                    if hasattr(item, "model_dump"):
-                        parsed_list.append(item.model_dump())
-                    elif isinstance(item, dict):
-                        parsed_list.append(item)
-                    elif isinstance(item, str):
-                        parsed_list.append({"name": item, "type": "tool", "is_batch": False})
-                return parsed_list
-            if isinstance(raw, str):
-                raw_str = raw.strip()
-                if not raw_str:
-                    return []
-                # Check if it's JSON serialization of the new structured capability list
-                if raw_str.startswith("[") and raw_str.endswith("]"):
-                    try:
-                        parsed_json = json.loads(raw_str)
-                        if isinstance(parsed_json, list):
-                            return _parse_raw(parsed_json)
-                    except json.JSONDecodeError:
-                        pass
-                
-                # Fallback to legacy comma-separated string format
-                return [{"name": c.strip(), "type": "tool", "is_batch": False} for c in raw_str.split(",") if c.strip()]
-            return []
-
         # data may be an ORM object or a plain dict
         if isinstance(data, dict):
             parsed = dict(data)
-            parsed["capabilities"] = _parse_raw(parsed.get("capabilities"))
+            caps = parse_agent_capabilities(parsed.get("capabilities"))
+            parsed["capabilities"] = [cap.model_dump() for cap in caps]
+            heartbeat_at = parsed.get("last_heartbeat_at")
+            if isinstance(heartbeat_at, datetime):
+                if heartbeat_at.tzinfo is None:
+                    heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+                parsed["heartbeat_age_seconds"] = max(0, int((datetime.now(timezone.utc) - heartbeat_at).total_seconds()))
+            else:
+                parsed["heartbeat_age_seconds"] = None
+            parsed["is_stale"] = (
+                parsed["heartbeat_age_seconds"] is not None
+                and parsed["heartbeat_age_seconds"] >= settings.AGENT_STALE_AFTER_SECONDS
+            )
+            parsed["protocol_version"] = settings.AGENT_PROTOCOL_VERSION
+            parsed["supports_sessions"] = any(cap.session_scoped or cap.requires_session or cap.name in {"open_session", "resume_session", "close_session"} for cap in caps)
+            total_caps = len(caps)
+            contract_caps = sum(1 for cap in caps if cap.input_schema and cap.output_schema)
+            parsed["capability_contract_coverage"] = round((contract_caps / total_caps), 3) if total_caps else 0.0
             return parsed
 
         if hasattr(data, "capabilities"):
-            parsed_caps = _parse_raw(data.capabilities)
+            caps = parse_agent_capabilities(data.capabilities)
+            parsed_caps = [cap.model_dump() for cap in caps]
+            heartbeat_at = getattr(data, "last_heartbeat_at", None)
+            heartbeat_age_seconds: int | None = None
+            if isinstance(heartbeat_at, datetime):
+                if heartbeat_at.tzinfo is None:
+                    heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+                heartbeat_age_seconds = max(0, int((datetime.now(timezone.utc) - heartbeat_at).total_seconds()))
+            total_caps = len(caps)
+            contract_caps = sum(1 for cap in caps if cap.input_schema and cap.output_schema)
 
             return {
                 "agent_id": data.agent_id,
@@ -124,7 +117,37 @@ class AgentInstanceOut(BaseModel):
                 "consecutive_failures": getattr(data, "consecutive_failures", 0) or 0,
                 "circuit_open_at": getattr(data, "circuit_open_at", None),
                 "last_heartbeat_at": getattr(data, "last_heartbeat_at", None),
+                "heartbeat_age_seconds": heartbeat_age_seconds,
+                "is_stale": heartbeat_age_seconds is not None and heartbeat_age_seconds >= settings.AGENT_STALE_AFTER_SECONDS,
+                "protocol_version": settings.AGENT_PROTOCOL_VERSION,
+                "supports_sessions": any(cap.session_scoped or cap.requires_session or cap.name in {"open_session", "resume_session", "close_session"} for cap in caps),
+                "capability_contract_coverage": round((contract_caps / total_caps), 3) if total_caps else 0.0,
                 "updated_at": data.updated_at,
             }
 
         return data
+
+
+class AgentContractTestRequest(BaseModel):
+    mode: Literal["simulate", "replay"] = "simulate"
+    capabilities: list[str] | None = None
+
+
+class AgentContractResult(BaseModel):
+    capability: str
+    capability_type: Literal["tool", "workflow"]
+    mode: Literal["simulate", "replay"]
+    status: Literal["passed", "failed", "skipped"]
+    request: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class AgentContractTestOut(BaseModel):
+    agent_id: str
+    mode: Literal["simulate", "replay"]
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    results: list[AgentContractResult] = Field(default_factory=list)

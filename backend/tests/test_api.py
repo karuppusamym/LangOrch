@@ -8,6 +8,8 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from app.main import app
+from app.db.engine import async_session
+from app.services import run_service
 
 
 def _uid() -> str:
@@ -238,6 +240,31 @@ class TestAgentsAPI:
     async def test_agent_not_found(self, client):
         resp = await client.get("/api/agents/nonexistent-agent-id")
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_recent_agent_operations_endpoint(self, client):
+        async with async_session() as db:
+            run = await run_service.create_run(
+                db,
+                procedure_id=f"agent_ops_{_uid()}",
+                procedure_version="1.0.0",
+                input_vars={},
+            )
+            await run_service.emit_event(
+                db,
+                run.run_id,
+                "agent_execution_audit",
+                node_id="node-1",
+                step_id="step-1",
+                payload={"action": "navigate", "provider": "playwright"},
+            )
+            await db.commit()
+
+        resp = await client.get("/api/agents/operations/recent?limit=5")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert any(item["event_type"] == "agent_execution_audit" for item in data)
 
 
 class TestCreateAndRunWorkflow:

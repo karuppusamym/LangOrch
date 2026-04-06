@@ -17,12 +17,12 @@ import {
   deleteCaseWebhook,
   getProcedure,
   listCaseEvents,
+  listCaseLaunchableProcedures,
   listCaseQueue,
   listCaseSlaPolicies,
   listCaseWebhooks,
   listCaseWebhookDlq,
   listCases,
-  listProcedures,
   listProjects,
   listRuns,
   replayCaseWebhookDelivery,
@@ -87,6 +87,28 @@ function parseMetadata(raw: string): Record<string, unknown> | null {
     throw new Error("metadata must be a JSON object");
   }
   return parsed as Record<string, unknown>;
+}
+
+function formatRunVarValue(value: unknown, meta: Record<string, any>): string {
+  if (value === null || value === undefined) return "";
+  if (meta?.type === "array" || meta?.type === "object") {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return "";
+      try {
+        JSON.parse(trimmed);
+        return trimmed;
+      } catch {
+        return JSON.stringify(value, null, 2);
+      }
+    }
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
 }
 
 function Pill({ value }: { value: string }) {
@@ -195,6 +217,7 @@ function CasesPageContent() {
   const [runModalProcedure, setRunModalProcedure] = useState<ProcedureDetail | null>(null);
   const [runVarsForm, setRunVarsForm] = useState<Record<string, string>>({});
   const [runVarsErrors, setRunVarsErrors] = useState<Record<string, string>>({});
+  const [runMetadataPrefillCount, setRunMetadataPrefillCount] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const [caseProjectFilter, setCaseProjectFilter] = useState("");
@@ -243,14 +266,7 @@ function CasesPageContent() {
   const [deleteWebhookTarget, setDeleteWebhookTarget] = useState<CaseWebhookSubscription | null>(null);
 
   const selectedCase = useMemo(() => cases.find((c) => c.case_id === selectedCaseId) ?? null, [cases, selectedCaseId]);
-  const launchableProcedures = useMemo(() => {
-    const selected = selectedCase;
-    const active = procedures.filter((p) => p.status !== "archived" && p.status !== "deprecated");
-    if (!selected) return active;
-    if (!selected.project_id) return active;
-    const scoped = active.filter((p) => p.project_id === selected.project_id);
-    return scoped.length > 0 ? scoped : active;
-  }, [procedures, selectedCase]);
+  const launchableProcedures = procedures;
 
   const runModalSchema = useMemo(
     () => flattenVariablesSchema(((runModalProcedure?.ckp_json as any)?.variables_schema ?? {}) as Record<string, unknown>),
@@ -298,9 +314,18 @@ function CasesPageContent() {
   useEffect(() => {
     void Promise.all([
       listProjects().then(setProjects),
-      listProcedures().then(setProcedures),
     ]).catch(() => null);
   }, []);
+
+  useEffect(() => {
+    if (!selectedCaseId) {
+      setProcedures([]);
+      return;
+    }
+    void listCaseLaunchableProcedures(selectedCaseId)
+      .then(setProcedures)
+      .catch(() => setProcedures([]));
+  }, [selectedCaseId]);
 
   async function loadCases() {
     setLoading(true);
@@ -312,7 +337,11 @@ function CasesPageContent() {
         limit: 100,
       });
       setCases(data);
-      if (!selectedCaseId && data[0]) setSelectedCaseId(data[0].case_id);
+      setSelectedCaseId((current) => {
+        if (data.length === 0) return null;
+        if (current && data.some((item) => item.case_id === current)) return current;
+        return data[0]?.case_id ?? null;
+      });
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load cases", "error");
     } finally {
@@ -734,11 +763,23 @@ function CasesPageContent() {
       const detail = await getProcedure(procedureId, version);
       const schema = flattenVariablesSchema(((detail.ckp_json as any)?.variables_schema ?? {}) as Record<string, unknown>);
       const defaults: Record<string, string> = {};
+      const caseMetadata = (caseItem.metadata && typeof caseItem.metadata === "object" && !Array.isArray(caseItem.metadata))
+        ? (caseItem.metadata as Record<string, unknown>)
+        : {};
+      let prefilledCount = 0;
       for (const [key, meta] of Object.entries(schema)) {
-        defaults[key] = (meta as any)?.default !== undefined ? String((meta as any).default) : "";
+        if (caseMetadata[key] !== undefined && caseMetadata[key] !== null) {
+          defaults[key] = formatRunVarValue(caseMetadata[key], meta as Record<string, any>);
+          prefilledCount += 1;
+        } else {
+          defaults[key] = (meta as any)?.default !== undefined
+            ? formatRunVarValue((meta as any).default, meta as Record<string, any>)
+            : "";
+        }
       }
       setRunVarsForm(defaults);
       setRunVarsErrors({});
+      setRunMetadataPrefillCount(prefilledCount);
       setRunModalCase(caseItem);
       setRunModalProcedure(detail);
       setRunModalOpen(true);
@@ -786,6 +827,8 @@ function CasesPageContent() {
         {
           case_id: runModalCase.case_id,
           project_id: runModalCase.project_id ?? undefined,
+          link_source: "launched_from_case",
+          input_snapshot_source: runMetadataPrefillCount > 0 ? "case_metadata_prefill" : "manual_request",
         }
       );
       toast(`Run started for case: ${run.run_id.slice(0, 8)}...`, "success");
@@ -810,7 +853,8 @@ function CasesPageContent() {
     const hasDefault = meta?.default !== undefined;
     const sensitive = isFieldSensitive(meta as Record<string, unknown>);
     const currentVal = runVarsForm[key] ?? "";
-    const isUsingDefault = hasDefault && currentVal === String(meta.default);
+    const defaultDisplayValue = hasDefault ? formatRunVarValue(meta.default, meta) : "";
+    const isUsingDefault = hasDefault && currentVal === defaultDisplayValue;
     const fieldErr = runVarsErrors[key];
     const borderCls = fieldErr
       ? "border-red-400 focus:border-red-500"
@@ -828,11 +872,11 @@ function CasesPageContent() {
           {sensitive && <span className="text-[10px] font-medium text-yellow-600">sensitive</span>}
           {showDefault && hasDefault && !sensitive && (
             <span className="ml-auto text-[10px] text-neutral-400">
-              default: <code className="font-mono">{String(meta.default)}</code>
+              default: <code className="font-mono">{defaultDisplayValue}</code>
               {!isUsingDefault && (
                 <button
                   type="button"
-                  onClick={() => handleRunVarChange(key, String(meta.default), meta)}
+                  onClick={() => handleRunVarChange(key, defaultDisplayValue, meta)}
                   className="ml-1 text-sky-700 hover:underline"
                 >
                   restore
@@ -865,7 +909,7 @@ function CasesPageContent() {
             type={sensitive ? "password" : meta?.type === "number" ? "number" : "text"}
             value={currentVal}
             onChange={(e) => handleRunVarChange(key, e.target.value, meta)}
-            placeholder={hasDefault && !sensitive ? String(meta.default) : ""}
+            placeholder={hasDefault && !sensitive ? defaultDisplayValue : ""}
             autoComplete="off"
             className={`w-full rounded-lg border p-2 text-sm focus:outline-none ${borderCls}`}
           />
@@ -1606,6 +1650,11 @@ function CasesPageContent() {
             </p>
             <div className="mb-3 rounded border border-blue-100 bg-blue-50 p-2 text-xs text-blue-700">
               Starting for case: <span className="font-mono">{runModalCase.case_id}</span>
+            </div>
+            <div className="mb-3 rounded border border-emerald-100 bg-emerald-50 p-2 text-xs text-emerald-700">
+              {runMetadataPrefillCount > 0
+                ? `Prefilled ${runMetadataPrefillCount} field${runMetadataPrefillCount !== 1 ? "s" : ""} from case metadata. Review before starting.`
+                : "No matching case metadata fields were found, so CKP defaults are loaded."}
             </div>
             <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
               {runModalMustFillEntries.map(([key, meta]) => runFieldRow(key, meta, false))}

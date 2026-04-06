@@ -1,0 +1,55 @@
+{
+  "procedure_id": "automation-api-http-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Actual API/integration smoke test using REST and GraphQL against public endpoints.",
+  "variables_schema": {
+    "required": {
+      "rest_url": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "https://jsonplaceholder.typicode.com/todos/1"
+      },
+      "graphql_url": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "https://countries.trevorblades.com/"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "integration_smoke",
+    "nodes": {
+      "integration_smoke": {
+        "agent": "API",
+        "type": "sequence",
+        "description": "Call a public REST endpoint and a public GraphQL endpoint through the integration agent.",
+        "next_node": "done",
+        "steps": [
+          {
+            "step_id": "fetch_todo",
+            "action": "http_request",
+            "method": "GET",
+            "url": "{{rest_url}}",
+            "output_variable": "rest_result"
+          },
+          {
+            "step_id": "fetch_country",
+            "action": "graphql_query",
+            "url": "{{graphql_url}}",
+            "query": "query { country(code: \"US\") { code name capital } }",
+            "output_variable": "graphql_result"
+          }
+        ]
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "rest_result": "{{rest_result}}",
+          "graphql_result": "{{graphql_result}}"
+        }
+      }
+    }
+  }
+}

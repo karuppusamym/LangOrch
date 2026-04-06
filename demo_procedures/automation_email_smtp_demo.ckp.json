@@ -1,0 +1,74 @@
+{
+  "procedure_id": "automation-email-smtp-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Actual SMTP smoke test using a local sink server and the email automation agent.",
+  "variables_schema": {
+    "required": {
+      "smtp_host": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "127.0.0.1"
+      },
+      "smtp_port": {
+        "type": "number",
+        "origin": "user_strict",
+        "default": 8025
+      },
+      "from_email": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "langorch-demo@example.com"
+      },
+      "to_email": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "sink@example.com"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "email_smoke",
+    "nodes": {
+      "email_smoke": {
+        "agent": "EMAIL",
+        "type": "sequence",
+        "description": "Compose an email and send it to a local SMTP sink.",
+        "next_node": "done",
+        "steps": [
+          {
+            "step_id": "compose_message",
+            "action": "compose_email",
+            "provider": "smtp",
+            "from": "{{from_email}}",
+            "to": ["{{to_email}}"],
+            "subject": "LangOrch SMTP demo",
+            "body": "This is an actual SMTP smoke test sent from LangOrch.",
+            "output_variable": "draft_result"
+          },
+          {
+            "step_id": "send_message",
+            "action": "send_email",
+            "provider": "smtp",
+            "use_tls": false,
+            "smtp_host": "{{smtp_host}}",
+            "smtp_port": "{{smtp_port}}",
+            "from": "{{from_email}}",
+            "to": ["{{to_email}}"],
+            "subject": "LangOrch SMTP demo",
+            "body": "This is an actual SMTP smoke test sent from LangOrch.",
+            "output_variable": "send_result"
+          }
+        ]
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "draft_result": "{{draft_result}}",
+          "send_result": "{{send_result}}"
+        }
+      }
+    }
+  }
+}

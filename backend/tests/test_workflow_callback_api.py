@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import uuid
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from starlette.requests import Request
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.api.runs import workflow_callback
 from app.config import settings
+from app.contracts.agent_protocol import build_signed_headers
 from app.db.engine import async_session
 from app.services import run_service
 from app.services.run_service import auto_fail_stalled_workflows
@@ -27,6 +30,24 @@ def _token(run_id: str) -> str:
         run_id.encode(),
         hashlib.sha256,
     ).hexdigest()
+
+
+def _request(path: str, body: dict, headers: dict[str, str] | None = None) -> Request:
+    payload = json.dumps(body).encode("utf-8")
+    raw_headers = [(b"content-type", b"application/json")]
+    for key, value in (headers or {}).items():
+        raw_headers.append((key.lower().encode("utf-8"), value.encode("utf-8")))
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "headers": raw_headers,
+    }
+    return Request(scope, receive)
 
 
 async def _make_paused_run() -> str:
@@ -67,6 +88,7 @@ class TestWorkflowCallbackHardening:
                     "step_id": "step-1",
                     "output": {"a": 1},
                 },
+                request=_request(f"/api/runs/{run_id}/callback", {"status": "success", "node_id": "node-1", "step_id": "step-1", "output": {"a": 1}}),
                 background_tasks=BackgroundTasks(),
                 token=_token(run_id),
                 db=db,
@@ -82,6 +104,7 @@ class TestWorkflowCallbackHardening:
                     "step_id": "step-1",
                     "output": {"a": 1},
                 },
+                request=_request(f"/api/runs/{run_id}/callback", {"status": "success", "node_id": "node-1", "step_id": "step-1", "output": {"a": 1}}),
                 background_tasks=BackgroundTasks(),
                 token=_token(run_id),
                 db=db,
@@ -116,6 +139,7 @@ class TestWorkflowCallbackHardening:
                         "node_id": "wrong-node",
                         "step_id": "expected-step",
                     },
+                    request=_request(f"/api/runs/{run_id}/callback", {"status": "success", "node_id": "wrong-node", "step_id": "expected-step"}),
                     background_tasks=BackgroundTasks(),
                     token=_token(run_id),
                     db=db,
@@ -144,6 +168,7 @@ class TestWorkflowCallbackHardening:
                     "node_id": "node-1",
                     "step_id": "step-1",
                 },
+                request=_request(f"/api/runs/{run_id}/callback", {"status": "success", "node_id": "node-1", "step_id": "step-1"}),
                 background_tasks=BackgroundTasks(),
                 token=_token(run_id),
                 db=db,
@@ -172,6 +197,7 @@ class TestWorkflowCallbackHardening:
                     "node_id": "node-1",
                     "step_id": "step-1",
                 },
+                request=_request(f"/api/runs/{run_id}/callback", {"status": "success", "node_id": "node-1", "step_id": "step-1"}),
                 background_tasks=BackgroundTasks(),
                 token=_token(run_id),
                 db=db,
@@ -254,6 +280,7 @@ class TestWorkflowCallbackHardening:
                     "step_id": "step-1",
                     "output": {"a": 1},
                 },
+                request=_request(f"/api/runs/{run_id}/callback", {"status": "success", "node_id": "node-1", "step_id": "step-1", "output": {"a": 1}}),
                 background_tasks=BackgroundTasks(),
                 token=_token(run_id),
                 db=db,
@@ -262,3 +289,48 @@ class TestWorkflowCallbackHardening:
         assert result["resumed"] is False
         assert result["status"] == "duplicate"
         db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_signed_callback_is_accepted_when_agent_secret_enabled(self):
+        run_id = await _make_paused_run()
+        previous_secret = settings.AGENT_SHARED_SECRET
+        object.__setattr__(settings, "AGENT_SHARED_SECRET", "callback-secret")
+        try:
+            async with async_session() as db:
+                await run_service.emit_event(
+                    db,
+                    run_id,
+                    "workflow_delegated",
+                    node_id="node-1",
+                    step_id="step-1",
+                    payload={"resume_node_id": "node-1", "resume_step_id": "step-1"},
+                )
+                await db.commit()
+
+            body = {
+                "status": "success",
+                "node_id": "node-1",
+                "step_id": "step-1",
+                "output": {"ok": True},
+                "protocol_version": settings.AGENT_PROTOCOL_VERSION,
+            }
+            headers = build_signed_headers(
+                "POST",
+                f"/api/runs/{run_id}/callback",
+                body,
+                "callback-secret",
+                extra_headers={"x-agent-protocol-version": settings.AGENT_PROTOCOL_VERSION},
+            )
+
+            async with async_session() as db:
+                result = await workflow_callback(
+                    run_id=run_id,
+                    body=body,
+                    request=_request(f"/api/runs/{run_id}/callback", body, headers=headers),
+                    background_tasks=BackgroundTasks(),
+                    token=None,
+                    db=db,
+                )
+                assert result["resumed"] is True
+        finally:
+            object.__setattr__(settings, "AGENT_SHARED_SECRET", previous_secret)

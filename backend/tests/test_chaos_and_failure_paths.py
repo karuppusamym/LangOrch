@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import pytest
 import uuid
 from httpx import ASGITransport, AsyncClient
@@ -19,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta, timezone
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from sqlalchemy import select, update
 
 from app.config import settings
@@ -35,6 +37,23 @@ def _callback_token(run_id: str) -> str:
         run_id.encode(),
         hashlib.sha256,
     ).hexdigest()
+
+
+def _callback_request(path: str, body: dict) -> Request:
+    payload = json.dumps(body).encode("utf-8")
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [(b"content-type", b"application/json")],
+        },
+        receive,
+    )
 
 
 @pytest.fixture
@@ -162,6 +181,15 @@ class TestCallbackLossAndRetry:
                     "step_id": "step-1",
                     "output": {"status": "paid"},
                 },
+                request=_callback_request(
+                    f"/api/runs/{run_id}/callback",
+                    {
+                        "status": "success",
+                        "node_id": "node-1",
+                        "step_id": "step-1",
+                        "output": {"status": "paid"},
+                    },
+                ),
                 background_tasks=BackgroundTasks(),
                 token=_callback_token(run_id),
                 db=db,

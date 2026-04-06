@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { listAgents, registerAgent, updateAgent, deleteAgent, getActionCatalog, syncAgentCapabilities, probeAgentCapabilities } from "@/lib/api";
+import { listAgents, registerAgent, updateAgent, deleteAgent, getActionCatalog, syncAgentCapabilities, probeAgentCapabilities, listRecentAgentOperations } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { AgentInstance, AgentCapability } from "@/lib/types";
+import type { AgentInstance, AgentCapability, AgentOperationEvent } from "@/lib/types";
 
 // Suggested channels — user can type anything; these are just hints shown via datalist
 const SUGGESTED_CHANNELS = ["web", "desktop", "email", "api", "database", "llm", "masteragent", "crm", "erp", "iot", "voice", "chat"];
@@ -23,10 +23,10 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-function staleTone(updatedAt: string): string {
-  const age = Date.now() - new Date(updatedAt).getTime();
-  if (age < 120_000) return "text-emerald-600 dark:text-emerald-400";
-  if (age < 600_000) return "text-amber-600 dark:text-amber-400";
+function staleTone(ageSeconds: number | null): string {
+  if (ageSeconds == null) return "text-neutral-500 dark:text-neutral-400";
+  if (ageSeconds < 120) return "text-emerald-600 dark:text-emerald-400";
+  if (ageSeconds < 600) return "text-amber-600 dark:text-amber-400";
   return "text-red-500 dark:text-red-400";
 }
 
@@ -46,6 +46,7 @@ function renderCapacitySlots(concurrencyLimit: number) {
 export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentInstance[]>([]);
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
+  const [recentOps, setRecentOps] = useState<AgentOperationEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [agentPage, setAgentPage] = useState(0);
   const [search, setSearch] = useState("");
@@ -72,7 +73,7 @@ export default function AgentsPage() {
   const { toast } = useToast();
 
   useEffect(() => {
-    void Promise.all([loadAgents(), loadCatalog()]);
+    void Promise.all([loadAgents(), loadCatalog(), loadRecentOps()]);
   }, []);
 
   useEffect(() => {
@@ -95,6 +96,10 @@ export default function AgentsPage() {
 
   async function loadCatalog() {
     try { setCatalog(await getActionCatalog()); } catch (_) { /* non-critical */ }
+  }
+
+  async function loadRecentOps() {
+    try { setRecentOps(await listRecentAgentOperations(8)); } catch (_) { /* non-critical */ }
   }
 
   async function handleRegister() {
@@ -230,11 +235,13 @@ export default function AgentsPage() {
   const summary = useMemo(() => {
     const online = agents.filter((agent) => agent.status === "online").length;
     const busy = agents.filter((agent) => agent.status === "busy").length;
+    const stale = agents.filter((agent) => agent.is_stale).length;
     const circuitOpen = agents.filter((agent) => !!agent.circuit_open_at).length;
     const workflows = agents.filter((agent) => agent.capabilities.some((cap) => cap.type === "workflow")).length;
     return {
       online,
       busy,
+      stale,
       circuitOpen,
       workflows,
       total: agents.length,
@@ -266,7 +273,7 @@ export default function AgentsPage() {
         </div>
 
         {/* Stats row */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <div className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
             <div className="flex items-center gap-2">
               <div className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
@@ -289,6 +296,13 @@ export default function AgentsPage() {
             <p className="mt-3 text-3xl font-bold text-neutral-900 dark:text-neutral-100">
               {agents.reduce((sum, a) => sum + a.concurrency_limit, 0)}
             </p>
+          </div>
+          <div className="rounded-2xl border border-neutral-200 bg-white px-5 py-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center gap-2">
+              <div className="h-2.5 w-2.5 rounded-full bg-red-500" />
+              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">Stale Agents</p>
+            </div>
+            <p className="mt-3 text-3xl font-bold text-neutral-900 dark:text-neutral-100">{summary.stale}</p>
           </div>
         </div>
 
@@ -331,6 +345,33 @@ export default function AgentsPage() {
             </button>
           ))}
         </div>
+
+        {recentOps.length > 0 && (
+          <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">Operations</p>
+                <h2 className="mt-1 text-sm font-semibold text-neutral-900 dark:text-neutral-100">Recent Agent Activity</h2>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {recentOps.map((event) => (
+                <div key={`${event.event_id}`} className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-800/60">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium text-neutral-800 dark:text-neutral-200">{event.event_type}</span>
+                    <span className="text-neutral-500 dark:text-neutral-400">{formatRelativeTime(event.ts)}</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-neutral-500 dark:text-neutral-400">
+                    <span>run {event.run_id}</span>
+                    {event.node_id && <span>node {event.node_id}</span>}
+                    {event.step_id && <span>step {event.step_id}</span>}
+                    {"provider" in event.payload && <span>provider {String(event.payload.provider)}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {showRegister && (
           <section className="rounded-2xl border border-neutral-200 bg-white px-6 py-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
@@ -528,12 +569,26 @@ export default function AgentsPage() {
                   <p className="truncate"><span className="font-medium text-neutral-700 dark:text-neutral-300">URL:</span> {agent.base_url}</p>
                   <p className="truncate"><span className="font-medium text-neutral-700 dark:text-neutral-300">Resource:</span> {agent.resource_key}</p>
                   <p>
-                    <span className="font-medium text-neutral-700 dark:text-neutral-300">Last seen:</span>{" "}
-                    <span className={`font-medium ${staleTone(agent.updated_at)}`}>{formatRelativeTime(agent.updated_at)}</span>
+                    <span className="font-medium text-neutral-700 dark:text-neutral-300">Heartbeat:</span>{" "}
+                    <span className={`font-medium ${staleTone(agent.heartbeat_age_seconds)}`}>
+                      {agent.last_heartbeat_at ? formatRelativeTime(agent.last_heartbeat_at) : "never"}
+                    </span>
                   </p>
+                  <p><span className="font-medium text-neutral-700 dark:text-neutral-300">Protocol:</span> {agent.protocol_version ?? "unknown"}</p>
+                  <p><span className="font-medium text-neutral-700 dark:text-neutral-300">Contracts:</span> {Math.round(agent.capability_contract_coverage * 100)}%</p>
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-1.5">
+                  {agent.is_stale && (
+                    <span className="rounded-full bg-red-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                      Stale heartbeat
+                    </span>
+                  )}
+                  {agent.supports_sessions && (
+                    <span className="rounded-full bg-sky-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                      Sessions
+                    </span>
+                  )}
                   {agent.circuit_open_at ? (
                     <span className="rounded-full bg-red-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-700 dark:bg-red-950/40 dark:text-red-300">
                       Circuit open · {agent.consecutive_failures} failure{agent.consecutive_failures !== 1 ? "s" : ""}

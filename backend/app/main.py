@@ -27,6 +27,7 @@ from app.api.catalog import router as catalog_router
 from app.api.leases import router as leases_router
 from app.api.projects import router as projects_router
 from app.api.cases import router as cases_router
+from app.api.batch_jobs import router as batch_jobs_router
 from app.api.triggers import router as triggers_router
 from app.api.artifacts import router as artifacts_router
 from app.api.auth import router as auth_router
@@ -36,6 +37,7 @@ from app.api.config import router as config_router
 from app.api.audit import router as audit_router
 from app.api.agent_credentials import router as agent_credentials_router
 from app.api.dlq import router as dlq_router
+from app.services.startup_schema_service import assert_database_schema_current, resolve_startup_schema_mode
 
 from app.utils.logger import setup_logger
 logger = setup_logger(log_format=settings.LOG_FORMAT, log_level="DEBUG" if settings.DEBUG else "INFO")
@@ -136,6 +138,11 @@ async def _agent_health_loop() -> None:
                                 agent.consecutive_failures = 0
                                 agent.circuit_open_at = None
                                 agent.status = "online"
+                                agent.last_heartbeat_at = now
+                                agent.updated_at = now
+                                changed += 1
+                            elif agent.last_heartbeat_at != now:
+                                agent.last_heartbeat_at = now
                                 agent.updated_at = now
                                 changed += 1
                         else:
@@ -703,8 +710,11 @@ async def _metrics_push_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    schema_mode = resolve_startup_schema_mode()
+    if schema_mode == "migrate_check":
+        await assert_database_schema_current()
     async with engine.begin() as conn:
-        if settings.is_sqlite:
+        if schema_mode == "bootstrap" and settings.is_sqlite:
             try:
                 await conn.run_sync(Base.metadata.create_all)
             except Exception as _e:
@@ -714,7 +724,7 @@ async def lifespan(app: FastAPI):
     # Idempotent column migrations for new fields (SQLite-safe ADD COLUMN)
     # These are no-ops when the column already exists (catches on duplicate column).
     # For PostgreSQL, Alembic handles all schema changes — these are skipped.
-    if settings.is_sqlite:
+    if schema_mode == "bootstrap" and settings.is_sqlite:
         _new_cols = [
             "ALTER TABLE runs ADD COLUMN error_message TEXT",
             "ALTER TABLE runs ADD COLUMN parent_run_id VARCHAR(64)",
@@ -726,6 +736,10 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE runs ADD COLUMN triggered_by VARCHAR(256)",
             "ALTER TABLE runs ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE runs ADD COLUMN case_id VARCHAR(64)",
+            "ALTER TABLE runs ADD COLUMN batch_job_id VARCHAR(64)",
+            "ALTER TABLE runs ADD COLUMN batch_item_index INTEGER",
+            "ALTER TABLE runs ADD COLUMN link_source VARCHAR(64)",
+            "ALTER TABLE runs ADD COLUMN input_snapshot_source VARCHAR(64)",
             "ALTER TABLE cases ADD COLUMN case_type VARCHAR(128)",
             "ALTER TABLE cases ADD COLUMN sla_due_at DATETIME",
             "ALTER TABLE cases ADD COLUMN sla_breached_at DATETIME",
@@ -736,6 +750,12 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE procedures ADD COLUMN builder_draft_json TEXT",
             "ALTER TABLE procedures ADD COLUMN builder_draft_updated_at DATETIME",
             "ALTER TABLE procedures ADD COLUMN trigger_config_json TEXT",
+            "ALTER TABLE trigger_registrations ADD COLUMN dispatch_mode VARCHAR(32) NOT NULL DEFAULT 'run'",
+            "ALTER TABLE trigger_registrations ADD COLUMN static_payload_json TEXT",
+            "ALTER TABLE trigger_registrations ADD COLUMN case_type VARCHAR(128)",
+            "ALTER TABLE trigger_registrations ADD COLUMN case_title_template VARCHAR(256)",
+            "ALTER TABLE trigger_registrations ADD COLUMN case_external_ref_field VARCHAR(128)",
+            "ALTER TABLE trigger_registrations ADD COLUMN create_case_tags_json TEXT",
             # Batch 34: artifact metadata columns
             "ALTER TABLE artifacts ADD COLUMN name VARCHAR(512)",
             "ALTER TABLE artifacts ADD COLUMN mime_type VARCHAR(128)",
@@ -854,6 +874,50 @@ async def lifespan(app: FastAPI):
                 "  updated_at DATETIME NOT NULL"
                 ")"
             ),
+            (
+                "CREATE TABLE IF NOT EXISTS case_procedure_policies ("
+                "  policy_id VARCHAR(64) PRIMARY KEY, "
+                "  project_id VARCHAR(64), "
+                "  case_type VARCHAR(128) NOT NULL, "
+                "  procedure_id VARCHAR(256) NOT NULL, "
+                "  enabled BOOLEAN NOT NULL DEFAULT 1, "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS batch_jobs ("
+                "  batch_job_id VARCHAR(64) PRIMARY KEY, "
+                "  name VARCHAR(256) NOT NULL, "
+                "  procedure_id VARCHAR(256) NOT NULL, "
+                "  procedure_version VARCHAR(64) NOT NULL, "
+                "  status VARCHAR(32) NOT NULL DEFAULT 'queued', "
+                "  source_format VARCHAR(32) NOT NULL DEFAULT 'json', "
+                "  total_items INTEGER NOT NULL DEFAULT 0, "
+                "  create_case_per_item BOOLEAN NOT NULL DEFAULT 0, "
+                "  case_type VARCHAR(128), "
+                "  trigger_type VARCHAR(32), "
+                "  triggered_by VARCHAR(256), "
+                "  project_id VARCHAR(64), "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL, "
+                "  completed_at DATETIME"
+                ")"
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS batch_job_items ("
+                "  item_id VARCHAR(64) PRIMARY KEY, "
+                "  batch_job_id VARCHAR(64) NOT NULL, "
+                "  item_index INTEGER NOT NULL, "
+                "  status VARCHAR(32) NOT NULL DEFAULT 'queued', "
+                "  input_vars_json TEXT, "
+                "  run_id VARCHAR(64), "
+                "  case_id VARCHAR(64), "
+                "  error_message TEXT, "
+                "  created_at DATETIME NOT NULL, "
+                "  updated_at DATETIME NOT NULL"
+                ")"
+            ),
             "CREATE INDEX IF NOT EXISTS ix_cases_external_ref ON cases (external_ref)",
             "CREATE INDEX IF NOT EXISTS ix_cases_case_type ON cases (case_type)",
             "CREATE INDEX IF NOT EXISTS ix_cases_project_created_at ON cases (project_id, created_at)",
@@ -865,6 +929,9 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_case_type ON case_sla_policies (case_type)",
             "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_priority ON case_sla_policies (priority)",
             "CREATE INDEX IF NOT EXISTS ix_case_sla_policies_enabled ON case_sla_policies (enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_case_proc_policies_scope ON case_procedure_policies (project_id, case_type)",
+            "CREATE INDEX IF NOT EXISTS ix_case_proc_policies_procedure ON case_procedure_policies (procedure_id)",
+            "CREATE INDEX IF NOT EXISTS ix_case_proc_policies_enabled ON case_procedure_policies (enabled)",
             "CREATE INDEX IF NOT EXISTS ix_case_webhook_subscriptions_event_type ON case_webhook_subscriptions (event_type)",
             "CREATE INDEX IF NOT EXISTS ix_case_webhook_subscriptions_project_id ON case_webhook_subscriptions (project_id)",
             "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_status_next ON case_webhook_deliveries (status, next_attempt_at)",
@@ -877,6 +944,13 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_subscription_status_created_at ON case_webhook_deliveries (subscription_id, status, created_at)",
             "CREATE INDEX IF NOT EXISTS ix_case_webhook_deliveries_event_status_created_at ON case_webhook_deliveries (event_type, status, created_at)",
             "CREATE INDEX IF NOT EXISTS ix_runs_case_created_at ON runs (case_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_runs_batch_created_at ON runs (batch_job_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_batch_jobs_status_created_at ON batch_jobs (status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_batch_jobs_project_created_at ON batch_jobs (project_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_batch_jobs_procedure_created_at ON batch_jobs (procedure_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_batch_job_items_batch_status ON batch_job_items (batch_job_id, status)",
+            "CREATE INDEX IF NOT EXISTS ix_batch_job_items_run_id ON batch_job_items (run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_batch_job_items_case_id ON batch_job_items (case_id)",
             # Batch 38: persistent agent dispatch counters
             (
                 "CREATE TABLE IF NOT EXISTS agent_dispatch_counters ("
@@ -1097,6 +1171,7 @@ app.include_router(catalog_router, prefix="/api", tags=["catalog"])
 app.include_router(leases_router, prefix="/api/leases", tags=["leases"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(cases_router, prefix="/api/cases", tags=["cases"])
+app.include_router(batch_jobs_router, prefix="/api/batch-jobs", tags=["batch-jobs"])
 app.include_router(triggers_router, prefix="/api/triggers", tags=["triggers"])
 app.include_router(artifacts_router, prefix="/api/artifacts-admin", tags=["artifacts"])
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])

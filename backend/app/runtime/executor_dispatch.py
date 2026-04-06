@@ -22,18 +22,18 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from datetime import datetime, timezone
 
 from app.compiler.ir import ExecutorBinding, IRNode, IRStep
 from app.connectors.agent_client import AgentClient
 from app.connectors.mcp_client import MCPClient
 from app.config import settings
-from app.db.models import AgentInstance, AgentDispatchCounter
+from app.contracts.agent_contracts import parse_agent_capabilities, resolve_capability
+from app.db.models import AgentInstance, AgentDispatchCounter, ResourceLease
 
 # Must match main._CIRCUIT_RESET_SECONDS — agents stay circuit-open for this long
 _CIRCUIT_RESET_SECONDS: int = 300
@@ -151,42 +151,18 @@ async def resolve_executor(
     raise NoExecutorError(channel_lower, step.action)
 
 
-import json as _json
-
 def _parse_caps(agent: AgentInstance) -> list[dict]:
     """Parse the JSON-stored capabilities list. Handles both JSON and legacy CSV."""
-    raw = agent.capabilities
-    if not raw:
-        return []
-    raw = raw.strip()
-    if raw.startswith("["):
-        try:
-            parsed = _json.loads(raw)
-            if isinstance(parsed, list):
-                result_list = []
-                for item in parsed:
-                    if isinstance(item, dict):
-                        result_list.append(item)
-                    elif isinstance(item, str):
-                        result_list.append({"name": item, "type": "tool"})
-                return result_list
-        except _json.JSONDecodeError:
-            pass
-    # Legacy CSV fallback
-    return [{"name": c.strip(), "type": "tool"} for c in raw.split(",") if c.strip()]
+    return [cap.model_dump() for cap in parse_agent_capabilities(agent.capabilities)]
 
 def _has_capability(agent: AgentInstance, action: str) -> tuple[bool, str]:
     """Return (can_handle, capability_type)."""
-    caps = _parse_caps(agent)
+    caps = parse_agent_capabilities(agent.capabilities)
     if not caps:
         if settings.AGENT_REQUIRE_EXPLICIT_CAPABILITIES:
             return False, "tool"
         return True, "tool"  # Backward-compatible permissive mode
-    for cap in caps:
-        name = cap.get("name", "")
-        if name == "*" or name == action:
-            return True, cap.get("type", "tool")
-    return False, "tool"
+    return resolve_capability(caps, action)
 
 
 async def _find_capable_agent(
@@ -218,10 +194,24 @@ async def _find_capable_agent(
     agents = list(result.scalars().all())
 
     now = datetime.now(timezone.utc)
+    stale_after = max(0, int(settings.AGENT_STALE_AFTER_SECONDS))
 
     def _is_healthy(agent: AgentInstance) -> bool:
         """Return True if the agent's circuit breaker is not open."""
         if agent.circuit_open_at is None:
+            heartbeat_ts = agent.last_heartbeat_at
+            if isinstance(heartbeat_ts, datetime) and stale_after > 0:
+                if heartbeat_ts.tzinfo is None:
+                    heartbeat_ts = heartbeat_ts.replace(tzinfo=timezone.utc)
+                age = (now - heartbeat_ts).total_seconds()
+                if age >= stale_after:
+                    logger.debug(
+                        "Skipping stale agent %s (heartbeat age %.0fs / %ds)",
+                        agent.agent_id,
+                        age,
+                        stale_after,
+                    )
+                    return False
             return True
         circuit_ts = agent.circuit_open_at
         if circuit_ts.tzinfo is None:
@@ -234,6 +224,18 @@ async def _find_capable_agent(
             )
             return False
         return True
+
+    lease_rows = await db.execute(
+        select(ResourceLease.resource_key, func.count().label("active"))
+        .where(ResourceLease.released_at.is_(None), ResourceLease.expires_at > now)
+        .group_by(ResourceLease.resource_key)
+    )
+    active_by_key = {row.resource_key: int(row.active) for row in lease_rows}
+
+    def _available_slots(agent: AgentInstance) -> int:
+        if not agent.resource_key:
+            return 1
+        return max(0, int(agent.concurrency_limit or 1) - active_by_key.get(agent.resource_key, 0))
 
     # Pre-filter healthy and capable agents
     capable_agents_with_types = [
@@ -266,12 +268,23 @@ async def _find_capable_agent(
     if not pools:
         return None, "tool"
 
-    # Use the first (sorted) pool that has agents.
-    pool_key = sorted(pools.keys())[0]
+    sorted_pool_keys = sorted(pools.keys())
+    selectable_pools = [pool_key for pool_key in sorted_pool_keys if any(_available_slots(agent) > 0 for agent, _ in pools[pool_key])]
+    if not selectable_pools:
+        selectable_pools = sorted_pool_keys
+
+    if len(selectable_pools) == 1:
+        pool_key = selectable_pools[0]
+    else:
+        pool_selector_idx = int(await _get_next_pool_index(db, f"{channel}:__pool_selector__") or 0)
+        pool_key = selectable_pools[pool_selector_idx % len(selectable_pools)]
     pool_entries = pools[pool_key]
+    available_entries = [(agent, cap_type) for agent, cap_type in pool_entries if _available_slots(agent) > 0]
+    if available_entries:
+        pool_entries = available_entries
 
     # Round-robin within the pool using DB counter
-    raw_idx = await _get_next_pool_index(db, pool_key)
+    raw_idx = int(await _get_next_pool_index(db, pool_key) or 0)
     idx = raw_idx % len(pool_entries)
     selected_agent, selected_cap_type = pool_entries[idx]
 
@@ -290,6 +303,18 @@ async def dispatch_to_agent(
     run_id: str,
     node_id: str,
     step_id: str,
+    *,
+    attempt: int = 1,
+    idempotency_key: str | None = None,
+    timeout_ms: int | None = None,
+    trace_id: str | None = None,
+    tenant_id: str | None = None,
+    session_id: str | None = None,
+    lease_id: str | None = None,
+    callback_url: str | None = None,
+    dry_run: bool = False,
+    priority: int | None = None,
+    include_envelope_meta: bool = False,
 ) -> dict[str, Any]:
     """Actually call the agent over HTTP and return the result."""
     client = AgentClient(agent_url)
@@ -300,6 +325,17 @@ async def dispatch_to_agent(
             run_id=run_id,
             node_id=node_id,
             step_id=step_id,
+            attempt=attempt,
+            idempotency_key=idempotency_key,
+            timeout_ms=timeout_ms,
+            trace_id=trace_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            lease_id=lease_id,
+            callback_url=callback_url,
+            dry_run=dry_run,
+            priority=priority,
+            include_envelope_meta=include_envelope_meta,
         )
         return result
     finally:

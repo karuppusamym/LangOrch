@@ -1,0 +1,66 @@
+{
+  "procedure_id": "automation-file-roundtrip-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "description": "Actual filesystem smoke test using the file automation agent.",
+  "variables_schema": {
+    "required": {
+      "artifacts_base_dir": {
+        "type": "string",
+        "origin": "user_strict",
+        "default": "c:/Users/karup/AGProjects/LangOrch/artifacts"
+      }
+    }
+  },
+  "workflow_graph": {
+    "start_node": "file_roundtrip",
+    "nodes": {
+      "file_roundtrip": {
+        "agent": "FILE",
+        "type": "sequence",
+        "description": "Create a directory, write a JSON file, read it back, and list the directory.",
+        "next_node": "done",
+        "steps": [
+          {
+            "step_id": "create_demo_dir",
+            "action": "create_directory",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/file_demo"
+          },
+          {
+            "step_id": "write_payload",
+            "action": "write_file",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/file_demo/payload.json",
+            "content": {
+              "suite": "automation-file-roundtrip-demo",
+              "status": "written",
+              "note": "LangOrch file agent smoke test"
+            },
+            "output_variable": "write_result"
+          },
+          {
+            "step_id": "read_payload",
+            "action": "read_file",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/file_demo/payload.json",
+            "mode": "json",
+            "output_variable": "read_result"
+          },
+          {
+            "step_id": "list_demo_dir",
+            "action": "list_directory",
+            "path": "{{artifacts_base_dir}}/{{run_id}}/file_demo",
+            "output_variable": "list_result"
+          }
+        ]
+      },
+      "done": {
+        "type": "terminate",
+        "status": "success",
+        "outputs": {
+          "write_result": "{{write_result}}",
+          "read_result": "{{read_result}}",
+          "list_result": "{{list_result}}"
+        }
+      }
+    }
+  }
+}

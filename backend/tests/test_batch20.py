@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 from types import SimpleNamespace
@@ -137,7 +138,7 @@ class TestHMACVerification:
         from app.services.trigger_service import verify_hmac_signature
         secret = "test_secret_value"
         body = b'{"event": "order.created"}'
-        sig_hex = hashlib.sha256(secret.encode() + body).hexdigest()
+        sig_hex = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         header = f"sha256={sig_hex}"
         os.environ["TEST_WEBHOOK_SECRET"] = secret
         assert verify_hmac_signature(body, header, "TEST_WEBHOOK_SECRET")
@@ -154,11 +155,11 @@ class TestHMACVerification:
         body = b'hello'
         assert not verify_hmac_signature(body, None, "TEST_WEBHOOK_SECRET_3")
 
-    def test_no_secret_configured_allows_all(self):
+    def test_no_secret_configured_fails_closed(self):
         from app.services.trigger_service import verify_hmac_signature
         # Env var not set — should allow (dev mode)
         os.environ.pop("NONEXISTENT_SECRET_VAR", None)
-        assert verify_hmac_signature(b"anything", None, "NONEXISTENT_SECRET_VAR")
+        assert not verify_hmac_signature(b"anything", None, "NONEXISTENT_SECRET_VAR")
 
 
 # ── Payload hash ────────────────────────────────────────────────
@@ -284,6 +285,7 @@ class TestTriggerSchema:
     def test_trigger_fire_out(self):
         from app.schemas.triggers import TriggerFireOut
         out = TriggerFireOut(
+            entity_type="run",
             run_id="r1",
             procedure_id="p1",
             procedure_version="1.0",
@@ -357,7 +359,7 @@ class TestTriggerConcurrencyGuards:
             patch("app.services.trigger_service.create_run", new=fake_create_run),
             patch("app.services.trigger_service.enqueue_run") as enqueue_mock,
         ):
-            run = await fire_trigger(
+            result = await fire_trigger(
                 db=db,
                 procedure_id="proc-a",
                 version="1.0.0",
@@ -365,7 +367,7 @@ class TestTriggerConcurrencyGuards:
                 triggered_by="test",
             )
 
-        assert run.run_id == "run-1"
+        assert result["run_id"] == "run-1"
         assert steps.index("lock") < steps.index("count") < steps.index("create_run")
         enqueue_mock.assert_called_once_with(db, "run-1")
 
@@ -388,8 +390,8 @@ class TestTriggerConcurrencyGuards:
         db = MagicMock()
         db.commit = AsyncMock()
 
-        async def fake_list_regs(_db, enabled_only=False):
-            return [reg]
+        async def fake_get_latest(_db, _procedure_id, trigger_type=None, enabled_only=True):
+            return reg
 
         async def fake_lock(_db, _procedure_id, _version):
             order.append("lock")
@@ -401,13 +403,13 @@ class TestTriggerConcurrencyGuards:
 
         async def fake_fire(**_kwargs):
             order.append("fire")
-            return run
+            return {"entity_type": "run", "run_id": run.run_id}
 
         async def fake_record(_db, _procedure_id, _run_id, _payload_hash):
             order.append("record")
 
         with (
-            patch("app.api.triggers.trigger_service.list_trigger_registrations", new=fake_list_regs),
+            patch("app.api.triggers.trigger_service.get_latest_trigger_for_procedure", new=fake_get_latest),
             patch("app.api.triggers.trigger_service.acquire_trigger_fire_lock", new=fake_lock),
             patch("app.api.triggers.trigger_service.check_dedupe", new=fake_check),
             patch("app.api.triggers.trigger_service.fire_trigger", new=fake_fire),

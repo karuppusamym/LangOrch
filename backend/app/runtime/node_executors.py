@@ -230,6 +230,17 @@ def _build_template_vars(state: OrchestratorState) -> dict[str, Any]:
     return vs
 
 
+def _split_agent_dispatch_result(value: Any) -> tuple[Any, dict[str, Any] | None]:
+    if isinstance(value, dict) and "result" in value and "meta" in value:
+        return value.get("result"), value.get("meta") if isinstance(value.get("meta"), dict) else None
+    return value, None
+
+
+def _looks_like_policy_denial(exc: Exception) -> bool:
+    text = str(exc)
+    return "PermissionError:" in text or "approval_id is required" in text or "tenant_id is required" in text
+
+
 async def execute_sequence(
     node: IRNode, state: OrchestratorState, db_factory: Callable | None = None
 ) -> OrchestratorState:
@@ -294,6 +305,7 @@ async def execute_sequence(
         
             while True:
                 result: Any = None
+                agent_meta: dict[str, Any] | None = None
                 used_cached_result = False
 
                 if db_factory is not None and run_id:
@@ -481,6 +493,9 @@ async def execute_sequence(
                                     run_id=run_id,
                                     node_id=node.node_id,
                                     step_id=step.step_id,
+                                    timeout_ms=step.timeout_ms,
+                                    idempotency_key=step.idempotency_key,
+                                    include_envelope_meta=True,
                                 )
                                 if step.timeout_ms and step.timeout_ms > 0:
                                     try:
@@ -502,6 +517,7 @@ async def execute_sequence(
                                         )
                                 else:
                                     result = await _dispatch_coro
+                                result, agent_meta = _split_agent_dispatch_result(result)
                             else:
                                 # ── WORKFLOW DISPATCH (non-blocking) ─────────────────────────────
                                 # The capability is a long-running workflow. We:
@@ -511,7 +527,7 @@ async def execute_sequence(
                                 #   4. Set run status to 'paused' and break out of execute_sequence.
                                 # The run will resume when POST /api/runs/{run_id}/callback arrives.
                                 from app.config import settings as _settings
-                                import httpx as _httpx
+                                from app.connectors.agent_client import AgentClient
                                 import hmac as _hmac
                                 import hashlib as _hashlib
 
@@ -537,30 +553,31 @@ async def execute_sequence(
                                 # Fire-and-forget with retry — do NOT await the full response
                                 async def _fire_workflow():
                                     """Dispatch workflow agent with exponential backoff retry."""
-                                    _payload = {
-                                        "action": step.action,
-                                        "params": _wf_params,
-                                        "run_id": run_id,
-                                        "node_id": node.node_id,
-                                        "step_id": step.step_id,
-                                    }
                                     _max_retries = 3
                                     _base_delay = 1.0  # seconds
                                     
                                     for _attempt in range(_max_retries):
                                         try:
-                                            async with _httpx.AsyncClient(timeout=10.0) as _c:
-                                                _resp = await _c.post(
-                                                    f"{binding.ref.rstrip('/')}/execute",
-                                                    json=_payload,
-                                                    timeout=10.0,
+                                            _agent_client = AgentClient(binding.ref, timeout=10.0)
+                                            try:
+                                                await _agent_client.execute_action(
+                                                    action=step.action,
+                                                    params=_wf_params,
+                                                    run_id=run_id,
+                                                    node_id=node.node_id,
+                                                    step_id=step.step_id,
+                                                    attempt=_attempt + 1,
+                                                    timeout_ms=step.timeout_ms,
+                                                    callback_url=_callback_url,
+                                                    idempotency_key=step.idempotency_key,
                                                 )
-                                                _resp.raise_for_status()
                                                 logger.info(
                                                     "Workflow dispatch succeeded: run=%s node=%s step=%s attempt=%d",
                                                     run_id, node.node_id, step.step_id, _attempt + 1,
                                                 )
                                                 return  # Success - exit retry loop
+                                            finally:
+                                                await _agent_client.close()
                                         except Exception as _exc:
                                             _is_last_attempt = (_attempt == _max_retries - 1)
                                             if _is_last_attempt:
@@ -577,7 +594,13 @@ async def execute_sequence(
                                                             await add_to_dlq(
                                                                 _dlq_db,
                                                                 event_type="workflow_dispatch_failure",
-                                                                payload=_payload,
+                                                                payload={
+                                                                    "action": step.action,
+                                                                    "params": _wf_params,
+                                                                    "run_id": run_id,
+                                                                    "node_id": node.node_id,
+                                                                    "step_id": step.step_id,
+                                                                },
                                                                 component="workflow_dispatcher",
                                                                 error_message=str(_exc),
                                                                 run_id=run_id,
@@ -651,6 +674,10 @@ async def execute_sequence(
                                     run_id=run_id,
                                     node_id=node.node_id,
                                     step_id=step.step_id,
+                                    timeout_ms=step.timeout_ms,
+                                    idempotency_key=step.idempotency_key,
+                                    lease_id=lease_id,
+                                    include_envelope_meta=True,
                                 )
                                 if step.timeout_ms and step.timeout_ms > 0:
                                     try:
@@ -672,6 +699,7 @@ async def execute_sequence(
                                         )
                                 else:
                                     result = await _dispatch_coro
+                                result, agent_meta = _split_agent_dispatch_result(result)
                             finally:
                                 if lease_id and db_factory is not None:
                                     async with db_factory() as db:
@@ -715,10 +743,52 @@ async def execute_sequence(
                         result = await _execute_step_action(step.action, rendered_params, vs)
                 
                     # Execution succeeded - exit retry loop
+                    if agent_meta and db_factory is not None and run_id:
+                        async with db_factory() as db:
+                            await run_service.emit_event(
+                                db,
+                                run_id,
+                                "agent_execution_audit",
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                                payload={
+                                    "action": step.action,
+                                    "provider": agent_meta.get("provider"),
+                                    "protocol_version": agent_meta.get("protocol_version"),
+                                    "duration_ms": agent_meta.get("duration_ms"),
+                                    "warnings": agent_meta.get("warnings") or [],
+                                    "policy": agent_meta.get("policy"),
+                                },
+                            )
+                            if agent_meta.get("warnings"):
+                                await run_service.emit_event(
+                                    db,
+                                    run_id,
+                                    "agent_policy_warning",
+                                    node_id=node.node_id,
+                                    step_id=step.step_id,
+                                    payload={
+                                        "action": step.action,
+                                        "warnings": agent_meta.get("warnings"),
+                                        "policy": agent_meta.get("policy"),
+                                    },
+                                )
+                            await db.commit()
                     record_step_execution(node.node_id, "completed")
                     break
                 
                 except Exception as exc:
+                    if db_factory is not None and run_id and _looks_like_policy_denial(exc):
+                        async with db_factory() as db:
+                            await run_service.emit_event(
+                                db,
+                                run_id,
+                                "agent_policy_denied",
+                                node_id=node.node_id,
+                                step_id=step.step_id,
+                                payload={"action": step.action, "error": str(exc)},
+                            )
+                            await db.commit()
                     # Apply retry policy if enabled
                     if step.retry_on_failure and attempt < max_retries:
                         delay_ms = retry_config.get("retry_delay_ms", 1000)

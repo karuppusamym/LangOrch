@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, model_validator
 
+from app.utils.redaction import sanitize_run_snapshot
+
 
 class RunCreate(BaseModel):
     procedure_id: str
@@ -15,6 +17,8 @@ class RunCreate(BaseModel):
     input_vars: dict[str, Any] | None = None
     project_id: str | None = None
     case_id: str | None = None
+    link_source: str | None = None
+    input_snapshot_source: str | None = None
 
 
 class RunOut(BaseModel):
@@ -39,6 +43,10 @@ class RunOut(BaseModel):
     triggered_by: str | None = None
     project_id: str | None = None
     case_id: str | None = None
+    batch_job_id: str | None = None
+    batch_item_index: int | None = None
+    link_source: str | None = None
+    input_snapshot_source: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -65,14 +73,20 @@ class RunOut(BaseModel):
                 "triggered_by": getattr(data, "triggered_by", None),
                 "project_id": data.project_id,
                 "case_id": getattr(data, "case_id", None),
+                "batch_job_id": getattr(data, "batch_job_id", None),
+                "batch_item_index": getattr(data, "batch_item_index", None),
+                "link_source": getattr(data, "link_source", None),
+                "input_snapshot_source": getattr(data, "input_snapshot_source", None),
                 "created_at": data.created_at,
                 "updated_at": data.updated_at,
             }
             # Parse input_vars / output_vars from JSON string
             raw = data.input_vars_json
-            d["input_vars"] = json.loads(raw) if isinstance(raw, str) and raw else raw
+            parsed_input = json.loads(raw) if isinstance(raw, str) and raw else raw
+            d["input_vars"] = sanitize_run_snapshot(parsed_input) if parsed_input is not None else None
             raw_out = getattr(data, "output_vars_json", None)
-            d["output_vars"] = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
+            parsed_output = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
+            d["output_vars"] = sanitize_run_snapshot(parsed_output) if parsed_output is not None else None
             d["total_prompt_tokens"] = getattr(data, "total_prompt_tokens", None)
             d["total_completion_tokens"] = getattr(data, "total_completion_tokens", None)
             d["estimated_cost_usd"] = getattr(data, "estimated_cost_usd", None)
@@ -84,10 +98,16 @@ class RunOut(BaseModel):
         if isinstance(data, dict):
             if "input_vars_json" in data and "input_vars" not in data:
                 raw = data.get("input_vars_json")
-                data["input_vars"] = json.loads(raw) if isinstance(raw, str) and raw else raw
+                parsed_input = json.loads(raw) if isinstance(raw, str) and raw else raw
+                data["input_vars"] = sanitize_run_snapshot(parsed_input) if parsed_input is not None else None
+            elif "input_vars" in data:
+                data["input_vars"] = sanitize_run_snapshot(data.get("input_vars"))
             if "output_vars_json" in data and "output_vars" not in data:
                 raw_out = data.get("output_vars_json")
-                data["output_vars"] = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
+                parsed_output = json.loads(raw_out) if isinstance(raw_out, str) and raw_out else None
+                data["output_vars"] = sanitize_run_snapshot(parsed_output) if parsed_output is not None else None
+            elif "output_vars" in data:
+                data["output_vars"] = sanitize_run_snapshot(data.get("output_vars"))
             if data.get("started_at") and data.get("ended_at") and "duration_seconds" not in data:
                 data["duration_seconds"] = (data["ended_at"] - data["started_at"]).total_seconds()
         return data

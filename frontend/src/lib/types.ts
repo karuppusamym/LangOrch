@@ -86,6 +86,10 @@ export interface Run {
   triggered_by: string | null;
   project_id: string | null;
   case_id: string | null;
+  batch_job_id: string | null;
+  batch_item_index: number | null;
+  link_source: string | null;
+  input_snapshot_source: string | null;
   last_node_id: string | null;
   last_step_id: string | null;
   created_at: string;
@@ -148,6 +152,15 @@ export interface AgentCapability {
   description: string | null;
   estimated_duration_s: number | null;
   is_batch: boolean;
+  input_schema?: Record<string, unknown> | null;
+  output_schema?: Record<string, unknown> | null;
+  side_effect_level?: "none" | "low" | "medium" | "high" | null;
+  requires_session?: boolean;
+  supports_async?: boolean;
+  providers?: string[];
+  tags?: string[];
+  requires_approval?: boolean;
+  session_scoped?: boolean;
 }
 
 export interface AgentInstance {
@@ -162,6 +175,12 @@ export interface AgentInstance {
   capabilities: AgentCapability[];
   consecutive_failures: number;
   circuit_open_at: string | null;
+  last_heartbeat_at: string | null;
+  heartbeat_age_seconds: number | null;
+  is_stale: boolean;
+  protocol_version: string | null;
+  supports_sessions: boolean;
+  capability_contract_coverage: number;
   updated_at: string;
 }
 
@@ -188,6 +207,33 @@ export interface Case {
   metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CaseProcedurePolicy {
+  policy_id: string;
+  project_id: string | null;
+  case_type: string;
+  procedure_id: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CaseAllowedProcedures {
+  case_id: string;
+  restricted: boolean;
+  procedure_ids: string[];
+}
+
+export interface CasePolicyResolution {
+  case_id: string;
+  project_id: string | null;
+  case_type: string | null;
+  priority: string;
+  case_type_required: boolean;
+  procedure_restricted: boolean;
+  allowed_procedure_ids: string[];
+  matched_sla_policy: CaseSlaPolicy | null;
 }
 
 export interface CaseQueueItem extends Case {
@@ -409,9 +455,69 @@ export interface TriggerRegistration {
   event_source: string | null;
   dedupe_window_seconds: number;
   max_concurrent_runs: number | null;
+  dispatch_mode: "run" | "batch" | "case_run";
+  static_payload: unknown | null;
+  case_type: string | null;
+  case_title_template: string | null;
+  case_external_ref_field: string | null;
+  create_case_tags: string[] | null;
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface TriggerFireResult {
+  entity_type: "run" | "batch_job" | "case_run";
+  run_id: string;
+  batch_job_id: string;
+  case_id: string;
+  procedure_id: string;
+  procedure_version: string;
+  trigger_type: string;
+  triggered_by?: string | null;
+  status: string;
+}
+
+export interface BatchJob {
+  batch_job_id: string;
+  name: string;
+  procedure_id: string;
+  procedure_version: string;
+  status: string;
+  source_format: "json" | "jsonl" | "csv";
+  total_items: number;
+  queued_items: number;
+  running_items: number;
+  completed_items: number;
+  failed_items: number;
+  canceled_items: number;
+  create_case_per_item: boolean;
+  case_type: string | null;
+  trigger_type: string | null;
+  triggered_by: string | null;
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface BatchJobItem {
+  item_id: string;
+  batch_job_id: string;
+  item_index: number;
+  status: string;
+  input_vars: Record<string, unknown> | null;
+  run_id: string | null;
+  case_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BatchJobOperationResult {
+  batch_job_id: string;
+  affected: number;
+  item_ids: string[];
 }
 /* ── Platform Config ─────────────────────────────── */
 
@@ -484,4 +590,15 @@ export interface AgentPoolStats {
   active_leases: number;
   available_capacity: number;
   circuit_open_count: number;
+  stale_agent_count: number;
+}
+
+export interface AgentOperationEvent {
+  event_id: string | number;
+  run_id: string;
+  event_type: string;
+  node_id: string | null;
+  step_id: string | null;
+  ts: string;
+  payload: Record<string, unknown>;
 }

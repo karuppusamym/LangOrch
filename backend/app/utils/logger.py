@@ -9,6 +9,7 @@ ctx_run_id = contextvars.ContextVar("run_id", default=None)
 ctx_node_id = contextvars.ContextVar("node_id", default=None)
 ctx_step_id = contextvars.ContextVar("step_id", default=None)
 ctx_tenant_id = contextvars.ContextVar("tenant_id", default=None)
+ctx_trace_id = contextvars.ContextVar("trace_id", default=None)
 
 class CorrelationJsonFormatter(JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
@@ -30,6 +31,10 @@ class CorrelationJsonFormatter(JsonFormatter):
         tenant_id = ctx_tenant_id.get()
         if tenant_id:
             log_record["tenant_id"] = tenant_id
+
+        trace_id = ctx_trace_id.get()
+        if trace_id and "trace_id" not in log_record:
+            log_record["trace_id"] = trace_id
 
         # Inject active OTEL span context so Grafana/Loki can join logs→traces.
         # trace_id is a 32-char lowercase hex string; span_id is 16 chars.
